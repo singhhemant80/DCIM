@@ -47,7 +47,30 @@ npm test
 - Unit tests need no services.
 - API end-to-end tests boot the real application against PostgreSQL and Redis. They use `TEST_DATABASE_URL` (default `postgres://cdcim:cdcim_dev@127.0.0.1:5432/crapplet_dcim_test`) and **wipe that database** at the start of each file. The helper refuses to run unless the database name contains `test`.
 
-## Production install on Ubuntu Server LTS (outline)
+## One-command install (Ubuntu, Debian, WSL)
+
+`scripts/install.sh` installs Node.js 22, PostgreSQL and Redis, creates a `cdcim` system user and database with random secrets (`/etc/crapplet-dcim/api.env`), builds the app, applies migrations, creates the first administrator (password printed once) and starts the service on port 8080, where one process serves both the UI and the API. Re-running it upgrades in place.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.sh | sudo CDCIM_REPO=https://github.com/<owner>/<repo>.git bash
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CDCIM_REPO` | (required) | Git URL to install from |
+| `CDCIM_BRANCH` | `main` | Branch or tag |
+| `CDCIM_ADMIN_EMAIL`, `CDCIM_ADMIN_NAME` | prompted | First administrator |
+| `CDCIM_PORT` | `8080` | Port for UI and API |
+| `CDCIM_BIND` | `127.0.0.1` | `0.0.0.0` to listen on the LAN |
+| `CDCIM_INSECURE_HTTP` | `0` | `1` allows sign-in over plain `http://` by IP (lab only; use HTTPS for real use) |
+
+Service control: `sudo crapplet-dcim {start|stop|restart|status|logs}` (uses systemd when available, otherwise a built-in process manager, as on WSL without systemd).
+
+Verified so far: fresh install, re-run upgrade (data, secrets and admin kept), and the `curl | bash` form, on Ubuntu 24.04 without systemd. Sign-in on the installed instance was tested in a real browser. The systemd branch and `scripts/install-windows.ps1` have been reviewed but not yet run on a systemd host or on Windows.
+
+For a private repository, either make the installer reachable (for example from a release asset) or set `CDCIM_REPO` to a URL with a read-only token or deploy key.
+
+## Production install on Ubuntu Server LTS (manual outline)
 
 The full installer, upgrade and rollback scripts, and a tested procedure are Phase 9 deliverables. The files available now:
 

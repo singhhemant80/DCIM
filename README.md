@@ -4,6 +4,24 @@ Datacenter infrastructure management for Crapplet Infotech Private Limited: phys
 
 **Current state: Phase 1 (Foundation) complete.** Sign-in with two-step verification, roles and permissions, customer tenants, a tamper-evident audit log, system settings and the application shell work end to end. Every other section is clearly marked as planned in the UI. See the [feature matrix](docs/feature-matrix.md).
 
+## Install
+
+**Ubuntu 22.04/24.04 or Debian 12 server** (one command, run again to upgrade):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.sh | sudo CDCIM_REPO=https://github.com/<owner>/<repo>.git bash
+```
+
+**Windows 10/11** (Administrator PowerShell, uses WSL2 Ubuntu):
+
+```powershell
+$env:CDCIM_REPO='https://github.com/<owner>/<repo>.git'; irm https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install-windows.ps1 | iex
+```
+
+Then open http://localhost:8080 and sign in with the administrator email and the password the installer prints. Options (port, LAN access, branch) are listed at the top of [`scripts/install.sh`](scripts/install.sh).
+
+## Documentation
+
 | | |
 |---|---|
 | Stack | React 19, Vite, Tailwind 4, NestJS 11, PostgreSQL 16, Redis 7, TypeScript throughout |

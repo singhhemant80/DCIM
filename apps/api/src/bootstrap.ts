@@ -4,6 +4,9 @@ import { type INestApplication, VersioningType } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import fs from 'node:fs';
+import path from 'node:path';
+import express from 'express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
@@ -58,6 +61,7 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
     allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Request-Id'],
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
   });
+  if (config.WEB_DIST_DIR) serveWebApp(app as NestExpressApplication, config.WEB_DIST_DIR);
   app.setGlobalPrefix('api');
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
   app.enableShutdownHooks();
@@ -75,4 +79,23 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
     SwaggerModule.setup('api/docs', app, () => SwaggerModule.createDocument(app, doc), { jsonDocumentUrl: 'api/docs/openapi.json' });
   }
   return app;
+}
+
+/**
+ * Serves the built SPA from the API process: hashed assets are cached for a
+ * year, everything else that isn't /api falls back to index.html (client-side
+ * routing). Registered before Nest's routes; /api requests pass straight through.
+ */
+function serveWebApp(app: NestExpressApplication, dir: string): void {
+  const root = path.resolve(dir);
+  const index = path.join(root, 'index.html');
+  if (!fs.existsSync(index)) throw new Error(`WEB_DIST_DIR has no index.html: ${root}`);
+  app.use('/assets', express.static(path.join(root, 'assets'), { immutable: true, maxAge: '365d', fallthrough: false }));
+  app.use(express.static(root, { index: false, maxAge: '1h' }));
+  app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (req.path === '/api' || req.path.startsWith('/api/')) return next();
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(index);
+  });
 }

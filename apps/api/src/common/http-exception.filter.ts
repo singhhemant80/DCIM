@@ -26,7 +26,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       const payload =
         typeof body === 'string'
           ? { error: codeFor(status), message: body }
-          : { error: codeFor(status), ...(body as Record<string, unknown>) };
+          : { ...(body as Record<string, unknown>), error: errorCode(status, (body as { error?: unknown }).error) };
       // Nest's default bodies include statusCode; keep the shape uniform.
       delete (payload as Record<string, unknown>).statusCode;
       const msg = (payload as { message?: unknown }).message;
@@ -48,6 +48,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       .status(HttpStatus.INTERNAL_SERVER_ERROR)
       .json({ error: 'internal_error', message: 'An unexpected error occurred', requestId });
   }
+}
+
+/** Keep our machine-readable codes (snake_case); replace Nest's human defaults like "Not Found". */
+function errorCode(status: number, given: unknown): string {
+  return typeof given === 'string' && /^[a-z][a-z0-9_]*$/.test(given) ? given : codeFor(status);
 }
 
 function codeFor(status: number): string {

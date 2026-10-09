@@ -44,7 +44,7 @@ function assertTestDb(url: string) {
  * two customers and five users (one per interesting role), and boots the real
  * Nest application with production middleware.
  */
-export async function setupTestApp(): Promise<TestContext> {
+export async function setupTestApp(extraEnv: Record<string, string> = {}): Promise<TestContext> {
   assertTestDb(TEST_DATABASE_URL);
   const pool = createPool(TEST_DATABASE_URL, 10);
   await pool.query('DROP SCHEMA IF EXISTS drizzle CASCADE; DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
@@ -88,6 +88,7 @@ export async function setupTestApp(): Promise<TestContext> {
     REDIS_URL: process.env.TEST_REDIS_URL ?? 'redis://127.0.0.1:6379',
     CDCIM_ENCRYPTION_KEYS: `t1:${randomBytes(32).toString('base64')}`,
     LOG_LEVEL: 'silent',
+    ...extraEnv,
   });
   const app = await createApp(config, pino({ level: 'silent' }));
   // Listen on an ephemeral port so concurrent supertest requests share one server.

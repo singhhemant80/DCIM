@@ -18,6 +18,7 @@ describe('loadConfig', () => {
     expect(c.COOKIE_SECURE).toBe(true);
     expect(c.ENABLE_SWAGGER).toBe(false);
     expect(() => loadConfig({ ...env, NODE_ENV: 'production', COOKIE_SECURE: 'false' })).toThrow(/COOKIE_SECURE/);
+    expect(loadConfig({ ...env, NODE_ENV: 'production', COOKIE_SECURE: 'false', ALLOW_INSECURE_HTTP: 'true' }).COOKIE_SECURE).toBe(false);
   });
 
   it('rejects missing or malformed encryption keys', () => {

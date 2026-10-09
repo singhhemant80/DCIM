@@ -50,9 +50,20 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   LOGIN_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(10),
   ENABLE_SWAGGER: bool.optional(),
+  /**
+   * Optional: absolute path to the built web app (apps/web/dist). When set, the API
+   * also serves the UI, so a single process is enough for small installs. Behind
+   * nginx in production you can leave it unset and let nginx serve the files.
+   */
+  WEB_DIST_DIR: z.string().min(1).optional(),
+  /**
+   * Explicit acknowledgement required to run production over plain HTTP
+   * (COOKIE_SECURE=false), e.g. a lab install reached by IP before TLS is set up.
+   */
+  ALLOW_INSECURE_HTTP: bool.optional(),
 });
 
-export type AppConfig = Omit<z.infer<typeof envSchema>, 'COOKIE_SECURE' | 'ENABLE_SWAGGER'> & {
+export type AppConfig = Omit<z.infer<typeof envSchema>, 'COOKIE_SECURE' | 'ENABLE_SWAGGER' | 'ALLOW_INSECURE_HTTP'> & {
   COOKIE_SECURE: boolean;
   ENABLE_SWAGGER: boolean;
 };
@@ -66,10 +77,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const c = parsed.data;
   const isProd = c.NODE_ENV === 'production';
   const cookieSecure = c.COOKIE_SECURE ?? isProd;
-  if (isProd && !cookieSecure) {
-    throw new Error('Invalid configuration: COOKIE_SECURE cannot be false in production');
+  if (isProd && !cookieSecure && !c.ALLOW_INSECURE_HTTP) {
+    throw new Error('Invalid configuration: COOKIE_SECURE cannot be false in production (set ALLOW_INSECURE_HTTP=true only for a temporary lab install)');
   }
-  return { ...c, COOKIE_SECURE: cookieSecure, ENABLE_SWAGGER: c.ENABLE_SWAGGER ?? !isProd };
+  const { ALLOW_INSECURE_HTTP: _ack, ...rest } = c;
+  return { ...rest, COOKIE_SECURE: cookieSecure, ENABLE_SWAGGER: c.ENABLE_SWAGGER ?? !isProd };
 }
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
