@@ -1,0 +1,29 @@
+[Unit]
+Description=Crapplet DCIM API
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cdcim
+Group=cdcim
+WorkingDirectory=/opt/crapplet-dcim/current/apps/api
+EnvironmentFile=/etc/crapplet-dcim/api.env
+ExecStart=/usr/bin/node dist/main.js
+Restart=on-failure
+RestartSec=3
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/crapplet-dcim
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
