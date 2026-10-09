@@ -14,6 +14,11 @@ import { AuditPage } from './pages/Audit';
 import { SettingsPage } from './pages/Settings';
 import { AccountPage } from './pages/Account';
 import { NotFoundPage, PlannedPage } from './pages/Planned';
+import { DatacentersPage, RoomsPage } from './pages/Sites';
+import { FloorPlansPage } from './pages/FloorPlans';
+import { RackDetailPage, RacksPage } from './pages/Racks';
+import { HardwarePage } from './pages/Hardware';
+import { DeviceDetailPage, DeviceLabelPage } from './pages/DeviceDetail';
 
 /** Implemented sections. Every key here must be `available` in NAV_SECTIONS (checked by a test). */
 export const IMPLEMENTED: Record<string, ComponentType> = {
@@ -22,10 +27,15 @@ export const IMPLEMENTED: Record<string, ComponentType> = {
   users: UsersPage,
   audit: AuditPage,
   settings: SettingsPage,
+  datacenters: DatacentersPage,
+  rooms: RoomsPage,
+  'floor-plans': FloorPlansPage,
+  racks: RacksPage,
+  hardware: HardwarePage,
 };
 
 function AppRoutes() {
-  const { can } = useAuth();
+  const { can, me } = useAuth();
   const visible = new Set(useVisibleSections().map((s) => s.key));
   return (
     <Shell>
@@ -36,6 +46,9 @@ function AppRoutes() {
           return <Route key={s.key} path={s.path} element={Page && s.status === 'available' ? <Page /> : <PlannedPage section={s} />} />;
         })}
         {can('roles.read') && <Route path="/roles" element={<RolesPage />} />}
+        {visible.has('racks') && <Route path="/racks/:id" element={<RackDetailPage />} />}
+        {visible.has('hardware') && <Route path="/hardware/:id" element={<DeviceDetailPage />} />}
+        {visible.has('hardware') && me?.user.userType === 'staff' && <Route path="/hardware/:id/label" element={<DeviceLabelPage />} />}
         <Route path="/account" element={<AccountPage />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />

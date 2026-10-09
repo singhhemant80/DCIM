@@ -22,7 +22,7 @@ async function newDevice(model: string, extra: Record<string, unknown> = {}) {
   const body = await ok(admin.post(`${V}/devices`, { modelId: ids[model], assetTag: `T-${++tagSeq}`, initialState: 'inventory', ...extra }));
   return body.id as string;
 }
-const place = (id: string, rackId: string | null, positionU?: number, face: 'front' | 'rear' = 'front') => admin.post(`${V}/devices/${id}/placement`, { rackId, positionU, face });
+const place = (id: string, rackId: string | null | undefined, positionU?: number, face: 'front' | 'rear' = 'front') => admin.post(`${V}/devices/${id}/placement`, { rackId: rackId ?? null, positionU, face });
 
 beforeAll(async () => {
   ctx = await setupTestApp();
@@ -315,7 +315,7 @@ describe('CSV export and import', () => {
     expect(byTag['IMP-4@5'].message).toMatch(/Unknown model/);
     expect(byTag['IMP-2@6'].message).toMatch(/asset tag/);
     expect(byTag['IMP-5@7'].message).toMatch(/needs a rack/);
-    const [{ n }] = (await ctx.db.execute(sql`select count(*)::int as n from devices where asset_tag like 'IMP-%'`)).rows as { n: number }[];
+    const n = ((await ctx.db.execute(sql`select count(*)::int as n from devices where asset_tag like 'IMP-%'`)).rows as { n: number }[])[0]!.n;
     expect(n).toBe(0);
   });
 
@@ -383,5 +383,30 @@ describe('summary', () => {
     expect(s.capacity.totalU).toBeGreaterThan(s.capacity.usedU);
     expect(s.devicesByState.active).toBeGreaterThanOrEqual(1);
     expect(s.capacity.reservedU).toBe(4);
+  });
+});
+
+describe('list counts (correlated subqueries)', () => {
+  it('datacenter list returns hierarchy counts', async () => {
+    const list = await ok(admin.get(`${V}/datacenters`));
+    const dc = list.find((d: { id: string }) => d.id === ids.dc);
+    expect(dc.counts.buildings).toBe(1);
+    expect(dc.counts.rooms).toBe(2);
+    expect(dc.counts.racks).toBeGreaterThanOrEqual(4);
+    expect(dc.counts.devices).toBeGreaterThan(5);
+  });
+
+  it('manufacturer and model lists count their children', async () => {
+    const mfrs = await ok(admin.get(`${V}/manufacturers`));
+    expect(mfrs.find((m: { id: string }) => m.id === ids.dell).modelCount).toBe(4);
+    expect(mfrs.find((m: { id: string }) => m.id === ids.mikrotik).modelCount).toBe(1);
+    const models = await ok(admin.get(`${V}/models`));
+    expect(models.find((m: { id: string }) => m.id === ids.ccr).deviceCount).toBe(2);
+  });
+
+  it('rack list counts devices per rack', async () => {
+    const list = await ok(admin.get(`${V}/racks`));
+    const elev = await ok(admin.get(`${V}/racks/${ids.rack}/elevation`));
+    expect(list.find((r: { id: string }) => r.id === ids.rack).deviceCount).toBe(elev.devices.length + elev.zeroU.length);
   });
 });

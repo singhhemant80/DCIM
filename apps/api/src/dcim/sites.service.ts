@@ -58,10 +58,10 @@ export class SitesService {
     const rows = await this.db
       .select({
         dc: datacenters,
-        buildings: sql<number>`(select count(*)::int from buildings b where b.datacenter_id = ${datacenters.id})`,
-        rooms: sql<number>`(select count(*)::int from rooms r join buildings b on b.id = r.building_id where b.datacenter_id = ${datacenters.id})`,
-        racks: sql<number>`(select count(*)::int from racks k join rooms r on r.id = k.room_id join buildings b on b.id = r.building_id where b.datacenter_id = ${datacenters.id})`,
-        devices: sql<number>`(select count(*)::int from devices d join racks k on k.id = d.rack_id join rooms r on r.id = k.room_id join buildings b on b.id = r.building_id where b.datacenter_id = ${datacenters.id})`,
+        buildings: sql<number>`(select count(*)::int from buildings b where b.datacenter_id = "datacenters"."id")`,
+        rooms: sql<number>`(select count(*)::int from rooms r join buildings b on b.id = r.building_id where b.datacenter_id = "datacenters"."id")`,
+        racks: sql<number>`(select count(*)::int from racks k join rooms r on r.id = k.room_id join buildings b on b.id = r.building_id where b.datacenter_id = "datacenters"."id")`,
+        devices: sql<number>`(select count(*)::int from devices d join racks k on k.id = d.rack_id join rooms r on r.id = k.room_id join buildings b on b.id = r.building_id where b.datacenter_id = "datacenters"."id")`,
       })
       .from(datacenters)
       .where(eq(datacenters.orgId, p.orgId))

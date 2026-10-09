@@ -6,6 +6,102 @@ import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
 import type { Customer } from '../lib/types';
 import { Chip, ErrorNote, Loading, PageHeader, Panel, Stat } from '../components/ui';
+import { CATEGORY_LABELS, LIFECYCLE_LABELS, type LifecycleState } from '@crapplet/shared';
+import { STATE_TONE, daysUntil } from '../lib/dcim';
+import { CustomerEquipment } from './Hardware';
+import { OccupancyBar } from './Racks';
+
+interface DcimSummary {
+  counts: { datacenters: number; rooms: number; racks: number; devices: number; unracked: number };
+  capacity: { totalU: number; usedU: number; reservedU: number; freeU: number };
+  devicesByState: Record<LifecycleState, number>;
+  devicesByCategory: Record<string, number>;
+  warranty: { expired: number; within90Days: number; soonest: { id: string; assetTag: string; hostname: string | null; warrantyExpires: string; model: string; manufacturer: string }[] };
+  sparePartsLow: number;
+}
+
+function PhysicalPanel() {
+  const q = useQuery({ queryKey: ['dcim', 'summary'], queryFn: () => api.get<DcimSummary>('/dcim/summary'), refetchInterval: 60_000 });
+  if (q.isLoading) return <Loading />;
+  if (q.error) return <ErrorNote error={q.error} />;
+  const s = q.data!;
+  if (s.counts.datacenters === 0) {
+    return (
+      <Panel title="Physical infrastructure">
+        <p className="text-ink-2">
+          No datacenters yet. <Link to="/datacenters" className="text-accent hover:underline">Add your first site</Link>, then its rooms and racks, and import your hardware.
+        </p>
+      </Panel>
+    );
+  }
+  const pct = s.capacity.totalU ? Math.round((s.capacity.usedU / s.capacity.totalU) * 100) : 0;
+  const order: LifecycleState[] = ['active', 'provisioning', 'racked', 'maintenance', 'reserved', 'inventory', 'received', 'planned'];
+  return (
+    <Panel title="Physical infrastructure" actions={<Link to="/racks" className="text-[13px] text-accent hover:underline">All racks</Link>}>
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+        <Stat label="Datacenters" value={s.counts.datacenters} note={`${s.counts.rooms} room${s.counts.rooms === 1 ? '' : 's'}`} />
+        <Stat label="Racks" value={s.counts.racks} note={`${s.capacity.totalU} rack units`} />
+        <Stat label="Devices" value={s.counts.devices} note={`${s.counts.unracked} not in a rack`} />
+        <Stat label="Rack units in use" value={`${pct}%`} note={`${s.capacity.freeU} free, ${s.capacity.reservedU} reserved`} tone={pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : undefined} />
+      </dl>
+      <OccupancyBar rack={{ uHeight: Math.max(1, s.capacity.totalU), usedU: s.capacity.usedU, reservedU: s.capacity.reservedU }} className="mt-4 h-2.5" />
+      <div className="mt-5 grid gap-5 lg:grid-cols-2">
+        <div>
+          <p className="mb-2 text-[13px] font-semibold">Devices by state</p>
+          <ul className="flex flex-wrap gap-1.5">
+            {order
+              .filter((st) => s.devicesByState[st] > 0)
+              .map((st) => (
+                <li key={st}>
+                  <Link to={`/hardware?state=${st}`}>
+                    <Chip tone={STATE_TONE[st]}>
+                      {LIFECYCLE_LABELS[st]} {s.devicesByState[st]}
+                    </Chip>
+                  </Link>
+                </li>
+              ))}
+          </ul>
+          <p className="mt-4 mb-2 text-[13px] font-semibold">By category</p>
+          <p className="text-[13px] text-ink-2">
+            {Object.entries(s.devicesByCategory)
+              .sort((a, b) => b[1] - a[1])
+              .map(([c, n]) => `${CATEGORY_LABELS[c as keyof typeof CATEGORY_LABELS] ?? c} ${n}`)
+              .join(', ') || '—'}
+          </p>
+          {s.sparePartsLow > 0 && (
+            <p className="mt-4 text-[13px]">
+              <Link to="/hardware?tab=spares" className="text-warn hover:underline">
+                {s.sparePartsLow} spare part{s.sparePartsLow === 1 ? ' is' : 's are'} at or below the reorder level
+              </Link>
+            </p>
+          )}
+        </div>
+        <div>
+          <p className="mb-2 text-[13px] font-semibold">
+            Warranty: {s.warranty.expired} expired, {s.warranty.within90Days} ending within 90 days
+          </p>
+          {s.warranty.soonest.length === 0 ? (
+            <p className="text-[13px] text-ink-3">Nothing expiring soon.</p>
+          ) : (
+            <ul className="flex flex-col gap-1 text-[13px]">
+              {s.warranty.soonest.map((d) => {
+                const days = daysUntil(d.warrantyExpires)!;
+                return (
+                  <li key={d.id} className="flex justify-between gap-3">
+                    <Link to={`/hardware/${d.id}`} className="truncate text-accent hover:underline">
+                      {d.hostname || d.assetTag}
+                    </Link>
+                    <span className={days < 0 ? 'text-crit' : 'text-warn'}>{days < 0 ? `expired ${-days} d ago` : `${days} d left`}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Panel>
+  );
+}
 
 interface Overview {
   generatedAt: string;
@@ -63,13 +159,14 @@ function StaffOverview() {
     <>
       <PageHeader
         title="Overview"
-        description={`${me!.organization.name}. Infrastructure figures such as rack occupancy, bandwidth and power appear here as each module goes live; nothing on this page is sample data.`}
+        description={`${me!.organization.name}. Bandwidth and power figures appear here as those modules go live; nothing on this page is sample data.`}
       />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
       {o && (
         <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
           <div className="flex flex-col gap-5">
+            {can('dcim.read') && <PhysicalPanel />}
             <Panel title="Customers and access">
               <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
                 {o.customers && <Stat label="Active customers" value={o.customers.active} note={`${o.customers.suspended} suspended, ${o.customers.closed} closed`} />}
@@ -130,7 +227,7 @@ function CustomerOverview() {
   const c = q.data;
   return (
     <>
-      <PageHeader title="Your account" description="Services, IP addresses, power and bandwidth for your account will be listed here as they become available in the portal." />
+      <PageHeader title="Your account" description="IP addresses, power and bandwidth for your account will be added here as those modules go live." />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
       {c && (
@@ -151,6 +248,9 @@ function CustomerOverview() {
           </dl>
         </Panel>
       )}
+      <div className="mt-5">
+        <CustomerEquipment embedded />
+      </div>
     </>
   );
 }

@@ -11,7 +11,7 @@ const GROUP_ORDER: NavSection['group'][] = ['Overview', 'Physical', 'Network', '
 export function useVisibleSections(): NavSection[] {
   const { me, can } = useAuth();
   return NAV_SECTIONS.filter((s) => {
-    if (me?.user.userType === 'customer' && s.group === 'Administration') return false;
+    if (me?.user.userType === 'customer' && (s.group === 'Administration' || s.staffOnly)) return false;
     return !s.permission || can(s.permission);
   });
 }

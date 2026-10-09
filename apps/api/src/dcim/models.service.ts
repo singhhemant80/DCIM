@@ -25,7 +25,7 @@ export class ModelsService {
 
   listManufacturers(p: Principal) {
     return this.db
-      .select({ m: manufacturers, models: sql<number>`(select count(*)::int from device_models dm where dm.manufacturer_id = ${manufacturers.id})` })
+      .select({ m: manufacturers, models: sql<number>`(select count(*)::int from device_models dm where dm.manufacturer_id = "manufacturers"."id")` })
       .from(manufacturers)
       .where(eq(manufacturers.orgId, p.orgId))
       .orderBy(asc(manufacturers.name))
@@ -46,7 +46,7 @@ export class ModelsService {
 
   async listModels(p: Principal) {
     const rows = await this.db
-      .select({ model: deviceModels, manufacturerName: manufacturers.name, deviceCount: sql<number>`(select count(*)::int from devices d where d.model_id = ${deviceModels.id})` })
+      .select({ model: deviceModels, manufacturerName: manufacturers.name, deviceCount: sql<number>`(select count(*)::int from devices d where d.model_id = "device_models"."id")` })
       .from(deviceModels)
       .innerJoin(manufacturers, eq(manufacturers.id, deviceModels.manufacturerId))
       .where(eq(deviceModels.orgId, p.orgId))

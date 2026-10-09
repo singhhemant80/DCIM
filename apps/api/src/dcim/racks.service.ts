@@ -13,9 +13,9 @@ type MoveInput = z.infer<typeof rackMoveSchema>;
 type ReservationInput = z.infer<typeof reservationSchema>;
 
 /** Distinct rack units occupied on either face (a front and a rear half-depth device at the same U count once). */
-export const usedUnitsSql = (rackIdCol: SQL | typeof racks.id) =>
+export const usedUnitsSql = (rackIdCol: SQL) =>
   sql<number>`(select count(distinct u)::int from devices d, generate_series(lower(d.u_range), upper(d.u_range) - 1) as u where d.rack_id = ${rackIdCol} and d.u_range is not null)`;
-const reservedUnitsSql = (rackIdCol: typeof racks.id) =>
+const reservedUnitsSql = (rackIdCol: SQL) =>
   sql<number>`(select coalesce(sum(r.end_u - r.start_u + 1), 0)::int from rack_reservations r where r.rack_id = ${rackIdCol} and (r.expires_at is null or r.expires_at > now()))`;
 
 @Injectable()
@@ -43,9 +43,9 @@ export class RacksService {
         datacenterCode: datacenters.code,
         rowName: rackRows.name,
         customerName: customers.name,
-        usedU: usedUnitsSql(racks.id),
-        reservedU: reservedUnitsSql(racks.id),
-        deviceCount: sql<number>`(select count(*)::int from devices d where d.rack_id = ${racks.id})`,
+        usedU: usedUnitsSql(sql.raw('"racks"."id"')),
+        reservedU: reservedUnitsSql(sql.raw('"racks"."id"')),
+        deviceCount: sql<number>`(select count(*)::int from devices d where d.rack_id = "racks"."id")`,
       })
       .from(racks)
       .innerJoin(rooms, eq(rooms.id, racks.roomId))

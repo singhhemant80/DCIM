@@ -18,16 +18,18 @@ export interface NavSection {
   status: SectionStatus;
   /** Roadmap phase that delivers this section. */
   phase: number;
+  /** Hidden from customer-portal users even if their role holds the permission (physical layout, admin). */
+  staffOnly?: boolean;
   summary: string;
 }
 
 export const NAV_SECTIONS: readonly NavSection[] = [
-  { key: 'overview', label: 'Overview', path: '/', group: 'Overview', status: 'available', phase: 1, summary: 'Operational dashboard. Phase 1 shows platform status; infrastructure metrics arrive with Phases 2–5.' },
-  { key: 'datacenters', label: 'Datacenters', path: '/datacenters', group: 'Physical', permission: 'dcim.read', status: 'planned', phase: 2, summary: 'Datacenter sites and their hierarchy.' },
-  { key: 'rooms', label: 'Buildings & Rooms', path: '/rooms', group: 'Physical', permission: 'dcim.read', status: 'planned', phase: 2, summary: 'Buildings, rooms and rows inside each datacenter.' },
-  { key: 'floor-plans', label: 'Floor Plans', path: '/floor-plans', group: 'Physical', permission: 'dcim.read', status: 'planned', phase: 2, summary: 'Room layouts with rack positions.' },
-  { key: 'racks', label: 'Racks & Elevation', path: '/racks', group: 'Physical', permission: 'dcim.read', status: 'planned', phase: 2, summary: 'Rack elevations with validated equipment placement.' },
-  { key: 'hardware', label: 'Servers & Hardware', path: '/hardware', group: 'Physical', permission: 'dcim.read', status: 'planned', phase: 2, summary: 'Asset inventory, lifecycle and spare parts.' },
+  { key: 'overview', label: 'Overview', path: '/', group: 'Overview', status: 'available', phase: 1, summary: 'Operational dashboard: physical capacity now; network and power metrics arrive with Phases 4–5.' },
+  { key: 'datacenters', label: 'Datacenters', path: '/datacenters', group: 'Physical', permission: 'dcim.read', status: 'available', phase: 2, staffOnly: true, summary: 'Datacenter sites and their hierarchy.' },
+  { key: 'rooms', label: 'Buildings & Rooms', path: '/rooms', group: 'Physical', permission: 'dcim.read', status: 'available', phase: 2, staffOnly: true, summary: 'Buildings, rooms and rows inside each datacenter.' },
+  { key: 'floor-plans', label: 'Floor Plans', path: '/floor-plans', group: 'Physical', permission: 'dcim.read', status: 'available', phase: 2, staffOnly: true, summary: 'Room layouts with rack positions.' },
+  { key: 'racks', label: 'Racks & Elevation', path: '/racks', group: 'Physical', permission: 'dcim.read', status: 'available', phase: 2, staffOnly: true, summary: 'Rack elevations with validated equipment placement.' },
+  { key: 'hardware', label: 'Servers & Hardware', path: '/hardware', group: 'Physical', permission: 'dcim.read', status: 'available', phase: 2, summary: 'Asset inventory, lifecycle and spare parts.' },
   { key: 'network', label: 'Network Infrastructure', path: '/network', group: 'Network', permission: 'network.read', status: 'planned', phase: 3, summary: 'Routers, switches, firewalls, VLANs, circuits and topology.' },
   { key: 'network-monitoring', label: 'Network Monitoring', path: '/network-monitoring', group: 'Network', permission: 'monitoring.read', status: 'planned', phase: 4, summary: 'Real-time per-port RX/TX bandwidth and utilization.' },
   { key: 'ipam', label: 'IP Address Management', path: '/ipam', group: 'Network', permission: 'ipam.read', status: 'planned', phase: 3, summary: 'IPv4/IPv6 prefixes, pools and allocations.' },
