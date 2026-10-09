@@ -1,0 +1,164 @@
+@import '@fontsource-variable/public-sans';
+@import '@fontsource/jetbrains-mono/400.css';
+@import 'tailwindcss';
+
+/*
+ * Crapplet DCIM tokens.
+ * Status colours carry meaning only: ok / warn / crit for health, and
+ * "est" (violet) for estimated or stale data so it is never mistaken for a
+ * live measurement.
+ */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@theme {
+  --font-sans: 'Public Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --color-paper: var(--paper);
+  --color-panel: var(--panel);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-crit: var(--crit);
+  --color-crit-soft: var(--crit-soft);
+  --color-est: var(--est);
+  --color-est-soft: var(--est-soft);
+  --color-rack: var(--rack);
+  --color-rack-ink: var(--rack-ink);
+  --color-led-off: var(--led-off);
+}
+
+:root {
+  --paper: #f3f5f7;
+  --panel: #ffffff;
+  --sunken: #e9edf1;
+  --ink: #16202b;
+  --ink-2: #4a5867;
+  --ink-3: #74828f;
+  --rule: #d6dce2;
+  --rule-strong: #b5bfc9;
+  --accent: #2f4bc4;
+  --accent-ink: #ffffff;
+  --accent-soft: #e4e9fb;
+  --ok: #1e8a5a;
+  --ok-soft: #dcf1e6;
+  --warn: #9a6512;
+  --warn-soft: #f8ecd4;
+  --crit: #c0392b;
+  --crit-soft: #f9e0dc;
+  --est: #6a5ca8;
+  --est-soft: #ebe7f7;
+  /* The sidebar is the rack: a darker steel band in both themes. */
+  --rack: #1d2834;
+  --rack-ink: #c9d3dd;
+  --led-off: #3a4757;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --paper: #131a22;
+    --panel: #19222c;
+    --sunken: #10161d;
+    --ink: #e3e9ef;
+    --ink-2: #a8b4c0;
+    --ink-3: #7d8a97;
+    --rule: #2a3542;
+    --rule-strong: #3c4a5a;
+    --accent: #7d93f0;
+    --accent-ink: #0d1530;
+    --accent-soft: #232e55;
+    --ok: #4cc58c;
+    --ok-soft: #173326;
+    --warn: #e0a84a;
+    --warn-soft: #382a12;
+    --crit: #f07766;
+    --crit-soft: #3d1c18;
+    --est: #ab9ef0;
+    --est-soft: #2a2546;
+    --rack: #0e141a;
+    --rack-ink: #b6c1cc;
+    --led-off: #2b3644;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --paper: #131a22;
+  --panel: #19222c;
+  --sunken: #10161d;
+  --ink: #e3e9ef;
+  --ink-2: #a8b4c0;
+  --ink-3: #7d8a97;
+  --rule: #2a3542;
+  --rule-strong: #3c4a5a;
+  --accent: #7d93f0;
+  --accent-ink: #0d1530;
+  --accent-soft: #232e55;
+  --ok: #4cc58c;
+  --ok-soft: #173326;
+  --warn: #e0a84a;
+  --warn-soft: #382a12;
+  --crit: #f07766;
+  --crit-soft: #3d1c18;
+  --est: #ab9ef0;
+  --est-soft: #2a2546;
+  --rack: #0e141a;
+  --rack-ink: #b6c1cc;
+  --led-off: #2b3644;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  font-feature-settings: 'tnum' 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* LED used by the rack-style navigation and status chips. */
+.led {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  flex: none;
+  background: var(--led-off);
+}
+.led-on {
+  background: #4fdc96;
+  box-shadow: 0 0 0 2px rgb(79 220 150 / 0.18), 0 0 6px rgb(79 220 150 / 0.55);
+}

@@ -34,7 +34,7 @@ export class CustomersService {
     const where = and(...conds);
     const [rows, [{ total } = { total: 0 }]] = await Promise.all([
       this.db
-        .select({ c: customers, userCount: sql<number>`(select count(*)::int from ${users} where ${users.customerId} = ${customers.id})` })
+        .select({ c: customers, userCount: sql<number>`(select count(*)::int from users u where u.customer_id = "customers"."id")` })
         .from(customers)
         .where(where)
         .orderBy(asc(customers.name))

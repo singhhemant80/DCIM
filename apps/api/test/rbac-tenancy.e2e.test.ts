@@ -189,6 +189,13 @@ describe('input validation', () => {
     expect(res.body.items).toHaveLength(0);
   });
 
+  it('counts portal users per customer and members per role', async () => {
+    const res = await admin.get('/api/v1/customers?q=ACME');
+    expect(res.body.items.find((c: { code: string }) => c.code === 'ACME').userCount).toBe(1);
+    const roles = (await admin.get('/api/v1/roles')).body as { systemKey: string; members: number }[];
+    expect(roles.find((r) => r.systemKey === 'noc_engineer')!.members).toBe(1);
+  });
+
   it('paginates', async () => {
     const res = await admin.get('/api/v1/customers?page=1&pageSize=1');
     expect(res.body.items).toHaveLength(1);

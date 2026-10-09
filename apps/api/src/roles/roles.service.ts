@@ -19,7 +19,7 @@ export class RolesService {
 
   async list(p: Principal) {
     const rows = await this.db
-      .select({ role: roles, members: sql<number>`(select count(*)::int from ${userRoles} where ${userRoles.roleId} = ${roles.id})` })
+      .select({ role: roles, members: sql<number>`(select count(*)::int from user_roles ur where ur.role_id = "roles"."id")` })
       .from(roles)
       .where(eq(roles.orgId, p.orgId))
       .orderBy(asc(roles.scope), asc(roles.name));

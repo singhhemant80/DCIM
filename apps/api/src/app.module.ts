@@ -21,6 +21,7 @@ import { SessionService } from './auth/session.service';
 import { CustomersController } from './customers/customers.controller';
 import { CustomersService } from './customers/customers.service';
 import { HealthController } from './health/health.controller';
+import { OverviewController } from './overview/overview.controller';
 import { RolesController } from './roles/roles.controller';
 import { RolesService } from './roles/roles.service';
 import { SettingsController } from './settings/settings.controller';
@@ -56,6 +57,7 @@ export class AppModule {
         SettingsController,
         AuditController,
         HealthController,
+        OverviewController,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },

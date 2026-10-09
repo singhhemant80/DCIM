@@ -48,7 +48,7 @@ describe('audit log', () => {
   it('detects tampering even by someone who bypasses the trigger', async () => {
     // Simulates a DB owner disabling the trigger and editing a row.
     await ctx.db.execute(sql`alter table audit_events disable trigger audit_events_no_update_delete`);
-    const [{ id }] = (await ctx.db.execute(sql`select min(id)::int as id from audit_events where action = 'customer.create'`)).rows as { id: number }[];
+    const id = ((await ctx.db.execute(sql`select min(id)::int as id from audit_events where action = 'customer.create'`)).rows as { id: number }[])[0]!.id;
     await ctx.db.execute(sql`update audit_events set actor_label = 'someone-else' where id = ${id}`);
     await ctx.db.execute(sql`alter table audit_events enable trigger audit_events_no_update_delete`);
     const res = await admin.get('/api/v1/audit/verify');
@@ -100,5 +100,23 @@ describe('platform', () => {
     const res = await admin.get('/api/v1/does-not-exist');
     expect(res.status).toBe(404);
     expect(res.body.requestId).toBeTruthy();
+  });
+});
+
+describe('overview', () => {
+  it('returns real counts scoped to the caller’s permissions', async () => {
+    const res = await admin.get('/api/v1/overview');
+    expect(res.status).toBe(200);
+    expect(res.body.customers.total).toBeGreaterThanOrEqual(2);
+    expect(res.body.users.staff).toBeGreaterThanOrEqual(3);
+    expect(res.body.audit.events24h).toBeGreaterThan(0);
+
+    const noc = await Client.login(ctx.server, ctx.emails.noc);
+    const limited = await noc.get('/api/v1/overview');
+    expect(limited.body.users).toBeNull();
+    expect(limited.body.customers).not.toBeNull();
+
+    const acme = await Client.login(ctx.server, ctx.emails.acmeAdmin);
+    expect((await acme.get('/api/v1/overview')).status).toBe(403);
   });
 });
