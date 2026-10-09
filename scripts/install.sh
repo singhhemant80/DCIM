@@ -125,7 +125,7 @@ if [ -n "$SOURCE_DIR" ]; then
   rsync -a --delete --exclude node_modules --exclude 'dist' --exclude '.env' "$SOURCE_DIR"/ "$APP_DIR"/
   ok "Copied from $SOURCE_DIR"
 elif [ -d "$APP_DIR/.git" ]; then
-  git_auth -C "$APP_DIR" remote set-url origin "$REPO"
+  git_auth -C "$APP_DIR" remote set-url origin "$REPO" 2>/dev/null || git_auth -C "$APP_DIR" remote add origin "$REPO"
   git_auth -C "$APP_DIR" fetch --quiet origin "$BRANCH" || die "Could not fetch from $REPO (private repository? set CDCIM_GITHUB_TOKEN)"
   git_auth -C "$APP_DIR" checkout --quiet -B "$BRANCH" "origin/$BRANCH"
   git_auth -C "$APP_DIR" reset --quiet --hard "origin/$BRANCH"
