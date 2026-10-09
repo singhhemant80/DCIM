@@ -9,14 +9,16 @@ Datacenter infrastructure management for Crapplet Infotech Private Limited: phys
 **Ubuntu 22.04/24.04 or Debian 12 server** (one command, run again to upgrade):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.sh | sudo CDCIM_REPO=https://github.com/<owner>/<repo>.git bash
+curl -fsSL https://raw.githubusercontent.com/singhhemant80/DCIM/main/scripts/install.sh | sudo bash
 ```
 
 **Windows 10/11** (Administrator PowerShell, uses WSL2 Ubuntu):
 
 ```powershell
-$env:CDCIM_REPO='https://github.com/<owner>/<repo>.git'; irm https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install-windows.ps1 | iex
+irm https://raw.githubusercontent.com/singhhemant80/DCIM/main/scripts/install-windows.ps1 | iex
 ```
+
+While the repository is private, see [docs/development.md](docs/development.md#one-command-install-ubuntu-debian-wsl) for the token variant.
 
 Then open http://localhost:8080 and sign in with the administrator email and the password the installer prints. Options (port, LAN access, branch) are listed at the top of [`scripts/install.sh`](scripts/install.sh).
 

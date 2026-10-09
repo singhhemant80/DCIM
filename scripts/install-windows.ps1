@@ -1,20 +1,23 @@
 <#
   Crapplet DCIM installer for Windows 10/11 (runs inside WSL2 Ubuntu).
 
-  One-shot, from an Administrator PowerShell:
-    $env:CDCIM_REPO = 'https://github.com/<owner>/<repo>.git'
-    irm https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install-windows.ps1 | iex
+  One-shot, from an Administrator PowerShell (public repository):
+    irm https://raw.githubusercontent.com/singhhemant80/DCIM/main/scripts/install-windows.ps1 | iex
 
-  Optional: $env:CDCIM_ADMIN_EMAIL, $env:CDCIM_BRANCH (default main), $env:CDCIM_DISTRO (default Ubuntu-24.04).
+  Private repository: set a read-only token first:
+    $env:CDCIM_GITHUB_TOKEN = 'github_pat_xxx'
+    irm https://raw.githubusercontent.com/singhhemant80/DCIM/main/scripts/install-windows.ps1 -Headers @{Authorization="token $env:CDCIM_GITHUB_TOKEN"} | iex
+
+  Optional: $env:CDCIM_REPO, $env:CDCIM_ADMIN_EMAIL, $env:CDCIM_BRANCH (default main), $env:CDCIM_DISTRO (default Ubuntu-24.04).
   Re-running upgrades the installation in place.
 #>
 $ErrorActionPreference = 'Stop'
 
-$Repo   = $env:CDCIM_REPO
+$Repo   = if ($env:CDCIM_REPO) { $env:CDCIM_REPO } else { 'https://github.com/singhhemant80/DCIM.git' }
+$Token  = $env:CDCIM_GITHUB_TOKEN
 $Branch = if ($env:CDCIM_BRANCH) { $env:CDCIM_BRANCH } else { 'main' }
 $Distro = if ($env:CDCIM_DISTRO) { $env:CDCIM_DISTRO } else { 'Ubuntu-24.04' }
 
-if (-not $Repo) { $Repo = Read-Host 'GitHub repository URL (e.g. https://github.com/you/crapplet-dcim.git)' }
 if ($Repo -notmatch 'github\.com[/:]([^/]+)/([^/.]+)') { throw "Not a GitHub repository URL: $Repo" }
 $RawUrl = "https://raw.githubusercontent.com/$($Matches[1])/$($Matches[2])/$Branch/scripts/install.sh"
 
@@ -35,7 +38,8 @@ if (-not $installed) {
 
 # 2. Run the Linux installer as root inside WSL (no sudo password needed)
 $email = if ($env:CDCIM_ADMIN_EMAIL) { $env:CDCIM_ADMIN_EMAIL } else { Read-Host 'Administrator email (used only on first install; press Enter when upgrading)' }
-$cmd = "curl -fsSL '$RawUrl' | CDCIM_REPO='$Repo' CDCIM_BRANCH='$Branch' CDCIM_ADMIN_EMAIL='$email' bash"
+$auth = if ($Token) { "-H 'Authorization: token $Token'" } else { '' }
+$cmd = "curl -fsSL $auth '$RawUrl' | CDCIM_REPO='$Repo' CDCIM_BRANCH='$Branch' CDCIM_ADMIN_EMAIL='$email' CDCIM_GITHUB_TOKEN='$Token' bash"
 Write-Host "Installing Crapplet DCIM inside $Distro..." -ForegroundColor Cyan
 wsl.exe -d $Distro -u root -- bash -c $cmd
 if ($LASTEXITCODE -ne 0) { throw "Installation failed (exit $LASTEXITCODE). Fix the error above and run the same command again." }

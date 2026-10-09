@@ -2,15 +2,22 @@
 # Crapplet DCIM installer and upgrader for Ubuntu 22.04/24.04 and Debian 12
 # (including WSL2 on Windows).
 #
-# One-shot install from GitHub:
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.sh | sudo CDCIM_REPO=https://github.com/<owner>/<repo>.git bash
+# One-shot install from GitHub (public repository):
+#   curl -fsSL https://raw.githubusercontent.com/singhhemant80/DCIM/main/scripts/install.sh | sudo bash
+#
+# Private repository: create a read-only token (GitHub > Settings > Developer settings >
+# Fine-grained tokens, "Contents: Read-only" on this repo) and run:
+#   export GH_TOKEN=github_pat_xxx
+#   curl -fsSL -H "Authorization: token $GH_TOKEN" https://raw.githubusercontent.com/singhhemant80/DCIM/main/scripts/install.sh | sudo CDCIM_GITHUB_TOKEN=$GH_TOKEN bash
+# The token is used only for this run and is never written to disk.
 #
 # Re-running the same command upgrades in place: it pulls the latest code,
 # rebuilds, applies database migrations and restarts the service. Secrets,
 # the database and users are kept.
 #
 # Options (environment variables):
-#   CDCIM_REPO          Git URL to install from (required unless CDCIM_SOURCE_DIR is set)
+#   CDCIM_REPO          Git URL to install from (default: https://github.com/singhhemant80/DCIM.git)
+#   CDCIM_GITHUB_TOKEN  Read-only GitHub token, needed only for a private repository
 #   CDCIM_BRANCH        Branch or tag (default: main)
 #   CDCIM_SOURCE_DIR    Install from a local checkout instead of git (for testing)
 #   CDCIM_ADMIN_EMAIL   First administrator email (asked interactively if omitted)
@@ -26,7 +33,8 @@ set -Eeuo pipefail
 # the whole script before executing it (important for `curl … | bash`).
 main() {
 
-REPO="${CDCIM_REPO:-}"
+REPO="${CDCIM_REPO:-https://github.com/singhhemant80/DCIM.git}"
+GH_TOKEN_VALUE="${CDCIM_GITHUB_TOKEN:-}"
 BRANCH="${CDCIM_BRANCH:-main}"
 SOURCE_DIR="${CDCIM_SOURCE_DIR:-}"
 PREFIX="${CDCIM_PREFIX:-/opt/crapplet-dcim}"
@@ -50,6 +58,13 @@ warn() { printf '%s  !%s %s\n' "$c_yellow" "$c_off" "$*"; }
 die()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_off" >&2; exit 1; }
 trap 'die "Installation failed at line $LINENO. Fix the error above and run the same command again; it is safe to re-run."' ERR
 
+git_auth() { # git with an in-memory auth header when a token is given (never stored in .git/config)
+  if [ -n "$GH_TOKEN_VALUE" ]; then
+    git -c http.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN_VALUE" | base64 -w0)" "$@"
+  else
+    git "$@"
+  fi
+}
 as_app() { runuser -u "$RUN_USER" -- env HOME="$PREFIX" npm_config_update_notifier=false "$@"; }
 has_systemd() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
 svc() { # svc start|enable NAME
@@ -72,7 +87,6 @@ case "${ID:-}:${ID_LIKE:-}" in
   ubuntu:*|debian:*|*:*debian*) ok "$PRETTY_NAME" ;;
   *) die "Unsupported OS ($PRETTY_NAME). Use Ubuntu 22.04/24.04 or Debian 12." ;;
 esac
-[ -n "$REPO" ] || [ -n "$SOURCE_DIR" ] || die "Set CDCIM_REPO to your Git URL, e.g. CDCIM_REPO=https://github.com/you/crapplet-dcim.git"
 if grep -qi microsoft /proc/version 2>/dev/null; then ok "Running inside WSL"; fi
 has_systemd && ok "systemd available: will install a service" || warn "No systemd: will use the 'crapplet-dcim' start/stop command instead"
 UPGRADE=0; [ -f "$ENV_FILE" ] && UPGRADE=1 && ok "Existing installation found: upgrading"
@@ -110,13 +124,14 @@ if [ -n "$SOURCE_DIR" ]; then
   rsync -a --delete --exclude node_modules --exclude 'dist' --exclude '.env' "$SOURCE_DIR"/ "$APP_DIR"/
   ok "Copied from $SOURCE_DIR"
 elif [ -d "$APP_DIR/.git" ]; then
-  git -C "$APP_DIR" fetch --quiet origin "$BRANCH"
+  git -C "$APP_DIR" remote set-url origin "$REPO"
+  git_auth -C "$APP_DIR" fetch --quiet origin "$BRANCH" || die "Could not fetch from $REPO (private repository? set CDCIM_GITHUB_TOKEN)"
   git -C "$APP_DIR" checkout --quiet -B "$BRANCH" "origin/$BRANCH"
   git -C "$APP_DIR" reset --quiet --hard "origin/$BRANCH"
   ok "Updated to $(git -C "$APP_DIR" rev-parse --short HEAD)"
 else
   rm -rf "$APP_DIR"
-  git clone --quiet --branch "$BRANCH" --depth 1 "$REPO" "$APP_DIR" || die "Could not clone $REPO (for a private repository, use a deploy key or a token URL)"
+  git_auth clone --quiet --branch "$BRANCH" --depth 1 "$REPO" "$APP_DIR" || die "Could not clone $REPO (private repository? set CDCIM_GITHUB_TOKEN to a read-only token)"
   ok "Cloned $(git -C "$APP_DIR" rev-parse --short HEAD)"
 fi
 chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"

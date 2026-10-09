@@ -52,12 +52,13 @@ npm test
 `scripts/install.sh` installs Node.js 22, PostgreSQL and Redis, creates a `cdcim` system user and database with random secrets (`/etc/crapplet-dcim/api.env`), builds the app, applies migrations, creates the first administrator (password printed once) and starts the service on port 8080, where one process serves both the UI and the API. Re-running it upgrades in place.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.sh | sudo CDCIM_REPO=https://github.com/<owner>/<repo>.git bash
+curl -fsSL https://raw.githubusercontent.com/singhhemant80/DCIM/main/scripts/install.sh | sudo bash
 ```
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CDCIM_REPO` | (required) | Git URL to install from |
+| `CDCIM_REPO` | `https://github.com/singhhemant80/DCIM.git` | Git URL to install from |
+| `CDCIM_GITHUB_TOKEN` | none | Read-only token, needed only while the repository is private |
 | `CDCIM_BRANCH` | `main` | Branch or tag |
 | `CDCIM_ADMIN_EMAIL`, `CDCIM_ADMIN_NAME` | prompted | First administrator |
 | `CDCIM_PORT` | `8080` | Port for UI and API |
@@ -68,7 +69,14 @@ Service control: `sudo crapplet-dcim {start|stop|restart|status|logs}` (uses sys
 
 Verified so far: fresh install, re-run upgrade (data, secrets and admin kept), and the `curl | bash` form, on Ubuntu 24.04 without systemd. Sign-in on the installed instance was tested in a real browser. The systemd branch and `scripts/install-windows.ps1` have been reviewed but not yet run on a systemd host or on Windows.
 
-For a private repository, either make the installer reachable (for example from a release asset) or set `CDCIM_REPO` to a URL with a read-only token or deploy key.
+**Private repository:** create a fine-grained token with *Contents: Read-only* on this repository, then:
+
+```bash
+export GH_TOKEN=github_pat_xxx
+curl -fsSL -H "Authorization: token $GH_TOKEN" https://raw.githubusercontent.com/singhhemant80/DCIM/main/scripts/install.sh | sudo CDCIM_GITHUB_TOKEN=$GH_TOKEN bash
+```
+
+The token is used in memory for that run only and is not written to the server.
 
 ## Production install on Ubuntu Server LTS (manual outline)
 
