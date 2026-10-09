@@ -59,10 +59,11 @@ die()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_off" >&2; exit 1; }
 trap 'die "Installation failed at line $LINENO. Fix the error above and run the same command again; it is safe to re-run."' ERR
 
 git_auth() { # git with an in-memory auth header when a token is given (never stored in .git/config)
+  # safe.directory: the checkout belongs to the service user while this script runs as root.
   if [ -n "$GH_TOKEN_VALUE" ]; then
-    git -c http.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN_VALUE" | base64 -w0)" "$@"
+    git -c safe.directory="$APP_DIR" -c http.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN_VALUE" | base64 -w0)" "$@"
   else
-    git "$@"
+    git -c safe.directory="$APP_DIR" "$@"
   fi
 }
 as_app() { runuser -u "$RUN_USER" -- env HOME="$PREFIX" npm_config_update_notifier=false "$@"; }
@@ -124,15 +125,15 @@ if [ -n "$SOURCE_DIR" ]; then
   rsync -a --delete --exclude node_modules --exclude 'dist' --exclude '.env' "$SOURCE_DIR"/ "$APP_DIR"/
   ok "Copied from $SOURCE_DIR"
 elif [ -d "$APP_DIR/.git" ]; then
-  git -C "$APP_DIR" remote set-url origin "$REPO"
+  git_auth -C "$APP_DIR" remote set-url origin "$REPO"
   git_auth -C "$APP_DIR" fetch --quiet origin "$BRANCH" || die "Could not fetch from $REPO (private repository? set CDCIM_GITHUB_TOKEN)"
-  git -C "$APP_DIR" checkout --quiet -B "$BRANCH" "origin/$BRANCH"
-  git -C "$APP_DIR" reset --quiet --hard "origin/$BRANCH"
-  ok "Updated to $(git -C "$APP_DIR" rev-parse --short HEAD)"
+  git_auth -C "$APP_DIR" checkout --quiet -B "$BRANCH" "origin/$BRANCH"
+  git_auth -C "$APP_DIR" reset --quiet --hard "origin/$BRANCH"
+  ok "Updated to $(git_auth -C "$APP_DIR" rev-parse --short HEAD)"
 else
   rm -rf "$APP_DIR"
   git_auth clone --quiet --branch "$BRANCH" --depth 1 "$REPO" "$APP_DIR" || die "Could not clone $REPO (private repository? set CDCIM_GITHUB_TOKEN to a read-only token)"
-  ok "Cloned $(git -C "$APP_DIR" rev-parse --short HEAD)"
+  ok "Cloned $(git_auth -C "$APP_DIR" rev-parse --short HEAD)"
 fi
 chown -R "$RUN_USER:$RUN_USER" "$APP_DIR"
 
