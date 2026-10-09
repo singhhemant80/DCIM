@@ -24,7 +24,7 @@ export function MfaSetup({ onDone }: { onDone?: () => void }) {
       <div>
         <p className="font-medium text-ok">Two-step sign-in is on.</p>
         <p className="mt-1 text-ink-2">Save these recovery codes somewhere safe. Each one signs you in once if you lose your phone. They won’t be shown again.</p>
-        <ol className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 rounded-md border border-rule bg-sunken p-3 font-mono text-[13px] sm:grid-cols-5">
+        <ol className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 rounded-xl border border-rule bg-sunken p-3 font-mono text-[13px] sm:grid-cols-5">
           {codes.map((c) => (
             <li key={c}>{c}</li>
           ))}

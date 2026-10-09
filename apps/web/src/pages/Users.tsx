@@ -24,7 +24,7 @@ function RolePicker({ scope, value, onChange }: { scope: 'staff' | 'customer'; v
     <fieldset>
       <legend className="mb-1 text-[13px] font-medium text-ink-2">Roles</legend>
       <ErrorNote error={roles.error} />
-      <div className="flex flex-col divide-y divide-rule rounded-md border border-rule">
+      <div className="flex flex-col divide-y divide-rule rounded-lg border border-rule bg-sunken">
         {options.map((r) => {
           const grantable = r.permissions.every((p) => mine.has(p as never));
           return (
@@ -249,7 +249,7 @@ export function UsersPage() {
         actions={
           <>
             {can('roles.read') && (
-              <Link to="/roles" className="inline-flex h-9 items-center rounded-md border border-rule-strong bg-panel px-3.5 font-medium hover:bg-sunken">
+              <Link to="/roles" className="inline-flex h-9 items-center rounded-lg border border-rule-strong bg-field px-3.5 font-medium hover:bg-panel">
                 Manage roles
               </Link>
             )}
@@ -269,7 +269,7 @@ export function UsersPage() {
           <label className="sr-only" htmlFor="user-search">Search users</label>
           <Input id="user-search" placeholder="Search name or email" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-xs" />
           <label className="sr-only" htmlFor="user-type">Account type</label>
-          <Select id="user-type" className="w-44" value={userType} onChange={(e) => update({ userType: e.target.value, page: '' })}>
+          <Select id="user-type" className="w-56" value={userType} onChange={(e) => update({ userType: e.target.value, page: '' })}>
             <option value="">Staff and customers</option>
             <option value="staff">Staff only</option>
             <option value="customer">Customer portal only</option>

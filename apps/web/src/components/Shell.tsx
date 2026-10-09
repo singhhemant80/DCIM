@@ -47,8 +47,8 @@ function RackNav({ onNavigate }: { onNavigate?: () => void }) {
                     onClick={onNavigate}
                     className={({ isActive }) =>
                       cx(
-                        'group mx-2 ml-4 flex h-8 items-center gap-2.5 rounded-[5px] border-t border-white/[0.04] px-2.5 text-[13.5px]',
-                        isActive ? 'bg-white/[0.09] text-white' : live ? 'text-rack-ink hover:bg-white/[0.05] hover:text-white' : 'text-rack-ink/55 hover:bg-white/[0.04] hover:text-rack-ink',
+                        'group mx-2 ml-4 flex h-8 items-center gap-2.5 rounded-lg border-t border-white/[0.04] px-2.5 text-[13.5px]',
+                        isActive ? 'bg-white/[0.12] text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.12)]' : live ? 'text-rack-ink hover:bg-white/[0.05] hover:text-white' : 'text-rack-ink/55 hover:bg-white/[0.04] hover:text-rack-ink',
                       )
                     }
                   >
@@ -96,7 +96,7 @@ function ThemeSwitch() {
     { v: 'system', label: 'Auto' },
   ];
   return (
-    <div role="radiogroup" aria-label="Colour theme" className="flex rounded-md border border-rule p-0.5">
+    <div role="radiogroup" aria-label="Colour theme" className="flex rounded-lg border border-rule bg-sunken p-0.5">
       {options.map((o) => (
         <button
           key={o.v}
@@ -106,7 +106,7 @@ function ThemeSwitch() {
             setTheme(o.v);
             set(o.v);
           }}
-          className={cx('h-6 rounded px-2 text-[12px]', theme === o.v ? 'bg-sunken font-medium text-ink' : 'text-ink-3 hover:text-ink')}
+          className={cx('h-6 rounded px-2 text-[12px]', theme === o.v ? 'bg-panel font-medium text-ink shadow-sm' : 'text-ink-3 hover:text-ink')}
         >
           {o.label}
         </button>
@@ -142,7 +142,7 @@ function UserMenu() {
       {open && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} aria-hidden />
-          <div role="menu" className="absolute right-0 z-40 mt-1 w-56 rounded-lg border border-rule bg-panel p-1 shadow-[0_12px_32px_-12px_rgb(10_16_24/0.35)]">
+          <div role="menu" className="glass-strong absolute right-0 z-40 mt-1 w-56 rounded-xl p-1">
             <p className="truncate px-2.5 py-1.5 text-[12.5px] text-ink-3">{me.user.email}</p>
             <NavLink role="menuitem" to="/account" onClick={() => setOpen(false)} className="block rounded-md px-2.5 py-1.5 hover:bg-sunken">
               Account and security
@@ -167,21 +167,21 @@ export function Shell({ children }: { children: ReactNode }) {
       <a href="#main" className="sr-only z-50 rounded bg-panel px-3 py-2 focus:not-sr-only focus:fixed focus:top-2 focus:left-2">
         Skip to content
       </a>
-      <aside className="hidden w-[248px] flex-none flex-col bg-rack lg:flex">
+      <aside className="glass-rack hidden w-[248px] flex-none flex-col lg:flex">
         <Brand />
         <RackNav />
       </aside>
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
-          <div className="absolute inset-0 bg-[#0a1018]/50" onClick={() => setMobileOpen(false)} aria-hidden />
-          <aside className="relative flex h-full w-[264px] flex-col bg-rack">
+          <div className="scrim absolute inset-0" onClick={() => setMobileOpen(false)} aria-hidden />
+          <aside className="glass-rack relative flex h-full w-[264px] flex-col">
             <Brand />
             <RackNav onNavigate={() => setMobileOpen(false)} />
           </aside>
         </div>
       )}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 flex-none items-center justify-between gap-3 border-b border-rule bg-panel px-4 lg:px-6">
+        <header className="glass-bar relative z-20 flex h-14 flex-none items-center justify-between gap-3 px-4 lg:px-6">
           <button className="rounded-md p-1.5 hover:bg-sunken lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open navigation">
             <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden>
               <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />

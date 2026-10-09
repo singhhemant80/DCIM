@@ -55,7 +55,7 @@ export function LoginPage() {
 
   return (
     <div className="grid min-h-full lg:grid-cols-[minmax(320px,0.9fr)_1.1fr]">
-      <aside className="relative hidden flex-col justify-between overflow-hidden bg-rack p-10 text-rack-ink lg:flex">
+      <aside className="glass-rack relative hidden flex-col justify-between overflow-hidden p-10 text-rack-ink lg:flex">
         <div aria-hidden className="pointer-events-none absolute inset-y-0 left-0 w-[14px] bg-[radial-gradient(circle_at_7px_11px,rgb(0_0_0/0.5)_2px,transparent_2.5px)] bg-[length:14px_22px]" />
         <div className="flex items-center gap-2.5 pl-4">
           <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden>
@@ -77,7 +77,7 @@ export function LoginPage() {
       </aside>
 
       <main className="flex items-center justify-center px-4 py-12">
-        <div className="w-full max-w-[360px]">
+        <div className="glass w-full max-w-[400px] rounded-2xl p-7 sm:p-8">
           <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{step.kind === 'password' ? 'Sign in' : 'Verify it’s you'}</h1>
           {step.kind === 'password' ? (
             <form className="mt-6 flex flex-col gap-4" onSubmit={submitPassword} noValidate>

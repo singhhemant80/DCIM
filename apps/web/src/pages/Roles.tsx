@@ -69,7 +69,7 @@ function RoleEditor({ role, onClose }: { role?: RoleRow; onClose: () => void }) 
       <ErrorNote error={catalog.error} />
       <div className="flex flex-col gap-3">
         {groups.map(([group, list]) => (
-          <fieldset key={group} className="rounded-md border border-rule">
+          <fieldset key={group} className="rounded-xl border border-rule bg-sunken">
             <legend className="ml-2 px-1 text-[13px] font-semibold">{group}</legend>
             <div className="grid gap-x-4 px-3 pt-1 pb-2 sm:grid-cols-2">
               {list.map((p) => {

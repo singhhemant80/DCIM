@@ -17,6 +17,7 @@
   --color-paper: var(--paper);
   --color-panel: var(--panel);
   --color-sunken: var(--sunken);
+  --color-field: var(--field);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
   --color-ink-3: var(--ink-3);
@@ -39,83 +40,125 @@
 }
 
 :root {
-  --paper: #f3f5f7;
-  --panel: #ffffff;
-  --sunken: #e9edf1;
-  --ink: #16202b;
-  --ink-2: #4a5867;
-  --ink-3: #74828f;
-  --rule: #d6dce2;
-  --rule-strong: #b5bfc9;
+  --paper: #dfe6f3;
+  /* Translucent surfaces: the backdrop glows through them. */
+  --panel: rgb(255 255 255 / 0.58);
+  --sunken: rgb(255 255 255 / 0.42);
+  --field: rgb(255 255 255 / 0.66);
+  --ink: #121a2b;
+  --ink-2: #3f4b60;
+  --ink-3: #66728a;
+  --rule: rgb(120 135 170 / 0.24);
+  --rule-strong: rgb(110 125 160 / 0.38);
   --accent: #2f4bc4;
   --accent-ink: #ffffff;
-  --accent-soft: #e4e9fb;
-  --ok: #1e8a5a;
-  --ok-soft: #dcf1e6;
-  --warn: #9a6512;
-  --warn-soft: #f8ecd4;
-  --crit: #c0392b;
-  --crit-soft: #f9e0dc;
-  --est: #6a5ca8;
-  --est-soft: #ebe7f7;
-  /* The sidebar is the rack: a darker steel band in both themes. */
-  --rack: #1d2834;
-  --rack-ink: #c9d3dd;
-  --led-off: #3a4757;
+  --accent-soft: rgb(47 75 196 / 0.12);
+  --ok: #17784d;
+  --ok-soft: rgb(30 138 90 / 0.14);
+  --warn: #8a5a0e;
+  --warn-soft: rgb(196 140 30 / 0.17);
+  --crit: #b3301f;
+  --crit-soft: rgb(192 57 43 / 0.13);
+  --est: #5d4fa0;
+  --est-soft: rgb(106 92 168 / 0.14);
+  --rack: rgb(22 32 72 / 0.8);
+  --rack-ink: #d3dbe6;
+  --led-off: rgb(255 255 255 / 0.18);
+
+  --glass-bg: rgb(255 255 255 / 0.55);
+  --glass-strong: rgb(255 255 255 / 0.8);
+  --glass-edge: rgb(255 255 255 / 0.72);
+  --glass-highlight: rgb(255 255 255 / 0.85);
+  --glass-shadow: 0 10px 34px -12px rgb(28 40 84 / 0.22), 0 2px 6px -2px rgb(28 40 84 / 0.08);
+  --scrim: rgb(20 28 48 / 0.28);
+
+  --glow-1: #6c86ff;
+  --glow-2: #42d0c6;
+  --glow-3: #a98af5;
+  --glow-alpha: 0.55;
+  --tile: rgb(60 80 130 / 0.07);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --paper: #131a22;
-    --panel: #19222c;
-    --sunken: #10161d;
-    --ink: #e3e9ef;
-    --ink-2: #a8b4c0;
-    --ink-3: #7d8a97;
-    --rule: #2a3542;
-    --rule-strong: #3c4a5a;
-    --accent: #7d93f0;
-    --accent-ink: #0d1530;
-    --accent-soft: #232e55;
-    --ok: #4cc58c;
-    --ok-soft: #173326;
-    --warn: #e0a84a;
-    --warn-soft: #382a12;
-    --crit: #f07766;
-    --crit-soft: #3d1c18;
-    --est: #ab9ef0;
-    --est-soft: #2a2546;
-    --rack: #0e141a;
-    --rack-ink: #b6c1cc;
-    --led-off: #2b3644;
+    --paper: #0a1020;
+    --panel: rgb(24 33 52 / 0.52);
+    --sunken: rgb(10 16 30 / 0.38);
+    --field: rgb(8 13 26 / 0.5);
+    --ink: #e6ecf5;
+    --ink-2: #aab6c8;
+    --ink-3: #7f8ca2;
+    --rule: rgb(255 255 255 / 0.08);
+    --rule-strong: rgb(255 255 255 / 0.15);
+    --accent: #8ea2ff;
+    --accent-ink: #0b1230;
+    --accent-soft: rgb(142 162 255 / 0.16);
+    --ok: #5fd39b;
+    --ok-soft: rgb(76 197 140 / 0.16);
+    --warn: #ebb35a;
+    --warn-soft: rgb(224 168 74 / 0.16);
+    --crit: #ff8a78;
+    --crit-soft: rgb(240 119 102 / 0.16);
+    --est: #b9adf5;
+    --est-soft: rgb(171 158 240 / 0.16);
+    --rack: rgb(6 10 20 / 0.55);
+    --rack-ink: #c3cedb;
+    --led-off: rgb(255 255 255 / 0.14);
+
+    --glass-bg: rgb(22 31 50 / 0.5);
+    --glass-strong: rgb(18 26 44 / 0.86);
+    --glass-edge: rgb(255 255 255 / 0.09);
+    --glass-highlight: rgb(255 255 255 / 0.12);
+    --glass-shadow: 0 14px 40px -14px rgb(0 0 0 / 0.6), 0 2px 8px -2px rgb(0 0 0 / 0.3);
+    --scrim: rgb(2 6 14 / 0.5);
+
+    --glow-1: #2f4bc4;
+    --glow-2: #0f8f8a;
+    --glow-3: #5b3fc0;
+    --glow-alpha: 0.62;
+    --tile: rgb(255 255 255 / 0.035);
     color-scheme: dark;
   }
 }
 
 :root[data-theme='dark'] {
-  --paper: #131a22;
-  --panel: #19222c;
-  --sunken: #10161d;
-  --ink: #e3e9ef;
-  --ink-2: #a8b4c0;
-  --ink-3: #7d8a97;
-  --rule: #2a3542;
-  --rule-strong: #3c4a5a;
-  --accent: #7d93f0;
-  --accent-ink: #0d1530;
-  --accent-soft: #232e55;
-  --ok: #4cc58c;
-  --ok-soft: #173326;
-  --warn: #e0a84a;
-  --warn-soft: #382a12;
-  --crit: #f07766;
-  --crit-soft: #3d1c18;
-  --est: #ab9ef0;
-  --est-soft: #2a2546;
-  --rack: #0e141a;
-  --rack-ink: #b6c1cc;
-  --led-off: #2b3644;
+  --paper: #0a1020;
+  --panel: rgb(24 33 52 / 0.52);
+  --sunken: rgb(10 16 30 / 0.38);
+  --field: rgb(8 13 26 / 0.5);
+  --ink: #e6ecf5;
+  --ink-2: #aab6c8;
+  --ink-3: #7f8ca2;
+  --rule: rgb(255 255 255 / 0.08);
+  --rule-strong: rgb(255 255 255 / 0.15);
+  --accent: #8ea2ff;
+  --accent-ink: #0b1230;
+  --accent-soft: rgb(142 162 255 / 0.16);
+  --ok: #5fd39b;
+  --ok-soft: rgb(76 197 140 / 0.16);
+  --warn: #ebb35a;
+  --warn-soft: rgb(224 168 74 / 0.16);
+  --crit: #ff8a78;
+  --crit-soft: rgb(240 119 102 / 0.16);
+  --est: #b9adf5;
+  --est-soft: rgb(171 158 240 / 0.16);
+  --rack: rgb(6 10 20 / 0.55);
+  --rack-ink: #c3cedb;
+  --led-off: rgb(255 255 255 / 0.14);
+
+  --glass-bg: rgb(22 31 50 / 0.5);
+  --glass-strong: rgb(18 26 44 / 0.86);
+  --glass-edge: rgb(255 255 255 / 0.09);
+  --glass-highlight: rgb(255 255 255 / 0.12);
+  --glass-shadow: 0 14px 40px -14px rgb(0 0 0 / 0.6), 0 2px 8px -2px rgb(0 0 0 / 0.3);
+  --scrim: rgb(2 6 14 / 0.5);
+
+  --glow-1: #2f4bc4;
+  --glow-2: #0f8f8a;
+  --glow-3: #5b3fc0;
+  --glow-alpha: 0.62;
+  --tile: rgb(255 255 255 / 0.035);
   color-scheme: dark;
 }
 
@@ -126,7 +169,7 @@ body,
 }
 
 body {
-  background: var(--paper);
+  background-color: var(--paper);
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -148,6 +191,108 @@ body {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/*
+ * Backdrop: soft cobalt, teal and violet light behind the glass, with a faint
+ * raised-floor tile grid. Fixed so it stays put while content scrolls.
+ */
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+body::before {
+  background:
+    radial-gradient(42vmax 42vmax at 8% 4%, color-mix(in srgb, var(--glow-1) calc(var(--glow-alpha) * 100%), transparent), transparent 70%),
+    radial-gradient(38vmax 38vmax at 96% 92%, color-mix(in srgb, var(--glow-2) calc(var(--glow-alpha) * 100%), transparent), transparent 70%),
+    radial-gradient(34vmax 30vmax at 78% 18%, color-mix(in srgb, var(--glow-3) calc(var(--glow-alpha) * 90%), transparent), transparent 70%),
+    radial-gradient(30vmax 30vmax at 30% 85%, color-mix(in srgb, var(--glow-1) calc(var(--glow-alpha) * 50%), transparent), transparent 70%),
+    var(--paper);
+}
+body::after {
+  background-image:
+    linear-gradient(var(--tile) 1px, transparent 1px),
+    linear-gradient(90deg, var(--tile) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at 50% 40%, #000 30%, transparent 85%);
+}
+
+/* Glass surfaces */
+.glass,
+.glass-strong,
+.glass-bar,
+.glass-rack {
+  -webkit-backdrop-filter: blur(var(--blur, 18px)) saturate(160%);
+  backdrop-filter: blur(var(--blur, 18px)) saturate(160%);
+}
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--glass-shadow);
+}
+.glass-strong {
+  --blur: 26px;
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 24px 60px -18px rgb(10 16 40 / 0.45);
+}
+.glass-bar {
+  --blur: 16px;
+  background: var(--glass-bg);
+  border-bottom: 1px solid var(--glass-edge);
+  box-shadow: inset 0 -1px 0 var(--rule);
+}
+.glass-rack {
+  --blur: 24px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.05), transparent 40%), var(--rack);
+  border-right: 1px solid rgb(255 255 255 / 0.1);
+  box-shadow: inset -1px 0 0 rgb(0 0 0 / 0.15);
+}
+.scrim {
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+/* People who ask for less transparency, and browsers without backdrop-filter, get solid surfaces. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-bg: #f6f8fc;
+    --glass-strong: #ffffff;
+    --panel: #ffffff;
+    --sunken: #edf1f7;
+    --field: #ffffff;
+    --rack: #18233a;
+  }
+  :root[data-theme='dark'] {
+    --glass-bg: #172033;
+    --glass-strong: #172033;
+    --panel: #172033;
+    --sunken: #0f1626;
+    --field: #0f1626;
+    --rack: #0b1120;
+  }
+  .glass, .glass-strong, .glass-bar, .glass-rack, .scrim {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --glass-bg: #172033;
+    --glass-strong: #172033;
+    --panel: #172033;
+    --sunken: #0f1626;
+    --field: #0f1626;
+    --rack: #0b1120;
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root { --glass-bg: rgb(250 251 254 / 0.96); --glass-strong: #fff; --rack: #18233a; }
 }
 
 /* LED used by the rack-style navigation and status chips. */

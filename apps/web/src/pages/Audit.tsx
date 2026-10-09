@@ -112,7 +112,7 @@ export function AuditPage() {
                             <dd className="break-all">{e.userAgent ?? '—'}</dd>
                             <dt className="text-ink-3">Details</dt>
                             <dd>
-                              <pre className="overflow-x-auto rounded border border-rule bg-panel p-2 font-mono text-[12px]">{JSON.stringify(e.metadata, null, 2)}</pre>
+                              <pre className="overflow-x-auto rounded-lg border border-rule bg-field p-2 font-mono text-[12px]">{JSON.stringify(e.metadata, null, 2)}</pre>
                             </dd>
                           </dl>
                         </td>

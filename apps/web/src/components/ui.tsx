@@ -8,8 +8,8 @@ export function cx(...c: (string | false | null | undefined)[]): string {
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-accent text-accent-ink hover:brightness-110 border border-transparent',
-  secondary: 'bg-panel text-ink border border-rule-strong hover:bg-sunken',
+  primary: 'bg-accent text-accent-ink hover:brightness-110 border border-transparent shadow-[0_6px_18px_-8px_var(--accent)]',
+  secondary: 'bg-field text-ink border border-rule-strong hover:bg-panel backdrop-blur-sm',
   ghost: 'text-ink-2 hover:text-ink hover:bg-sunken border border-transparent',
   danger: 'bg-crit text-white hover:brightness-110 border border-transparent',
 };
@@ -20,7 +20,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
       <button
         ref={ref}
         className={cx(
-          'inline-flex items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-55',
+          'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-55',
           size === 'sm' ? 'h-7 px-2.5 text-[13px]' : 'h-9 px-3.5',
           VARIANTS[variant],
           className,
@@ -37,7 +37,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLBut
 );
 
 const fieldBase =
-  'rounded-md border border-rule-strong bg-panel px-2.5 text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:bg-sunken disabled:text-ink-3';
+  'rounded-lg border border-rule-strong bg-field px-2.5 text-ink placeholder:text-ink-3 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:bg-sunken disabled:text-ink-3';
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input({ className, ...rest }, ref) {
   return <input ref={ref} className={cx(fieldBase, widthOf(className), 'h-9', className)} {...rest} />;
@@ -109,9 +109,9 @@ export function PageHeader({ title, description, actions }: { title: string; des
 
 export function Panel({ title, actions, children, className, flush }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; flush?: boolean }) {
   return (
-    <section className={cx('rounded-lg border border-rule bg-panel', className)}>
+    <section className={cx('glass rounded-2xl', className)}>
       {(title || actions) && (
-        <div className="flex items-center justify-between gap-3 border-b border-rule px-4 py-2.5">
+        <div className="flex items-center justify-between gap-3 border-b border-rule px-4 py-3">
           {title && <h2 className="text-[14px] font-semibold">{title}</h2>}
           {actions}
         </div>
@@ -167,7 +167,7 @@ export function Loading({ label = 'Loading' }: { label?: string }) {
 export function Table({ children, label }: { children: ReactNode; label: string }) {
   return (
     <div className="overflow-x-auto">
-      <table aria-label={label} className="w-full border-collapse text-left [&_td]:border-t [&_td]:border-rule [&_td]:px-4 [&_td]:py-2.5 [&_th]:bg-sunken/60 [&_th]:px-4 [&_th]:py-2 [&_th]:text-[12.5px] [&_th]:font-semibold [&_th]:text-ink-2 [&_th]:whitespace-nowrap">
+      <table aria-label={label} className="w-full border-collapse text-left [&_td]:border-t [&_td]:border-rule [&_td]:px-4 [&_td]:py-2.5 [&_th]:bg-sunken [&_th]:px-4 [&_th]:py-2 [&_th]:text-[12.5px] [&_th]:font-semibold [&_th]:text-ink-2 [&_th]:whitespace-nowrap">
         {children}
       </table>
     </div>
@@ -199,10 +199,10 @@ export function Modal({ open, onOpenChange, title, description, children, wide }
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-[#0a1018]/45" />
+        <Dialog.Overlay className="scrim fixed inset-0 z-40" />
         <Dialog.Content
           className={cx(
-            'fixed top-1/2 left-1/2 z-50 max-h-[calc(100dvh-32px)] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-rule bg-panel p-5 shadow-[0_18px_50px_-12px_rgb(10_16_24/0.45)] focus:outline-none',
+            'fixed top-1/2 left-1/2 z-50 max-h-[calc(100dvh-32px)] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto glass-strong rounded-2xl p-5 focus:outline-none',
             wide ? 'max-w-2xl' : 'max-w-md',
           )}
         >
