@@ -2,18 +2,18 @@
 
 Updated at the end of every phase. **Done** means it has frontend, backend logic, persistence, access control, error handling and automated tests. Anything less is listed as Partial or Not started, with the reason.
 
-Last updated: Phase 1, 9 October 2026.
+Last updated: Phase 2, 9 October 2026.
 
 ## Navigation sections
 
 | # | Section | Status | Phase | Notes |
 |---|---|---|---|---|
-| 1 | Overview Dashboard | **Partial** | 1 → 2–5 | Live counts for customers, users, sessions, security activity and audit integrity. Infrastructure metrics are added as their modules land. |
-| 2 | Datacenters | Not started | 2 | Page states "not built yet" |
-| 3 | Buildings and Rooms | Not started | 2 | |
-| 4 | Floor Plans | Not started | 2 | |
-| 5 | Racks and Rack Elevation | Not started | 2 | |
-| 6 | Servers and Hardware Inventory | Not started | 2 | |
+| 1 | Overview Dashboard | **Partial** | 1 → 4–5 | Live counts: physical capacity (racks, units used/free/reserved), devices by state and category, warranty expiry, low spare parts, customers, users, security activity, audit integrity. Bandwidth and power arrive with Phases 4–5. |
+| 2 | Datacenters | **Done** | 2 | Create, edit, delete (only when empty), counts per site |
+| 3 | Buildings and Rooms | **Done** | 2 | Buildings, rooms (floor size), rows; deletes refused while in use |
+| 4 | Floor Plans | **Done** | 2 | Tile grid per room; drag or click to position racks; fill colour by occupancy |
+| 5 | Racks and Rack Elevation | **Done** | 2 | Front/rear elevation, drag-and-drop placement, reservations, dedicated racks, rack relocation, history |
+| 6 | Servers and Hardware Inventory | **Done** | 2 | Devices with full spec, lifecycle with configurable rules, history, CSV import/export, bulk edit, QR labels, models, spare parts. Attachments (S3) pending, see below |
 | 7 | Network Infrastructure | Not started | 3 | |
 | 8 | Network Monitoring | Not started | 4 | |
 | 9 | IP Address Management | Not started | 3 | |
@@ -61,6 +61,31 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Production install script and systemd units | **Partial** | Units and nginx config written; full installer and tested procedure are Phase 9 |
 | API keys for machine clients | Not started | Phase 8 |
 | Distributed rate limiting (Redis store) | Not started | Phase 4 |
+
+## Phase 2 capabilities
+
+| Capability (brief §7–8) | Status | Tests |
+|---|---|---|
+| Organization → datacenter → building → room → row → rack → device hierarchy | Done | `dcim.e2e` |
+| Rack dimensions, U capacity, numbering direction, depth | Done | `dcim.e2e` |
+| Placement validated in the database: no overlap per face (GiST exclusion), height and depth fit (triggers, row-locked) | Done | `dcim.e2e`, `dcim-regressions.e2e` (incl. concurrent placement and shrink races) |
+| Full-depth vs half-depth mounting, multi-unit and 0U equipment | Done | `dcim.e2e`, `dcim-regressions.e2e` |
+| Front and rear elevation with drag-and-drop placement | Done | browser drag test during verification |
+| Rack reservations (customer or internal, expiry) and dedicated racks | Done | `dcim.e2e`, `dcim-regressions.e2e` |
+| Rack relocation, device movement history, rack history | Done | `dcim.e2e` |
+| Equipment ownership (company vs customer-owned) | Done | `dcim.e2e` |
+| Device record: identity, CPU, RAM/DIMMs, disks/RAID, NICs/MACs, management interface, BIOS/BMC firmware, OS, purchase, warranty, EOL, notes, custom fields | Done | `dcim.e2e` |
+| Lifecycle Planned → … → Retired with configurable transition rules and history | Done | `dcim.e2e` |
+| Spare-parts inventory with atomic stock movements | Done | `dcim.e2e` (concurrent withdrawals) |
+| CSV import (dry run against the DB) and export (formula-injection safe), bulk edit | Done | `dcim.e2e`, `dcim-regressions.e2e`, `csv.test` |
+| Warranty reminders | Partial | Shown on the overview and filterable; email notifications come with the notification module (Phase 4/8) |
+| QR codes and printable labels | Done | `dcim.e2e` |
+| Customer view of own equipment (no internal fields) | Done | `dcim.e2e` |
+| Power and network connection records | Not started | Network connections in Phase 3, power connections and readings in Phase 5 |
+| Environmental sensor associations | Not started | Needs the monitoring collectors (Phase 4) |
+| Attachments (S3-compatible storage) | Not started | Planned with the object-storage integration; no files are stored yet |
+| Inventory reconciliation against discovered hardware | Not started | Needs Redfish/SNMP discovery (Phases 3 and 6) |
+| Independent review of Phase 2 (9 defects) | Done | All fixed; `dcim-regressions.e2e` |
 
 ## Integration compatibility matrix
 

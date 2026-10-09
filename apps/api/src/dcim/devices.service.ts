@@ -10,6 +10,8 @@ import {
   type DeviceInput,
   type LifecycleState,
   type Paginated,
+  deviceCreateSchema,
+  placementSchema as placementSchemaValue,
   type bulkDeviceSchema,
   type deviceEventSchema,
   type deviceListQuerySchema,
@@ -100,7 +102,10 @@ export class DevicesService {
     const conds: SQL[] = [tenantFilter(p, scopeCols)];
     if (q.q) {
       const like = `%${q.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
-      conds.push(or(ilike(devices.assetTag, like), ilike(devices.hostname, like), ilike(devices.serial, like), ilike(deviceModels.name, like), ilike(devices.mgmtAddress, like))!);
+      // Management addresses are staff-only data, so customers can't search by them either.
+      const fields = [ilike(devices.assetTag, like), ilike(devices.hostname, like), ilike(devices.serial, like), ilike(deviceModels.name, like)];
+      if (p.userType === 'staff') fields.push(ilike(devices.mgmtAddress, like));
+      conds.push(or(...fields)!);
     }
     if (q.state) conds.push(eq(devices.lifecycleState, q.state));
     if (q.category) conds.push(eq(devices.category, q.category));
@@ -237,14 +242,14 @@ export class DevicesService {
         let modelCols = {};
         if (input.modelId !== before.modelId) {
           const model = await this.model(p, input.modelId, tx);
-          if (before.positionU !== null && (model.uHeight !== before.uHeight || model.fullDepth !== before.fullDepth)) {
+          if (before.rackId !== null && (model.uHeight !== before.uHeight || model.fullDepth !== before.fullDepth)) {
             throw new BadRequestException({ error: 'unrack_first', message: 'The new model has a different size; take the device out of the rack before changing its model' });
           }
           modelCols = { category: model.category, uHeight: model.uHeight, fullDepth: model.fullDepth };
         }
         if (input.customerId) await this.checkCustomer(p, input.customerId, tx);
-        if (input.customerId !== before.customerId && before.rackId) {
-          await this.assertRackAllows(tx, before.rackId, input.customerId ?? null, before.positionU, before.uHeight);
+        if ((input.customerId ?? null) !== before.customerId && before.rackId) {
+          await this.assertRackAccepts(tx, before.rackId, input.customerId ?? null, before.positionU, before.uHeight);
         }
         const [after] = await tx
           .update(devices)
@@ -285,7 +290,7 @@ export class DevicesService {
         }
         next = { rackId: null, positionU: null, face: null };
       } else {
-        const [rack] = await t.select().from(racks).where(and(eq(racks.id, input.rackId), eq(racks.orgId, p.orgId)));
+        const [rack] = await t.select().from(racks).where(and(eq(racks.id, input.rackId), eq(racks.orgId, p.orgId))).for('update');
         if (!rack) throw new BadRequestException({ error: 'invalid_rack', message: 'Rack does not exist' });
         if (rack.status === 'decommissioned') throw new BadRequestException({ error: 'rack_decommissioned', message: 'That rack is decommissioned' });
         if (d.uHeight === 0) {
@@ -294,10 +299,7 @@ export class DevicesService {
           if (!input.positionU) throw new BadRequestException({ error: 'position_required', message: 'Choose the lowest rack unit for this device' });
           next = { rackId: rack.id, positionU: input.positionU, face: input.face ?? 'front' };
         }
-        if (rack.customerId && rack.customerId !== d.customerId) {
-          throw new ConflictException({ error: 'rack_dedicated', message: 'This rack is dedicated to another customer' });
-        }
-        await this.assertRackAllows(t, rack.id, d.customerId, next.positionU, d.uHeight);
+        await this.assertRackAccepts(t, rack.id, d.customerId, next.positionU, d.uHeight);
       }
 
       if (next.rackId === d.rackId && next.positionU === d.positionU && next.face === d.face) return d;
@@ -315,6 +317,20 @@ export class DevicesService {
       rethrowDbError(err);
     }
     return this.get(p, id);
+  }
+
+  /**
+   * The rack accepts equipment of `customerId` at these units: it is not
+   * dedicated to someone else and no live reservation for someone else covers
+   * them. Locks the rack row so a concurrent reservation or rededication can't
+   * slip in between the check and the write.
+   */
+  private async assertRackAccepts(t: DbOrTx, rackId: string, customerId: string | null, positionU: number | null, uHeight: number) {
+    const [rack] = await t.select({ customerId: racks.customerId }).from(racks).where(eq(racks.id, rackId)).for('update');
+    if (rack?.customerId && rack.customerId !== customerId) {
+      throw new ConflictException({ error: 'rack_dedicated', message: 'This rack is dedicated to another customer' });
+    }
+    await this.assertRackAllows(t, rackId, customerId, positionU, uHeight);
   }
 
   /** Reserved units only take equipment of the customer they are reserved for. */
@@ -361,8 +377,9 @@ export class DevicesService {
       if (!rule) {
         throw new BadRequestException({ error: 'transition_not_allowed', message: `A device can’t go from ${LIFECYCLE_LABELS[d.lifecycleState]} to ${LIFECYCLE_LABELS[to]}` });
       }
-      const needsRack = RACKED_STATES.includes(to) && d.uHeight > 0;
-      if (needsRack && d.positionU === null) {
+      // Rack-mounted equipment needs a unit; 0U equipment (PDUs) still needs a rack.
+      const unplaced = d.uHeight > 0 ? d.positionU === null : d.rackId === null;
+      if (RACKED_STATES.includes(to) && unplaced) {
         throw new BadRequestException({ error: 'place_first', message: `Place the device in a rack before marking it ${LIFECYCLE_LABELS[to].toLowerCase()}` });
       }
       // Leaving the racked states takes the device out of its rack in the same step.
@@ -427,7 +444,8 @@ export class DevicesService {
             const set = input.set;
             if (set.customerId) await this.checkCustomer(p, set.customerId, tx);
             const nextCustomer = set.customerId !== undefined ? set.customerId : d.customerId;
-            if (nextCustomer !== d.customerId && d.rackId) await this.assertRackAllows(tx, d.rackId, nextCustomer, d.positionU, d.uHeight);
+            if (nextCustomer !== d.customerId && d.rackId) await this.assertRackAccepts(tx, d.rackId, nextCustomer, d.positionU, d.uHeight);
+            const before = { customerId: d.customerId, ownership: d.ownership, supplier: d.supplier, warrantyExpires: d.warrantyExpires };
             await tx
               .update(devices)
               .set({
@@ -438,22 +456,15 @@ export class DevicesService {
               })
               .where(eq(devices.id, id));
             await this.event(tx, p, id, 'updated', `Bulk update: ${Object.keys(set).join(', ')}`, { fields: Object.keys(set) });
-            await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'device.bulk_update', target: { type: 'device', id }, outcome: 'success', meta, metadata: { fields: Object.keys(set) } }, tx);
+            const after = Object.fromEntries(Object.keys(set).map((k) => [k, set[k as keyof typeof set] ?? null]));
+            const was = Object.fromEntries(Object.keys(set).map((k) => [k, before[k as keyof typeof before] ?? null]));
+            await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: nextCustomer ?? d.customerId, action: 'device.bulk_update', target: { type: 'device', id }, outcome: 'success', meta, metadata: { before: was, after } }, tx);
           }
           if (input.transitionTo) await this.transition(p, id, input.transitionTo, 'bulk change', meta, tx);
         });
         updated++;
       } catch (err) {
-        const message = (err as { response?: { message?: string } }).response?.message ?? 'Update failed';
-        if (!(err as { response?: unknown }).response) {
-          try {
-            rethrowDbError(err);
-          } catch (mapped) {
-            failed.push({ id, assetTag: tagOf.get(id)!, message: (mapped as { response?: { message?: string } }).response?.message ?? 'Update failed' });
-            continue;
-          }
-        }
-        failed.push({ id, assetTag: tagOf.get(id)!, message });
+        failed.push({ id, assetTag: tagOf.get(id)!, message: safeMessage(err, 'Update failed') });
       }
     }
     return { updated, failed };
@@ -513,13 +524,7 @@ export class DevicesService {
               results.push({ line, assetTag: row.asset_tag ?? '', ok: true, message });
             });
           } catch (err) {
-            let msg: string;
-            try {
-              rethrowDbError(err);
-            } catch (mapped) {
-              msg = (mapped as { response?: { message?: string } }).response?.message ?? (mapped as Error).message;
-            }
-            results.push({ line, assetTag: row.asset_tag ?? '', ok: false, message: msg! });
+            results.push({ line, assetTag: row.asset_tag ?? '', ok: false, message: safeMessage(err, 'This row could not be saved') });
           }
         }
         if (!dryRun) {
@@ -537,7 +542,8 @@ export class DevicesService {
     const fail = (message: string) => {
       throw new BadRequestException({ error: 'invalid_row', message });
     };
-    const v = (k: string) => (row[k] ?? '').trim() || null;
+    // Values exported by us may carry a leading apostrophe that neutralized a spreadsheet formula; strip it on the way back in.
+    const v = (k: string) => (row[k] ?? '').trim().replace(/^'(?=[=+\-@])/, '') || null;
     if (!v('asset_tag')) fail('asset_tag is required');
     const [model] = await tx
       .select({ id: deviceModels.id })
@@ -598,7 +604,13 @@ export class DevicesService {
       initialState: 'inventory',
     };
     if (ownership === 'customer' && !customerId) fail('customer_code is required for customer-owned equipment');
-    const d = await this.create(p, { ...input, initialState: state === 'planned' || state === 'received' ? state : 'inventory' }, meta, tx);
+    // Same validation as the API form (lengths, ranges, formats), with a readable message.
+    const checked = deviceCreateSchema.safeParse({ ...input, initialState: state === 'planned' || state === 'received' ? state : 'inventory' });
+    if (!checked.success) {
+      const issue = checked.error.issues[0]!;
+      fail(`${toCsvColumn(issue.path.join('.'))}: ${issue.message}`);
+    }
+    const d = await this.create(p, checked.data!, meta, tx);
 
     let where = '';
     if (v('rack')) {
@@ -621,7 +633,9 @@ export class DevicesService {
       if (!rack) fail(`Rack ${v('rack')} not found`);
       const face = v('face') as 'front' | 'rear' | null;
       if (face && face !== 'front' && face !== 'rear') fail('face must be front or rear');
-      await this.place(p, d.id, { rackId: rack!.id, positionU: num('position_u'), face: face ?? 'front', reason: 'import' }, meta, tx);
+      const position = placementSchemaValue.safeParse({ rackId: rack!.id, positionU: num('position_u'), face: face ?? 'front', reason: 'import' });
+      if (!position.success) fail(`position_u: ${position.error.issues[0]!.message}`);
+      await this.place(p, d.id, position.data!, meta, tx);
       where = ` in rack ${v('rack')}${v('position_u') ? ` at U${v('position_u')}` : ''}`;
     } else if (RACKED_STATES.includes(state)) {
       fail(`state ${state} needs a rack and position`);
@@ -630,6 +644,7 @@ export class DevicesService {
       // Imported equipment already in service: record its state directly, with history.
       await tx.update(devices).set({ lifecycleState: state }).where(eq(devices.id, d.id));
       await this.event(tx, p, d.id, 'lifecycle', `Imported as ${LIFECYCLE_LABELS[state]}`, { to: state, imported: true });
+      await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: d.customerId, action: 'device.transition', target: { type: 'device', id: d.id }, outcome: 'success', meta, metadata: { from: d.lifecycleState, to: state, imported: true } }, tx);
     }
     return `Created${where}`;
   }
@@ -683,7 +698,8 @@ export class DevicesService {
   }
 
   private async model(p: Principal, id: string, tx: DbOrTx) {
-    const [m] = await tx.select().from(deviceModels).where(and(eq(deviceModels.id, id), eq(deviceModels.orgId, p.orgId)));
+    // FOR SHARE: a concurrent change to the model's size waits for this device write (and vice versa).
+    const [m] = await tx.select().from(deviceModels).where(and(eq(deviceModels.id, id), eq(deviceModels.orgId, p.orgId))).for('share');
     if (!m) throw new BadRequestException({ error: 'invalid_model', message: 'Device model does not exist' });
     return m;
   }
@@ -709,4 +725,25 @@ export class DevicesService {
 function changedFields(a: Device, b: Device): string[] {
   const skip = new Set(['updatedAt', 'createdAt', 'uRange', 'occupiesFront', 'occupiesRear']);
   return Object.keys(b).filter((k) => !skip.has(k) && JSON.stringify((a as Record<string, unknown>)[k]) !== JSON.stringify((b as Record<string, unknown>)[k]));
+}
+
+/** Client-safe message: HTTP errors keep their message, known DB constraint errors are translated, anything else is generic. */
+function safeMessage(err: unknown, fallback: string): string {
+  const http = (err as { response?: { message?: unknown } }).response;
+  if (http && typeof http.message === 'string') return http.message;
+  try {
+    rethrowDbError(err);
+  } catch (mapped) {
+    const m = (mapped as { response?: { message?: unknown } }).response?.message;
+    if (typeof m === 'string') return m;
+  }
+  return fallback;
+}
+
+const CSV_NAMES: Record<string, string> = {
+  assetTag: 'asset_tag', hostname: 'hostname', serial: 'serial', cpuCount: 'cpu_count', ramGb: 'ram_gb', purchaseCost: 'purchase_cost',
+  currency: 'currency', purchaseDate: 'purchase_date', warrantyExpires: 'warranty_expires', eolDate: 'eol_date', mgmtAddress: 'mgmt_address', os: 'os', cpu: 'cpu', supplier: 'supplier', notes: 'notes',
+};
+function toCsvColumn(path: string): string {
+  return CSV_NAMES[path] ?? path;
 }

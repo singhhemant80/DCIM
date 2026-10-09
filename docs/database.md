@@ -31,7 +31,26 @@ Migrations: `0000_initial_identity.sql` (tables), `0001_audit_immutability.sql` 
 
 The entity outlines below set the direction for later phases. Each phase delivers its own migrations and tests.
 
-### Phase 2: physical DCIM
+### Phase 2: physical DCIM (implemented)
+
+Migrations `0002_physical_dcim.sql` (tables), `0003_dcim_constraints.sql` (constraints and triggers), `0004_dcim_locking.sql` (row locking in the fit check, sized-device check).
+
+| Table | Purpose and key rules |
+|---|---|
+| `datacenters`, `buildings`, `rooms`, `rack_rows` | Site hierarchy; unique names per parent; `RESTRICT` deletes |
+| `racks` | Height 1–60U, depth, numbering, status, optional dedicated customer, floor-plan tile (unique per room) |
+| `rack_reservations` | Unit ranges for a customer or internal hold, optional expiry; **GiST exclusion: no overlapping reservations** |
+| `manufacturers`, `device_models` | Device types with height (0–60U), depth, full/half depth, datasheet power figures (estimates only) |
+| `devices` | Asset record; copies model height/depth class; generated `u_range`, `occupies_front`, `occupies_rear`; **GiST exclusion per face: no overlapping equipment**; triggers: fits rack height and depth, same organization; CHECKs: placement completeness, customer-owned needs a customer |
+| `lifecycle_transitions` | Allowed state changes per organization (seeded with defaults, editable) |
+| `device_events`, `rack_events` | History timelines |
+| `spare_parts`, `spare_part_movements` | Stock with CHECK quantity ≥ 0; every change logged |
+
+Rack resize and depth changes are refused by trigger when equipment would no longer fit. The fit trigger takes `FOR SHARE` on the rack so a resize and a placement cannot both commit (write skew).
+
+The outline below was the original plan, kept for reference.
+
+#### Original plan
 
 ```
 datacenters(id, org_id, code, name, address, timezone, …)

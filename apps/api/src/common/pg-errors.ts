@@ -63,6 +63,7 @@ const CONSTRAINT_MESSAGES: Record<string, { status: 400 | 409; error: string; me
   device_models_mfr_name_uq: { status: 409, error: 'conflict', message: 'This manufacturer already has a model with that name' },
   spare_parts_org_dc_pn_uq: { status: 409, error: 'conflict', message: 'This part number is already stocked at that location' },
   spare_parts_qty_ck: { status: 409, error: 'insufficient_stock', message: 'Not enough stock for that change' },
+  devices_sized_needs_position_ck: { status: 400, error: 'invalid_placement', message: 'Rack-mounted equipment needs a unit position' },
   devices_position_ck: { status: 400, error: 'invalid_placement', message: 'A placed device needs a rack, a unit and a face' },
   devices_ownership_ck: { status: 400, error: 'invalid_ownership', message: 'Customer-owned equipment must be assigned to a customer' },
   racks_grid_pair_ck: { status: 400, error: 'invalid_position', message: 'Give both floor coordinates or neither' },

@@ -97,6 +97,18 @@ flowchart TB
 
 At the end of Phase 1, a separate reviewer audited this code. It found six defects, all fixed with regression tests in `apps/api/test/security-regressions.e2e.test.ts`: concurrent lockout bypass, a race between two super admins, unlimited MFA guessing across fresh challenges, a lower-privileged admin able to re-enable a super admin, unthrottled and unaudited in-session password checks, and a self-session revocation audited outside its transaction. The public readiness endpoint no longer returns raw dependency errors.
 
+## Phase 2 review
+
+A separate reviewer audited the physical-DCIM code and found nine defects, all fixed with regression tests in `apps/api/test/dcim-regressions.e2e.test.ts`:
+- A customer change on a racked device, or a rack edit, could bypass a rack's dedication to a customer.
+- Concurrent rack shrink and placement could both commit. The fit trigger now locks the rack row.
+- A placement and a conflicting reservation could race. The rack row is now locked for both.
+- A 0U device could reach a racked state without a rack.
+- A model change on a racked 0U device left a sized device without a unit. A new DB check now prevents this.
+- CSV import returned raw SQL in error messages and skipped range and date validation.
+- Bulk and import audit records lacked the customer and before/after values.
+- Customers could search by the staff-only management address.
+
 ## Known limitations (Phase 1)
 
 - The audit hash chain detects edits and deletions in the middle of the log, but not removal of the newest records, because the verifier has no external anchor. Phase 9 adds periodic export of the chain head (to object storage or email) as that anchor.

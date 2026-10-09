@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deviceSchema,
   NAV_SECTIONS,
   PERMISSION_KEYS,
   SYSTEM_ROLES,
@@ -78,5 +79,15 @@ describe('units', () => {
     expect(formatWatts(245.4)).toBe('245 W');
     expect(formatWatts(1250)).toBe('1.25 kW');
     expect(formatWatts(undefined)).toBe('—');
+  });
+});
+
+describe('device dates', () => {
+  const base = { modelId: '6f9619ff-8b86-4011-b42d-00c04fc964ff', assetTag: 'A1' };
+  it('accepts real dates and rejects impossible ones', () => {
+    expect(deviceSchema.safeParse({ ...base, warrantyExpires: '2028-02-29' }).success).toBe(true);
+    expect(deviceSchema.safeParse({ ...base, warrantyExpires: '2027-02-29' }).success).toBe(false);
+    expect(deviceSchema.safeParse({ ...base, warrantyExpires: '2024-13-45' }).success).toBe(false);
+    expect(deviceSchema.safeParse({ ...base, warrantyExpires: '31-12-2026' }).success).toBe(false);
   });
 });

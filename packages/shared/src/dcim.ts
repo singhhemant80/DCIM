@@ -118,9 +118,14 @@ const code = z
   .toUpperCase()
   .regex(/^[A-Z0-9][A-Z0-9-]{0,30}$/, 'Use letters, digits and dashes (max 31)');
 const uuid = z.string().uuid();
+/** A real calendar date in YYYY-MM-DD (rejects 2024-13-45 and 2023-02-29). */
 const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, 'Not a valid date')
   .nullable()
   .optional();
 

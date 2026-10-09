@@ -77,14 +77,16 @@ export class ModelsService {
     const before = await this.getModel(p, id);
     await this.checkManufacturer(p, input.manufacturerId);
     const physicalChange = before.uHeight !== input.uHeight || before.fullDepth !== input.fullDepth || before.category !== input.category;
-    if (physicalChange) {
-      const [{ n } = { n: 0 }] = await this.db.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.modelId, id));
-      if (n > 0) {
-        throw new BadRequestException({ error: 'model_in_use', message: `${n} device(s) use this model; height, depth class and category can’t change. Create a new model instead.` });
-      }
-    }
     try {
       return await this.db.transaction(async (tx) => {
+        // Lock the model; device creation takes a share lock on it, so no device can appear mid-check.
+        await tx.select({ id: deviceModels.id }).from(deviceModels).where(eq(deviceModels.id, id)).for('update');
+        if (physicalChange) {
+          const [{ n } = { n: 0 }] = await tx.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.modelId, id));
+          if (n > 0) {
+            throw new BadRequestException({ error: 'model_in_use', message: `${n} device(s) use this model; height, depth class and category can’t change. Create a new model instead.` });
+          }
+        }
         // Depth increases are checked against current racks by the devices_rack_fit trigger on the next placement;
         // here we reject a change that would make an already racked device too deep.
         if (input.depthMm != null && (before.depthMm ?? 0) < input.depthMm) {

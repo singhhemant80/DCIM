@@ -2,7 +2,7 @@
 
 Datacenter infrastructure management for Crapplet Infotech Private Limited: physical inventory, racks, network and IPAM, real-time port bandwidth, equipment power (no physical meters needed), server provisioning, colocation, a customer portal and WHMCS billing integration.
 
-**Current state: Phase 1 (Foundation) complete.** Sign-in with two-step verification, roles and permissions, customer tenants, a tamper-evident audit log, system settings and the application shell work end to end. Every other section is clearly marked as planned in the UI. See the [feature matrix](docs/feature-matrix.md).
+**Current state: Phases 1–2 complete.** Sign-in with two-step verification, roles and permissions, customer tenants, a tamper-evident audit log and system settings, plus physical DCIM: datacenters, buildings, rooms, floor plans, racks with front/rear elevations and database-enforced placement, and the hardware inventory with lifecycle, history, CSV import/export, QR labels and spare parts. Sections not built yet are clearly marked as planned in the UI. See the [feature matrix](docs/feature-matrix.md).
 
 ## Install
 

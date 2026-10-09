@@ -147,6 +147,25 @@ export class RacksService {
     await this.checkRefs(p, input);
     try {
       return await this.db.transaction(async (tx) => {
+        // Lock the rack so placements and reservations can't change underneath these checks.
+        await tx.select({ id: racks.id }).from(racks).where(eq(racks.id, id)).for('update');
+        const newCustomer = input.customerId ?? null;
+        if (newCustomer && newCustomer !== before.customerId) {
+          const [{ n } = { n: 0 }] = await tx
+            .select({ n: sql<number>`count(*)::int` })
+            .from(devices)
+            .where(and(eq(devices.rackId, id), sql`${devices.customerId} is distinct from ${newCustomer}`));
+          if (n > 0) throw new ConflictException({ error: 'rack_in_use', message: `${n} device(s) in this rack belong to someone else; move them before dedicating the rack` });
+          const [{ r: res } = { r: 0 }] = await tx
+            .select({ r: sql<number>`count(*)::int` })
+            .from(rackReservations)
+            .where(and(eq(rackReservations.rackId, id), sql`${rackReservations.customerId} is distinct from ${newCustomer}`, sql`(${rackReservations.expiresAt} is null or ${rackReservations.expiresAt} > now())`));
+          if (res > 0) throw new ConflictException({ error: 'rack_in_use', message: 'This rack has reservations for someone else; release them first' });
+        }
+        if (input.status === 'decommissioned' && before.status !== 'decommissioned') {
+          const [{ n } = { n: 0 }] = await tx.select({ n: sql<number>`count(*)::int` }).from(devices).where(eq(devices.rackId, id));
+          if (n > 0) throw new ConflictException({ error: 'rack_in_use', message: `Rack still holds ${n} device(s); move them out before decommissioning it` });
+        }
         const [r] = await tx.update(racks).set(input).where(eq(racks.id, id)).returning();
         const changed = diff(before, r!, ['name', 'uHeight', 'depthMm', 'status', 'customerId', 'rowId', 'gridX', 'gridY', 'maxPowerW']);
         if (Object.keys(changed).length) await this.event(tx, p, id, 'updated', `Changed ${Object.keys(changed).join(', ')}`, changed);
@@ -198,20 +217,25 @@ export class RacksService {
   async addReservation(p: Principal, rackId: string, input: ReservationInput, meta: RequestMeta) {
     await this.get(p, rackId);
     if (input.customerId) await this.checkCustomer(p, input.customerId);
-    // Units already holding equipment cannot be reserved for someone else.
-    const [{ n } = { n: 0 }] = await this.db
-      .select({ n: sql<number>`count(*)::int` })
-      .from(devices)
-      .where(
-        and(
-          eq(devices.rackId, rackId),
-          sql`${devices.uRange} && int4range(${input.startU}, ${input.endU + 1})`,
-          input.customerId ? sql`${devices.customerId} is distinct from ${input.customerId}` : sql`${devices.customerId} is not null`,
-        ),
-      );
-    if (n > 0) throw new ConflictException({ error: 'reservation_conflict', message: 'Some of those units hold equipment that belongs to someone else' });
     try {
       return await this.db.transaction(async (tx) => {
+        // Lock the rack: placements lock it too, so the check below can't race a placement.
+        const [rack] = await tx.select({ customerId: racks.customerId }).from(racks).where(eq(racks.id, rackId)).for('update');
+        if (rack?.customerId && input.customerId !== rack.customerId) {
+          throw new ConflictException({ error: 'rack_dedicated', message: 'This rack is dedicated to another customer' });
+        }
+        // Units already holding equipment cannot be reserved for someone else.
+        const [{ n } = { n: 0 }] = await tx
+          .select({ n: sql<number>`count(*)::int` })
+          .from(devices)
+          .where(
+            and(
+              eq(devices.rackId, rackId),
+              sql`${devices.uRange} && int4range(${input.startU}, ${input.endU + 1})`,
+              input.customerId ? sql`${devices.customerId} is distinct from ${input.customerId}` : sql`${devices.customerId} is not null`,
+            ),
+          );
+        if (n > 0) throw new ConflictException({ error: 'reservation_conflict', message: 'Some of those units hold equipment that belongs to someone else' });
         const [r] = await tx
           .insert(rackReservations)
           .values({ orgId: p.orgId, rackId, startU: input.startU, endU: input.endU, customerId: input.customerId ?? null, reason: input.reason, expiresAt: input.expiresAt ? new Date(input.expiresAt) : null, createdBy: p.userId })

@@ -38,11 +38,41 @@ Base path `/api/v1`. Interactive documentation is at `/api/docs` and the OpenAPI
 | `GET /overview` · `GET /overview/audit-integrity` | staff | counts limited to the caller's permissions |
 | `GET /health/live` · `GET /health/ready` | public | readiness checks Postgres and Redis and returns 503 if degraded |
 
+## Phase 2 endpoints (implemented)
+
+All under `/api/v1/dcim`. Reads need `dcim.read`, changes need `dcim.write`. Everything except `devices` (list/get) is staff-only. Customer users get only their own devices, without purchasing data, notes or management addresses.
+
+| Method and path | Notes |
+|---|---|
+| `GET /summary` | Dashboard figures |
+| `GET /tree` | Datacenter → building → room → row hierarchy |
+| `GET, POST /datacenters`, `GET, PATCH, DELETE /datacenters/:id` | Delete only when empty |
+| `POST /buildings`, `PATCH, DELETE /buildings/:id` | |
+| `POST /rooms`, `PATCH, DELETE /rooms/:id` | Floor size can't shrink below placed racks |
+| `POST /rows`, `PATCH, DELETE /rows/:id` | |
+| `GET, POST /racks`, `PATCH, DELETE /racks/:id` | `?datacenterId=&roomId=&q=`; occupancy counts each unit once |
+| `GET /racks/:id/elevation` | Placed devices, 0U devices, reservations |
+| `POST /racks/:id/move` | Relocate to another room, row or floor tile |
+| `POST /racks/:id/reservations`, `DELETE /racks/:id/reservations/:rid` | |
+| `GET /racks/:id/events` | Rack history |
+| `GET, POST /manufacturers` · `GET, POST /models`, `PATCH, DELETE /models/:id` | Size can't change while devices use the model |
+| `GET /devices` | Filters `q, state, category, datacenterId, rackId, customerId, unracked, warrantyWithinDays, sort` |
+| `POST /devices`, `GET, PATCH /devices/:id` | |
+| `POST /devices/:id/placement` | `{ rackId, positionU, face }` or `{ rackId: null }` |
+| `POST /devices/:id/transition`, `GET /devices/:id/transitions` | Enforces the organization's lifecycle rules |
+| `GET, POST /devices/:id/events` | History; add maintenance notes |
+| `GET /devices/:id/label` | QR code (SVG) and label fields |
+| `POST /devices/bulk` | Customer, ownership, supplier, warranty, state; per-device results |
+| `GET /devices/export.csv` · `POST /devices/import` | `dryRun` validates against the database and rolls back |
+| `GET, PUT /lifecycle-rules` | PUT needs `settings.write` |
+| `GET, POST /spare-parts`, `PATCH, DELETE /spare-parts/:id`, `POST /spare-parts/:id/adjust`, `GET /spare-parts/:id/movements` | |
+
+Error codes added: `placement_conflict`, `does_not_fit`, `units_reserved`, `rack_dedicated`, `rack_decommissioned`, `rack_in_use`, `rack_not_empty`, `change_state_first`, `place_first`, `transition_not_allowed`, `device_retired`, `unrack_first`, `model_in_use`, `insufficient_stock`, `reservation_conflict`, `in_use`.
+
 ## Planned resources
 
 | Phase | Resources |
 |---|---|
-| 2 | `/datacenters`, `/buildings`, `/rooms`, `/rows`, `/racks` (+ `/racks/:id/elevation`, `/racks/:id/placements`), `/device-models`, `/devices` (+ `/transitions`, `/moves`, `/import`, `/export`), `/spare-parts`, `/attachments` |
 | 3 | `/network-devices`, `/interfaces`, `/cables`, `/topology`, `/vlans`, `/vrfs`, `/circuits`, `/prefixes` (+ `/available`, `/allocate`), `/ip-addresses` (+ `/reserve`, `/release`), `/device-credentials` (write-only secrets), `/discovery/preview` |
 | 4 | `/monitoring/summary`, `/interfaces/:id/rates?range=`, `/interfaces/:id/history`, `/stream` (SSE), `/alert-rules`, `/alerts` (+ `/ack`), `/maintenance-windows`, `/polling/health`, `/monitoring/settings` |
 | 5 | `/power/summary`, `/power/devices`, `/power/racks/:id`, `/devices/:id/power-profile`, `/power/readings`, `/tariffs` |
