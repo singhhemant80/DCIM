@@ -22,6 +22,13 @@ import { CustomersController } from './customers/customers.controller';
 import { CustomersService } from './customers/customers.service';
 import { HealthController } from './health/health.controller';
 import { OverviewController } from './overview/overview.controller';
+import { DevicesController, ModelsController, RacksController, SitesController, SparesController } from './dcim/dcim.controllers';
+import { SitesService } from './dcim/sites.service';
+import { RacksService } from './dcim/racks.service';
+import { ModelsService } from './dcim/models.service';
+import { DevicesService } from './dcim/devices.service';
+import { SparesService } from './dcim/spares.service';
+import { DcimSummaryService } from './dcim/summary.service';
 import { RolesController } from './roles/roles.controller';
 import { RolesService } from './roles/roles.service';
 import { SettingsController } from './settings/settings.controller';
@@ -58,6 +65,11 @@ export class AppModule {
         AuditController,
         HealthController,
         OverviewController,
+        SitesController,
+        RacksController,
+        ModelsController,
+        DevicesController,
+        SparesController,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
@@ -75,6 +87,12 @@ export class AppModule {
         RolesService,
         UsersService,
         CustomersService,
+        SitesService,
+        RacksService,
+        ModelsService,
+        DevicesService,
+        SparesService,
+        DcimSummaryService,
         // Order matters: rate limit → authenticate → authorize.
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthGuard },

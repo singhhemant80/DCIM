@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm';
-import { SYSTEM_ROLES } from '@crapplet/shared';
+import { DEFAULT_LIFECYCLE_TRANSITIONS, SYSTEM_ROLES } from '@crapplet/shared';
 import type { DbOrTx } from '../db/db';
-import { organizations, roles, type Organization } from '../db/schema';
+import { lifecycleTransitions, organizations, roles, type Organization } from '../db/schema';
 
 /**
  * Creates (or updates) the built-in roles for an organization. Idempotent:
@@ -41,5 +41,13 @@ export async function provisionOrganization(tx: DbOrTx, input: { name: string; s
     })
     .returning();
   await syncSystemRoles(tx, org!.id);
+  await syncLifecycleDefaults(tx, org!.id);
   return org!;
+}
+
+/** Seeds the default device lifecycle transitions for an organization that has none. Idempotent. */
+export async function syncLifecycleDefaults(tx: DbOrTx, orgId: string): Promise<void> {
+  const existing = await tx.select({ orgId: lifecycleTransitions.orgId }).from(lifecycleTransitions).where(eq(lifecycleTransitions.orgId, orgId)).limit(1);
+  if (existing.length) return;
+  await tx.insert(lifecycleTransitions).values(DEFAULT_LIFECYCLE_TRANSITIONS.map(([fromState, toState]) => ({ orgId, fromState, toState })));
 }

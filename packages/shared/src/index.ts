@@ -3,3 +3,4 @@ export * from './roles';
 export * from './navigation';
 export * from './schemas';
 export * from './units';
+export * from './dcim';

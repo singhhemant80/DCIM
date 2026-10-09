@@ -15,6 +15,20 @@
       "when": 1791543020869,
       "tag": "0001_audit_immutability",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791560250843,
+      "tag": "0002_physical_dcim",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791560278666,
+      "tag": "0003_dcim_constraints",
+      "breakpoints": true
     }
   ]
 }
