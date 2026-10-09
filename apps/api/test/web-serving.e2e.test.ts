@@ -50,3 +50,23 @@ describe('single-process mode (API serves the web app)', () => {
     expect((await request(ctx.server).get('/%2e%2e/%2e%2e/package.json')).text).not.toContain('@crapplet');
   });
 });
+
+describe('security headers follow the transport', () => {
+  it('plain-HTTP lab mode does not force https sub-requests (otherwise the UI loads blank)', async () => {
+    const res = await request(ctx.server).get('/');
+    // Test config runs with COOKIE_SECURE=false (non-production default).
+    expect(res.headers['content-security-policy']).not.toMatch(/upgrade-insecure-requests/);
+    expect(res.headers['strict-transport-security']).toBeUndefined();
+  });
+
+  it('HTTPS deployments keep upgrade-insecure-requests and HSTS', async () => {
+    const secure = await setupTestApp({ WEB_DIST_DIR: dir, NODE_ENV: 'production', COOKIE_SECURE: 'true' });
+    try {
+      const res = await request(secure.server).get('/');
+      expect(res.headers['content-security-policy']).toMatch(/upgrade-insecure-requests/);
+      expect(res.headers['strict-transport-security']).toBeTruthy();
+    } finally {
+      await secure.close();
+    }
+  });
+});

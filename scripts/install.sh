@@ -32,6 +32,7 @@ set -Eeuo pipefail
 # Everything runs inside main(), which is only called on the last line, so bash has read
 # the whole script before executing it (important for `curl … | bash`).
 main() {
+cd /   # run from a directory every service account can read (avoids "could not change directory" noise)
 
 REPO="${CDCIM_REPO:-https://github.com/singhhemant80/DCIM.git}"
 GH_TOKEN_VALUE="${CDCIM_GITHUB_TOKEN:-}"

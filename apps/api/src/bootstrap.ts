@@ -29,16 +29,23 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
   app.useBodyParser('json', { limit: '1mb' });
   app.use(
     helmet({
-      // The API serves JSON only; Swagger UI needs inline scripts/styles.
+      // Serves the API (JSON), Swagger UI and, optionally, the built web app.
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
           scriptSrc: ["'self'", "'unsafe-inline'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", 'data:'],
+          fontSrc: ["'self'", 'data:'],
+          // Forcing https:// sub-requests is only correct when the site is served over HTTPS.
+          // On a plain-HTTP lab install it makes every asset fail with an SSL error (blank page).
+          upgradeInsecureRequests: config.COOKIE_SECURE ? [] : null,
         },
       },
-      hsts: config.NODE_ENV === 'production',
+      hsts: config.NODE_ENV === 'production' && config.COOKIE_SECURE,
+      // These only take effect on secure origins; on plain HTTP they just produce console noise.
+      crossOriginOpenerPolicy: config.COOKIE_SECURE,
+      originAgentCluster: config.COOKIE_SECURE,
     }),
   );
   app.use(cookieParser());
