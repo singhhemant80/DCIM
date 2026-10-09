@@ -235,15 +235,44 @@ RestrictSUIDSGID=true
 [Install]
 WantedBy=multi-user.target
 EOF
+  # Discovery worker: the only process that decrypts device credentials and talks to devices (read-only).
+  cat >/etc/systemd/system/$SERVICE-worker.service <<EOF
+[Unit]
+Description=Crapplet DCIM discovery worker
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$RUN_USER
+Group=$RUN_USER
+WorkingDirectory=$APP_DIR/apps/api
+EnvironmentFile=$ENV_FILE
+ExecStart=$(command -v node) dist/worker/main.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$STATE_DIR $LOG_DIR
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
   systemctl daemon-reload
-  systemctl enable "$SERVICE" >/dev/null 2>&1
+  systemctl enable "$SERVICE" "$SERVICE-worker" >/dev/null 2>&1
   systemctl restart "$SERVICE"
+  systemctl restart "$SERVICE-worker"
   cat >/usr/local/bin/$SERVICE <<EOF
 #!/usr/bin/env bash
 # Convenience wrapper around systemd.
 case "\${1:-}" in
-  start|stop|restart|status) exec systemctl "\$1" $SERVICE ;;
-  logs) exec journalctl -u $SERVICE -f ;;
+  start|stop|restart|status) exec systemctl "\$1" $SERVICE $SERVICE-worker ;;
+  logs) exec journalctl -u $SERVICE -u $SERVICE-worker -f ;;
   *) echo "Usage: $SERVICE {start|stop|restart|status|logs}"; exit 2 ;;
 esac
 EOF
@@ -256,17 +285,28 @@ else
 # Start/stop helper for systems without systemd (e.g. WSL without systemd).
 set -e
 PID=$STATE_DIR/api.pid
+WPID=$STATE_DIR/worker.pid
+running() { [ -f "\$1" ] && kill -0 "\$(cat "\$1")" 2>/dev/null; }
 case "\${1:-}" in
   start)
     service postgresql start >/dev/null 2>&1 || true
     service redis-server start >/dev/null 2>&1 || true
-    if [ -f "\$PID" ] && kill -0 "\$(cat "\$PID")" 2>/dev/null; then echo "Already running"; exit 0; fi
-    runuser -u $RUN_USER -- bash -c 'set -a; . $ENV_FILE; set +a; cd $APP_DIR/apps/api; nohup node dist/main.js >>$LOG_DIR/api.log 2>&1 & echo \$! > '"\$PID"
-    echo "Started. Logs: $LOG_DIR/api.log" ;;
-  stop) [ -f "\$PID" ] && kill "\$(cat "\$PID")" 2>/dev/null && rm -f "\$PID" && echo "Stopped" || echo "Not running" ;;
+    if running "\$PID"; then echo "API already running"; else
+      runuser -u $RUN_USER -- bash -c 'set -a; . $ENV_FILE; set +a; cd $APP_DIR/apps/api; nohup node dist/main.js >>$LOG_DIR/api.log 2>&1 & echo \$! > '"\$PID"
+    fi
+    if running "\$WPID"; then echo "Worker already running"; else
+      runuser -u $RUN_USER -- bash -c 'set -a; . $ENV_FILE; set +a; cd $APP_DIR/apps/api; nohup node dist/worker/main.js >>$LOG_DIR/worker.log 2>&1 & echo \$! > '"\$WPID"
+    fi
+    echo "Started. Logs: $LOG_DIR/api.log and $LOG_DIR/worker.log" ;;
+  stop)
+    for f in "\$PID" "\$WPID"; do running "\$f" && kill "\$(cat "\$f")" 2>/dev/null; rm -f "\$f"; done
+    echo "Stopped" ;;
   restart) "\$0" stop || true; sleep 1; "\$0" start ;;
-  status) [ -f "\$PID" ] && kill -0 "\$(cat "\$PID")" 2>/dev/null && echo "Running (pid \$(cat "\$PID"))" || { echo "Not running"; exit 3; } ;;
-  logs) tail -f $LOG_DIR/api.log ;;
+  status)
+    running "\$PID" && echo "API running (pid \$(cat "\$PID"))" || echo "API not running"
+    running "\$WPID" && echo "Worker running (pid \$(cat "\$WPID"))" || echo "Worker not running"
+    running "\$PID" || exit 3 ;;
+  logs) tail -f $LOG_DIR/api.log $LOG_DIR/worker.log ;;
   *) echo "Usage: $SERVICE {start|stop|restart|status|logs}"; exit 2 ;;
 esac
 EOF

@@ -69,11 +69,51 @@ All under `/api/v1/dcim`. Reads need `dcim.read`, changes need `dcim.write`. Eve
 
 Error codes added: `placement_conflict`, `does_not_fit`, `units_reserved`, `rack_dedicated`, `rack_decommissioned`, `rack_in_use`, `rack_not_empty`, `change_state_first`, `place_first`, `transition_not_allowed`, `device_retired`, `unrack_first`, `model_in_use`, `insufficient_stock`, `reservation_conflict`, `in_use`.
 
+## Phase 3 endpoints (implemented)
+
+**Network** — all under `/api/v1/network`, staff only. Reads need `network.read`, changes need `network.write`; credentials need `monitoring.configure`.
+
+| Method and path | Notes |
+|---|---|
+| `GET /summary` | Dashboard counts |
+| `GET /devices` | `?q=&datacenterId=&all=true` (all includes servers); port, cabling, credential and last-discovery summary |
+| `GET /devices/:id` · `PATCH /devices/:id` | Summary with credentials (no secrets), recent runs and the last collected facts and BGP sessions (a dated snapshot, not live data); PATCH sets `platform`, `networkRole` |
+| `GET /devices/:id/interfaces` | Ports and logical interfaces with cable peer, circuit, VLANs, LAG members, neighbors and IP addresses |
+| `POST /interfaces` · `POST /interfaces/bulk` · `GET, PUT, DELETE /interfaces/:id` | Bulk takes a pattern such as `Ethernet1/[1-48]` and skips existing names |
+| `GET, POST /cables` · `PATCH, DELETE /cables/:id` | `?deviceId=` |
+| `GET, POST /vlans` · `PUT, DELETE /vlans/:id` · `GET /vlans/:id/ports` | |
+| `GET, POST /vrfs` · `PUT, DELETE /vrfs/:id` | |
+| `GET, POST /providers` · `PUT, DELETE /providers/:id` | |
+| `GET, POST /circuits` · `PUT, DELETE /circuits/:id` · `GET /circuits/:id/events` | `?providerId=&status=`; delete only when planned or decommissioned |
+| `GET /topology` | `?datacenterId=`; nodes and links with `kind` cable, neighbor or circuit |
+| `GET /devices/:id/credentials` · `PUT /devices/:id/credentials` · `DELETE /devices/:id/credentials/:kind` | Secrets are write-only; the host is fixed when the secret is saved |
+| `GET, POST /devices/:id/discovery` | POST `{ kind, mode: 'test' \| 'discover' }` queues a run for the worker; one active run per device |
+| `GET /discovery/:runId` | Status, collected result and the preview of changes |
+| `POST /discovery/:runId/apply` | `{ interfaces: [names], importNeighbors, updateDeviceFacts }`; once per run |
+
+**IPAM** — all under `/api/v1/ipam`. Reads need `ipam.read`, changes need `ipam.write` and are staff only. Customers can list and read their own prefixes and addresses.
+
+| Method and path | Notes |
+|---|---|
+| `GET /summary` | Counts, IPv4 utilization of active leaf subnets, fullest subnets (staff) |
+| `GET /prefixes` · `GET /prefixes/:id` | `?q=` (prefix, contained address, text) `&vrfId=<id>\|global&family=4\|6&customerId=`; detail has parents, children, free ranges and the reverse zone |
+| `POST /prefixes` · `PUT /prefixes/:id` · `DELETE /prefixes/:id` | Delete refused while addresses depend only on this prefix |
+| `GET /addresses` · `GET /addresses/:id` · `GET /addresses/:id/history` | Paginated; `?q=&prefixId=&status=&vrfId=&deviceId=&customerId=`; released rows only with `status=released` |
+| `POST /addresses` | Reserve or allocate one specific address |
+| `POST /allocate-next` | `{ prefixId, count (1–256), …assignment }` — atomic |
+| `PATCH /addresses/:id` | Changes only the fields sent (`null` clears) |
+| `POST /addresses/:id/release` | `{ reason? }` |
+| `GET /conflicts` | Consistency report |
+| `GET /export.csv?kind=prefixes\|addresses` · `POST /import` | Import `{ kind, csv, dryRun }` |
+
+No IPAM endpoint configures a device, announces a route or touches DNS.
+
+Error codes added: `invalid_relation`, `not_cableable`, `port_in_use`, `prefix_exists`, `address_in_use`, `prefix_full`, `prefix_container`, `prefix_deprecated`, `reserved_address`, `no_prefix`, `customer_mismatch`, `prefix_in_use`, `invalid_gateway`, `address_released`, `no_credential`, `no_address`, `invalid_credential`, `discovery_running`, `not_applicable`, `already_applied`, `stale_run`.
+
 ## Planned resources
 
 | Phase | Resources |
 |---|---|
-| 3 | `/network-devices`, `/interfaces`, `/cables`, `/topology`, `/vlans`, `/vrfs`, `/circuits`, `/prefixes` (+ `/available`, `/allocate`), `/ip-addresses` (+ `/reserve`, `/release`), `/device-credentials` (write-only secrets), `/discovery/preview` |
 | 4 | `/monitoring/summary`, `/interfaces/:id/rates?range=`, `/interfaces/:id/history`, `/stream` (SSE), `/alert-rules`, `/alerts` (+ `/ack`), `/maintenance-windows`, `/polling/health`, `/monitoring/settings` |
 | 5 | `/power/summary`, `/power/devices`, `/power/racks/:id`, `/devices/:id/power-profile`, `/power/readings`, `/tariffs` |
 | 6 | `/provisioning/jobs` (idempotency-key header), `/os-images`, `/integrations/proxmox/*`, `/integrations/virtualizor/*`, `/devices/:id/power-actions` (`hardware.control`, confirmation token) |

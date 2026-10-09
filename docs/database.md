@@ -74,7 +74,28 @@ device_events(id, device_id, kind ('moved'|'state'|'maintenance'|…), from JSON
 attachments(id, org_id, owner_type, owner_id, object_key, sha256, size, mime)
 ```
 
-### Phase 3: network and IPAM
+### Phase 3: network and IPAM (implemented)
+
+Migrations `0005_network_ipam.sql` (tables) and `0006_network_constraints.sql` (triggers, GiST indexes).
+
+| Table | Purpose and rules |
+|---|---|
+| `devices` (+ `platform`, `network_role`) | Platform selects suggested access methods |
+| `interfaces` | Ports and logical interfaces. Unique `(device, lower(name))`. `lag_id`, `parent_id` self-references. Trigger `interfaces_check_relations`: same organization, LAG on the same device and of kind `lag`, no nested LAGs, parent on the same device, a cabled port can't become logical. `if_index` is informational (it changes across reboots); the stable key is the name |
+| `interface_tagged_vlans` | Tagged VLAN membership; trigger refuses a VLAN that is also the port's untagged VLAN or belongs to another organization |
+| `cables`, `cable_ends` | One row per end; `cable_ends.interface_id` unique (one cable per port) and `RESTRICT` (a cabled port can't be deleted). Deferred constraint triggers require exactly two ends at commit. A trigger checks both ends are physical/management ports in the cable's organization |
+| `neighbor_observations` | LLDP/CDP/MNDP neighbors as last seen by discovery, with the matched interface when the neighbor is a known device |
+| `vlans` | Unique `(org, coalesce(datacenter), vid)`, VID 1–4094 |
+| `vrfs`, `providers`, `circuits`, `circuit_events` | Circuit IDs unique per provider (case-insensitive); one non-decommissioned circuit per interface; change history |
+| `prefixes` | `cidr` column; unique `(org, coalesce(vrf), prefix)`; gateway must be inside the prefix; GiST `inet_ops` index for containment queries |
+| `ip_addresses` | `inet` host addresses; unique `(org, coalesce(vrf), address)`; released rows keep their history and are reused on the next assignment; trigger keeps `device_id` in step with `interface_id` |
+| `ip_events` | Per-address history (allocated, reserved, updated, released) |
+| `device_credentials` | One per device and kind; `secret_enc` is AES-256-GCM with AAD `(org, device, kind, host, port)`; `params` holds non-secret settings |
+| `discovery_runs` | Queued/running/succeeded/failed; partial unique index allows one active run per device; `result` holds the collected data |
+
+Allocation: the API locks the prefix row (`SELECT … FOR UPDATE`), computes free addresses from the used addresses, child prefixes and gateway (BigInt arithmetic, so IPv6 works), and inserts with an `ON CONFLICT … DO UPDATE … WHERE` upsert that only takes over released or lapsed reservations. The unique index is the final guarantee: a conflicting insert can never succeed.
+
+#### Original plan
 
 ```
 interfaces(id, device_id, name, if_index NULL, stable_key, kind ('physical'|'lag'|'vlan'|'bridge'|
@@ -100,32 +121,3 @@ device_credentials(id, device_id, kind ('snmp_v2c'|'snmp_v3'|'redfish'|'ipmi'|'r
 
 IP allocation runs in a serializable transaction with `SELECT … FOR UPDATE SKIP LOCKED` on candidate addresses, so concurrent reservations cannot hand out the same IP.
 
-### Phase 4: monitoring time-series (TimescaleDB)
-
-```
-iface_counter_samples(time, interface_id, in_octets, out_octets, in_pkts, out_pkts, in_err,
-                      out_err, in_disc, out_disc, oper_status, speed_bps, sys_uptime_cs)
-iface_rate_samples(time, interface_id, rx_bps, tx_bps, rx_util, tx_util, rx_pps, tx_pps,
-                   quality ('ok'|'reset'|'wrap'|'gap'|'speed_unknown'))
-iface_rate_5m / iface_rate_1h   continuous aggregates (avg, max, p95 inputs)
-interface_status_events(time, interface_id, from, to)
-poll_runs(time, device_id, ok, duration_ms, error)
-alert_rules / alerts / alert_events / maintenance_windows / notification_channels
-```
-
-Retention: raw 7 days, 5-minute aggregates 90 days, 1-hour aggregates 2 years. All configurable.
-
-### Phase 5: power
-
-```
-device_power_profiles(device_id, typical_w, idle_w, max_w, source ('admin'|'spec'|'model'),
-                      source_note, preferred_telemetry)
-power_readings(time, device_id, watts, source ('redfish'|'idrac'|'snmp'|'pdu'|'vendor'),
-               quality)                                            -- hypertable
-energy_daily(date, device_id, kwh, method ('integrated'|'estimated'), coverage_pct)
-tariffs(id, org_id, currency, price_per_kwh, valid_from)
-```
-
-### Phases 6–8
-
-`provisioning_jobs` (state machine with `state`, `attempt` and `idempotency_key` unique), `provisioning_steps`, `os_images` (checksum, status), `services`, `colocation_allocations`, `cross_connects`, `tickets`, `ticket_messages`, `billing_links` (WHMCS ids), `webhook_inbox` (unique `(source, event_id)` for idempotency), `webhook_subscriptions`, `webhook_deliveries`, `api_keys` (hashed, scoped), `workflows`, `workflow_runs`.

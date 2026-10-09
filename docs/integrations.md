@@ -1,6 +1,25 @@
 # Integration plan
 
-No device or third-party integration is implemented in Phase 1. This plan fixes the adapter shape now so that each phase adds adapters without changing the core.
+Phase 3 implements the first read-only collectors: SNMP v2c/v3, MikroTik RouterOS REST, Fortinet FortiOS REST and Cisco NX-API. They run only in `cdcim-worker` (`apps/api/src/worker/adapters`), are tested against simulators (`apps/api/test/simulators`), and have not yet been verified on real hardware. See the compatibility matrix in [feature-matrix.md](feature-matrix.md).
+
+## Implemented collectors (Phase 3)
+
+Each adapter implements `test()` (a cheap identity read) and `discover()`, returning a `DiscoveryResult`: facts (name, vendor, model, serial, OS, uptime), interfaces (kind, MAC, MTU, speed, admin/oper state, addresses, LAG), neighbors (LLDP/CDP/MNDP) and BGP sessions, plus warnings for optional sections the device didn't answer. Missing optional data is a warning, never a failure.
+
+Account to create on each device (read-only):
+
+| Platform | What to configure |
+|---|---|
+| Any SNMP device | SNMP v3 user with authPriv (preferred) or a v2c community, read-only view, ACL limited to the DCIM worker's address |
+| MikroTik RouterOS 7 | `www-ssl` service enabled; a user in a group with only the `read` and `rest-api` policies |
+| FortiGate | REST API administrator with a read-only access profile and trusted host set to the worker; use its token |
+| Cisco Nexus (NX-OS) | `feature nxapi`; a user with the `network-operator` role. `feature lldp` (and optionally `cdp`) for neighbor data |
+
+Known gaps: the SNMP collector reads BGP4-MIB, which covers IPv4 peers in the default VRF only; RouterOS `/routing/bgp/session` and NX-OS output cover more. Interface speeds from RouterOS come from the configured ethernet speed, not the negotiated rate. FortiOS returns no device uptime in the fields read.
+
+## Original adapter plan
+
+This plan fixed the adapter shape so that each phase adds adapters without changing the core.
 
 ## Adapter contract
 

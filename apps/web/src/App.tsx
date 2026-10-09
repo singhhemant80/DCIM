@@ -19,6 +19,9 @@ import { FloorPlansPage } from './pages/FloorPlans';
 import { RackDetailPage, RacksPage } from './pages/Racks';
 import { HardwarePage } from './pages/Hardware';
 import { DeviceDetailPage, DeviceLabelPage } from './pages/DeviceDetail';
+import { NetworkPage } from './pages/Network';
+import { NetworkDevicePage } from './pages/NetworkDevice';
+import { IpamPage, PrefixDetailPage } from './pages/Ipam';
 
 /** Implemented sections. Every key here must be `available` in NAV_SECTIONS (checked by a test). */
 export const IMPLEMENTED: Record<string, ComponentType> = {
@@ -32,6 +35,8 @@ export const IMPLEMENTED: Record<string, ComponentType> = {
   'floor-plans': FloorPlansPage,
   racks: RacksPage,
   hardware: HardwarePage,
+  network: NetworkPage,
+  ipam: IpamPage,
 };
 
 function AppRoutes() {
@@ -49,6 +54,8 @@ function AppRoutes() {
         {visible.has('racks') && <Route path="/racks/:id" element={<RackDetailPage />} />}
         {visible.has('hardware') && <Route path="/hardware/:id" element={<DeviceDetailPage />} />}
         {visible.has('hardware') && me?.user.userType === 'staff' && <Route path="/hardware/:id/label" element={<DeviceLabelPage />} />}
+        {visible.has('network') && <Route path="/network/devices/:id" element={<NetworkDevicePage />} />}
+        {visible.has('ipam') && <Route path="/ipam/prefixes/:id" element={<PrefixDetailPage />} />}
         <Route path="/account" element={<AccountPage />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />

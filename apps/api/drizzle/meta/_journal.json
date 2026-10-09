@@ -36,6 +36,20 @@
       "when": 1791561915182,
       "tag": "0004_dcim_locking",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791568905151,
+      "tag": "0005_network_ipam",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791568945017,
+      "tag": "0006_network_constraints",
+      "breakpoints": true
     }
   ]
 }

@@ -26,6 +26,10 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
 
   app.set('trust proxy', config.TRUST_PROXY_HOPS);
   app.disable('x-powered-by');
+  // CSV imports (up to 5 million characters, possibly multi-byte) get a larger
+  // body limit; every other route, including the unauthenticated ones, keeps 1 MB.
+  // The JSON parser skips bodies that were already parsed.
+  app.use(['/api/v1/dcim/devices/import', '/api/v1/ipam/import'], express.json({ limit: '16mb' }));
   app.useBodyParser('json', { limit: '1mb' });
   app.use(
     helmet({

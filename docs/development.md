@@ -32,9 +32,18 @@ CDCIM_ADMIN_PASSWORD='choose-a-long-passphrase' npm run admin:create -- --email 
 npm run db:seed          # dev only: 2 sample customers, a NOC user and a customer admin
 
 # 5. Start
-(cd apps/api && node dist/main.js)     # API on http://127.0.0.1:4000, docs at /api/docs
-npm run dev:web                        # UI on http://localhost:5173 (proxies /api)
+(cd apps/api && node dist/main.js)          # API on http://127.0.0.1:4000, docs at /api/docs
+(cd apps/api && node dist/worker/main.js)   # discovery worker (needs Redis); without it runs stay "queued"
+npm run dev:web                             # UI on http://localhost:5173 (proxies /api)
 ```
+
+To try discovery without network gear, start the simulators used by the tests (a real SNMP agent on UDP 16161 and a RouterOS REST mock):
+
+```bash
+npx tsx apps/api/test/simulators/run.ts
+```
+
+Then add an SNMP v2c credential (host `127.0.0.1`, port `16161`, community `demo-public-ro`) to a router and run a discovery.
 
 If `CDCIM_ADMIN_PASSWORD` is not set, `admin:create` generates a strong password and prints it once.
 
@@ -43,6 +52,8 @@ If `CDCIM_ADMIN_PASSWORD` is not set, `admin:create` generates a strong password
 ```bash
 npm test
 ```
+
+API end-to-end tests need PostgreSQL and Redis (they wipe and recreate the `crapplet_dcim_test` database). Device adapters are exercised against simulators in `apps/api/test/simulators`: a real SNMP agent (net-snmp) on a random local UDP port and HTTP mocks of the RouterOS, FortiOS and NX-API endpoints.
 
 - Unit tests need no services.
 - API end-to-end tests boot the real application against PostgreSQL and Redis. They use `TEST_DATABASE_URL` (default `postgres://cdcim:cdcim_dev@127.0.0.1:5432/crapplet_dcim_test`) and **wipe that database** at the start of each file. The helper refuses to run unless the database name contains `test`.

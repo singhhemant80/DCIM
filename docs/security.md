@@ -109,6 +109,33 @@ A separate reviewer audited the physical-DCIM code and found nine defects, all f
 - Bulk and import audit records lacked the customer and before/after values.
 - Customers could search by the staff-only management address.
 
+## Phase 3: device credentials and discovery
+
+- **Write-only secrets.** SNMP communities and v3 keys, RouterOS and NX-API passwords and FortiOS tokens are encrypted with the platform key ring (AES-256-GCM). No API returns them; the UI shows only "secret set" with a date. Audit records name the credential kind, host and user, never the secret.
+- **Bound to a destination.** The ciphertext's additional authenticated data covers organization, device, kind, host and port. Copying a ciphertext to another device, or changing the stored host without re-entering the secret, makes it undecryptable. The host is fixed when the secret is saved, so a later edit to the device's management address (by someone with only `dcim.write`) cannot redirect a secret.
+- **Only the worker decrypts.** `cdcim-worker` is a separate process. Jobs on the queue carry only a run id. Decrypted values live in one function scope, are redacted from any error text and are never logged (`authKey`, `privKey`, `community`, `password`, `token`, `secretEnc` are on the logger's redact list).
+- **Read-only collection.** Adapters issue SNMP GET/GETBULK, HTTP GET, or NX-API `cli_show` with a fixed list of `show` commands. There is no code path that writes to a device. Applying a discovery changes only the DCIM database, never deletes documented ports, and is recorded in the audit log.
+- **Permissions.** Configuring credentials needs `monitoring.configure` (a dangerous, staff-only permission). Starting a discovery and applying it needs `network.write`. Network infrastructure is staff-only; customers see only their own IP subnets and addresses, without infrastructure device names or staff subnets.
+- **TLS.** Certificate verification is on by default for HTTPS adapters. Turning it off is a per-credential choice for self-signed management certificates. Plain HTTP is offered for labs and labelled as sending credentials in clear.
+- **Reach of the worker.** Whoever holds `monitoring.configure` can point a credential at any host and port the worker can reach. Run the worker on a host whose network access is limited to the management network (Phase 9 adds a configurable allow-list).
+- **Timeouts.** Every SNMP request and HTTP call has a timeout (HTTP is a hard deadline for the whole request); each run has a 120-second ceiling; runs stuck for 15 minutes are marked failed so a device is never blocked.
+
+## Phase 3 review
+
+A separate reviewer audited the network, IPAM and discovery code. Confirmed defects, all fixed with regression tests in `apps/api/test/network-regressions.e2e.test.ts`:
+- A credential with no host followed the device's management address at run time, so a `dcim.write` user could redirect secrets. The host is now saved with the secret and bound into its encryption context.
+- LLDP neighbors were matched to our devices by the first label of their name, which could link another network's `core1.isp.net` to our `core1`. Matching now needs the exact name, or a bare name equal to our device's short name; address matches use the global table only.
+- Applying a run whose neighbor collection failed deleted all existing observations. Deletion is now limited to protocols the run reported.
+- A customer saw usage counts that included another customer's addresses in a nested prefix. Counts are per customer, and prefixes can no longer nest across customers.
+- `PATCH /ipam/addresses/:id` cleared fields that were not sent.
+- An invalid circuit status filter returned 500; a zero port speed returned 409.
+
+Plausible items also addressed: concurrent applies are serialized per device; the worker no longer overwrites a run the API marked stale; discovery can't make a logical interface a LAG member; customer address views hide infrastructure device names and staff subnets; the 1 MB JSON limit applies everywhere except the two CSV import routes.
+
+## Dependency advisories
+
+`npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.
+
 ## Known limitations (Phase 1)
 
 - The audit hash chain detects edits and deletions in the middle of the log, but not removal of the newest records, because the verifier has no external anchor. Phase 9 adds periodic export of the chain head (to object storage or email) as that anchor.

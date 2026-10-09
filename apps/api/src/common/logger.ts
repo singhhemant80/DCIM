@@ -20,14 +20,17 @@ export const REDACT_PATHS = [
   '*.secret',
   '*.mfaSecretEnc',
   '*.community',
+  '*.authKey',
+  '*.privKey',
+  '*.secretEnc',
   '*.apiKey',
   '*.privateKey',
 ];
 
-export function createLogger(level: string, pretty = false): Logger {
+export function createLogger(level: string, pretty = false, service = 'crapplet-dcim-api'): Logger {
   return pino({
     level,
-    base: { service: 'crapplet-dcim-api' },
+    base: { service },
     redact: { paths: REDACT_PATHS, censor: '[REDACTED]' },
     timestamp: pino.stdTimeFunctions.isoTime,
     ...(pretty ? { transport: { target: 'pino-pretty', options: { singleLine: true } } } : {}),

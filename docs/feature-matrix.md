@@ -2,21 +2,21 @@
 
 Updated at the end of every phase. **Done** means it has frontend, backend logic, persistence, access control, error handling and automated tests. Anything less is listed as Partial or Not started, with the reason.
 
-Last updated: Phase 2, 9 October 2026.
+Last updated: Phase 3, 9 October 2026.
 
 ## Navigation sections
 
 | # | Section | Status | Phase | Notes |
 |---|---|---|---|---|
-| 1 | Overview Dashboard | **Partial** | 1 → 4–5 | Live counts: physical capacity (racks, units used/free/reserved), devices by state and category, warranty expiry, low spare parts, customers, users, security activity, audit integrity. Bandwidth and power arrive with Phases 4–5. |
+| 1 | Overview Dashboard | **Partial** | 1 → 4–5 | Live counts: physical capacity, devices by state and category, warranty expiry, low spare parts, network devices, cables, circuits and committed transit, IPv4 utilization and nearly-full subnets, customers, users, security activity, audit integrity. Bandwidth and power arrive with Phases 4–5. |
 | 2 | Datacenters | **Done** | 2 | Create, edit, delete (only when empty), counts per site |
 | 3 | Buildings and Rooms | **Done** | 2 | Buildings, rooms (floor size), rows; deletes refused while in use |
 | 4 | Floor Plans | **Done** | 2 | Tile grid per room; drag or click to position racks; fill colour by occupancy |
 | 5 | Racks and Rack Elevation | **Done** | 2 | Front/rear elevation, drag-and-drop placement, reservations, dedicated racks, rack relocation, history |
 | 6 | Servers and Hardware Inventory | **Done** | 2 | Devices with full spec, lifecycle with configurable rules, history, CSV import/export, bulk edit, QR labels, models, spare parts. Attachments (S3) pending, see below |
-| 7 | Network Infrastructure | Not started | 3 | |
+| 7 | Network Infrastructure | **Done** | 3 | Network devices, physical and logical interfaces (LAG, VLAN, bridge, tunnel, loopback), cables, VLANs, VRFs, providers and circuits with history, topology, write-only access credentials, read-only discovery with preview and apply. Staff only. Live traffic is Phase 4 |
 | 8 | Network Monitoring | Not started | 4 | |
-| 9 | IP Address Management | Not started | 3 | |
+| 9 | IP Address Management | **Done** | 3 | IPv4/IPv6 prefixes with hierarchy and utilization, VRFs, pools, atomic next-free allocation, reservations with expiry, release with history, conflict report, CSV import/export. Customers see their own subnets and addresses read-only |
 | 10 | Power Consumption | Not started | 5 | |
 | 11 | Colocation Management | Not started | 7 | |
 | 12 | Server Provisioning | Not started | 6 | |
@@ -81,14 +81,49 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Warranty reminders | Partial | Shown on the overview and filterable; email notifications come with the notification module (Phase 4/8) |
 | QR codes and printable labels | Done | `dcim.e2e` |
 | Customer view of own equipment (no internal fields) | Done | `dcim.e2e` |
-| Power and network connection records | Not started | Network connections in Phase 3, power connections and readings in Phase 5 |
+| Power and network connection records | Partial | Network connections (cables, ports, circuits) done in Phase 3; power connections and readings in Phase 5 |
 | Environmental sensor associations | Not started | Needs the monitoring collectors (Phase 4) |
 | Attachments (S3-compatible storage) | Not started | Planned with the object-storage integration; no files are stored yet |
 | Inventory reconciliation against discovered hardware | Not started | Needs Redfish/SNMP discovery (Phases 3 and 6) |
 | Independent review of Phase 2 (9 defects) | Done | All fixed; `dcim-regressions.e2e` |
 
+## Phase 3 capabilities
+
+| Capability (brief §9–10) | Status | Tests |
+|---|---|---|
+| Network device records (router, switch, firewall, load balancer, optical) with platform and role | Done | `network.e2e` |
+| Interfaces: physical/management ports and logical interfaces (LAG, VLAN, bridge, tunnel, loopback, virtual); bulk creation from patterns (`ether[1-24]`) | Done | `network.e2e` |
+| LAG membership and parent rules enforced in the database (same device, no nested LAGs, a cabled port stays physical) | Done | `network.e2e` |
+| VLANs scoped per datacenter or global; access/trunk/all-tagged modes; untagged and tagged consistency; datacenter scope enforced | Done | `network.e2e` |
+| Cables between two physical ports; one cable per port; exactly two ends (deferred DB constraint) | Done | `network.e2e` |
+| VRFs with route distinguishers | Done | `network.e2e`, `ipam.e2e` |
+| Providers and circuits (transit, peering, transport, cross-connect) with commit and port speed, termination port, change history | Done | `network.e2e` |
+| Topology from documented cables, observed LLDP/CDP neighbors and circuits only; cables confirmed by a neighbor are marked; unknown neighbors shown as such | Done | `network.e2e`, `network-regressions.e2e` |
+| Access credentials: SNMP v2c, SNMP v3 (auth/priv), RouterOS REST, FortiOS REST token, NX-API; encrypted, write-only, bound to device, kind and host | Done | `network.e2e`, `network-regressions.e2e` |
+| Discovery worker (separate process, BullMQ): connection test and read-only collection of interfaces, addresses, LAG membership, LLDP/CDP, BGP sessions and device facts | Done | `network.e2e`, `adapters.e2e` (simulators) |
+| Discovery preview and selective apply; never deletes ports; never writes to devices | Done | `network.e2e`, `network-regressions.e2e` |
+| IPv4 and IPv6 prefixes, hierarchy, containers, pools, gateways, VLAN and datacenter links, customer assignment consistent across the hierarchy | Done | `ipam.e2e`, `network-regressions.e2e` |
+| Next-free allocation (1–256 addresses) that is safe under concurrency | Done | `ipam.e2e` (20 parallel requests on a /28) |
+| Specific assignment, reservation with expiry, update, release with retained history | Done | `ipam.e2e` |
+| Conflict report (orphans, network/broadcast, customer mismatch, length mismatch, lapsed reservations) | Done | `ipam.e2e` |
+| CSV import (dry run, per-row results) and export | Done | `ipam.e2e` |
+| Customer IPAM view (own subnets and addresses, no infrastructure details) | Done | `ipam.e2e`, `network-regressions.e2e` |
+| DNS integration (pushing A/PTR records) | Not started | Names are recorded only; no DNS server is updated |
+| Automatic import of discovered addresses into IPAM | Not started | The preview compares device addresses with IPAM; recording them is a manual step |
+| Scheduled (periodic) discovery | Not started | Runs are started by an operator; scheduling arrives with the Phase 4 scheduler |
+| SSH-based collection for platforms without an API | Not started | Not needed for the target hardware; SNMP covers Cisco IOS devices |
+| Independent review of Phase 3 (7 confirmed defects + plausible items) | Done | All fixed; `network-regressions.e2e` |
+
 ## Integration compatibility matrix
 
-| Integration | Simulator tested | Hardware verified |
-|---|---|---|
-| All device and platform adapters | Not started | Not started |
+"Simulator tested" means the collector passed automated tests against a protocol simulator built from published documentation (a real SNMP agent in-process, HTTP mocks of the vendor APIs). It does not prove compatibility with a specific firmware release. Nothing is marked hardware-verified without a recorded run against the device.
+
+| Integration | Operations | Simulator tested | Hardware verified |
+|---|---|---|---|
+| SNMP v2c (any device) | GET/GETBULK: system, IF-MIB, IP-MIB, LAG-MIB, LLDP-MIB, CISCO-CDP-MIB, BGP4-MIB, ENTITY-MIB | Yes (`adapters.e2e`, `network.e2e`) | No |
+| SNMP v3 authPriv (SHA/AES tested; MD5, SHA-2, AES-256 selectable) | same | Yes (SHA + AES) | No |
+| MikroTik RouterOS 7 REST | GET `/rest/system/*`, `/interface`, `/interface/ethernet`, `/interface/bonding`, `/ip/address`, `/ipv6/address`, `/ip/neighbor`, `/routing/bgp/session` | Yes (`network.e2e`) | No (CCR2004/CCR2116 pending) |
+| Fortinet FortiOS REST | GET `monitor/system/status`, `cmdb/system/interface`, `monitor/system/interface`, `monitor/router/bgp/neighbors`, `monitor/network/lldp/neighbors` | Yes (`adapters.e2e`) | No (FortiGate 40F pending) |
+| Cisco NX-API (`cli_show`) | `show version`, `show interface`, `show ip interface vrf all`, `show port-channel summary`, `show lldp neighbors detail`, `show cdp neighbors detail`, `show ip bgp summary vrf all` | Yes (`adapters.e2e`) | No (Nexus 9372TX pending) |
+| Cisco IOS (4500-X, 2960-X) | via SNMP adapter | Through the SNMP tests | No |
+| Redfish, IPMI, Proxmox, Virtualizor, WHMCS | — | Not started | Not started |

@@ -227,6 +227,11 @@ export function DeviceDetailPage() {
               <Link to={`/hardware/${d.id}/label`} className="inline-flex h-9 items-center rounded-lg border border-rule-strong bg-field px-3.5 font-medium hover:bg-panel">
                 Print label
               </Link>
+              {can('network.read') && (
+                <Link to={`/network/devices/${d.id}`} className="inline-flex h-9 items-center rounded-lg border border-rule-strong bg-field px-3.5 font-medium hover:bg-panel">
+                  Ports & network
+                </Link>
+              )}
               <Button variant="primary" onClick={() => setDialog('edit')}>
                 Edit
               </Button>

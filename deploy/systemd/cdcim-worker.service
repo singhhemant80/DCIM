@@ -1,0 +1,29 @@
+[Unit]
+Description=Crapplet DCIM discovery worker (read-only device collection)
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cdcim
+Group=cdcim
+WorkingDirectory=/opt/crapplet-dcim/current/apps/api
+EnvironmentFile=/etc/crapplet-dcim/api.env
+ExecStart=/usr/bin/node dist/worker/main.js
+Restart=on-failure
+RestartSec=3
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/crapplet-dcim
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

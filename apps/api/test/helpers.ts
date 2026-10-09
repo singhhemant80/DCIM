@@ -132,6 +132,9 @@ export class Client {
   post(path: string, body?: object) {
     return this.agent.post(path).set('X-CSRF-Token', this.csrf).send(body ?? {});
   }
+  put(path: string, body: object) {
+    return this.agent.put(path).set('X-CSRF-Token', this.csrf).send(body);
+  }
   patch(path: string, body: object) {
     return this.agent.patch(path).set('X-CSRF-Token', this.csrf).send(body);
   }

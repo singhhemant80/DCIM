@@ -20,7 +20,7 @@ flowchart LR
   subgraph Host["Ubuntu LTS host (systemd)"]
     NGINX[nginx<br/>TLS, static SPA, /api proxy]
     API[cdcim-api<br/>NestJS REST + SSE]
-    WRK[cdcim-worker<br/>BullMQ consumers, Phase 4+]
+    WRK[cdcim-worker<br/>BullMQ consumers: discovery (3), polling (4+)]
     SCH[cdcim-scheduler<br/>repeatable jobs, Phase 4+]
   end
   PG[(PostgreSQL 16<br/>+ TimescaleDB, Phase 4+)]
@@ -42,7 +42,7 @@ flowchart LR
 | Process | Responsibility | Phase |
 |---|---|---|
 | `cdcim-api` | REST API (`/api/v1`), auth, RBAC, validation, OpenAPI, SSE fan-out of live updates | 1 |
-| `cdcim-worker` | Executes queued jobs: SNMP/API polling, power collection, provisioning steps, webhook delivery, notifications | 4 |
+| `cdcim-worker` | Executes queued jobs. Phase 3: read-only discovery runs (the only process that decrypts device credentials). Later: SNMP/API polling, power collection, provisioning steps, webhook delivery, notifications | 3 |
 | `cdcim-scheduler` | Single leader (Redis lock) that enqueues repeatable jobs at configured intervals | 4 |
 | nginx | TLS termination, serves the built SPA, proxies `/api` to the API on 127.0.0.1 | 1 (config), 9 (validated) |
 

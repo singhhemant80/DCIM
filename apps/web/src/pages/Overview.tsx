@@ -10,6 +10,7 @@ import { CATEGORY_LABELS, LIFECYCLE_LABELS, type LifecycleState } from '@crapple
 import { STATE_TONE, daysUntil } from '../lib/dcim';
 import { CustomerEquipment } from './Hardware';
 import { OccupancyBar } from './Racks';
+import { formatBps } from '../lib/network';
 
 interface DcimSummary {
   counts: { datacenters: number; rooms: number; racks: number; devices: number; unracked: number };
@@ -103,6 +104,43 @@ function PhysicalPanel() {
   );
 }
 
+function NetworkPanel() {
+  const { can } = useAuth();
+  const net = useQuery({ queryKey: ['network', 'summary'], queryFn: () => api.get<{ networkDevices: number; interfaces: number; physicalInterfaces: number; cables: number; vlans: number; activeCircuits: number; committedTransitBps: number }>('/network/summary'), enabled: can('network.read') });
+  const ipam = useQuery({ queryKey: ['ipam', 'summary'], queryFn: () => api.get<{ prefixes: number; allocated: number; reserved: number; ipv4: { usable: number; used: number; utilization: number }; fullest: { id: string; prefix: string; addressUtilization: number }[] }>('/ipam/summary'), enabled: can('ipam.read') });
+  if (!can('network.read') && !can('ipam.read')) return null;
+  const n = net.data;
+  const i = ipam.data;
+  return (
+    <Panel title="Network and IP addresses" actions={<span className="flex gap-3 text-[13px]">{n && <Link to="/network" className="text-accent hover:underline">Network</Link>}{i && <Link to="/ipam" className="text-accent hover:underline">IPAM</Link>}</span>}>
+      <ErrorNote error={net.error ?? ipam.error} />
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+        {n && <Stat label="Network devices" value={n.networkDevices} note={`${n.physicalInterfaces} physical ports`} />}
+        {n && <Stat label="Cables documented" value={n.cables} note={`${n.vlans} VLANs`} />}
+        {n && <Stat label="Active circuits" value={n.activeCircuits} note={n.committedTransitBps ? `${formatBps(n.committedTransitBps)} committed transit` : 'No transit commits recorded'} />}
+        {i && <Stat label="IPv4 in use" value={`${i.ipv4.utilization}%`} note={`${i.ipv4.used.toLocaleString('en-IN')} of ${i.ipv4.usable.toLocaleString('en-IN')} in active subnets`} tone={i.ipv4.utilization >= 90 ? 'crit' : i.ipv4.utilization >= 75 ? 'warn' : undefined} />}
+      </dl>
+      {i && i.fullest.filter((f) => f.addressUtilization >= 75).length > 0 && (
+        <p className="mt-4 text-[13px]">
+          Nearly full:{' '}
+          {i.fullest
+            .filter((f) => f.addressUtilization >= 75)
+            .map((f, k) => (
+              <span key={f.id}>
+                {k > 0 && ', '}
+                <Link to={`/ipam/prefixes/${f.id}`} className="font-mono text-warn hover:underline">
+                  {f.prefix}
+                </Link>{' '}
+                ({Math.round(f.addressUtilization)}%)
+              </span>
+            ))}
+        </p>
+      )}
+      <p className="mt-4 text-[12.5px] text-ink-3">Live port traffic arrives with Phase 4 (network monitoring); these are inventory figures.</p>
+    </Panel>
+  );
+}
+
 interface Overview {
   generatedAt: string;
   customers: { total: number; active: number; suspended: number; closed: number } | null;
@@ -167,6 +205,7 @@ function StaffOverview() {
         <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
           <div className="flex flex-col gap-5">
             {can('dcim.read') && <PhysicalPanel />}
+            <NetworkPanel />
             <Panel title="Customers and access">
               <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
                 {o.customers && <Stat label="Active customers" value={o.customers.active} note={`${o.customers.suspended} suspended, ${o.customers.closed} closed`} />}
@@ -227,7 +266,7 @@ function CustomerOverview() {
   const c = q.data;
   return (
     <>
-      <PageHeader title="Your account" description="IP addresses, power and bandwidth for your account will be added here as those modules go live." />
+      <PageHeader title="Your account" description="Power and bandwidth for your account will be added here as those modules go live." />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
       {c && (
@@ -251,6 +290,11 @@ function CustomerOverview() {
       <div className="mt-5">
         <CustomerEquipment embedded />
       </div>
+      <p className="mt-5 text-[13px]">
+        <Link to="/ipam" className="text-accent hover:underline">
+          View your IP addresses
+        </Link>
+      </p>
     </>
   );
 }

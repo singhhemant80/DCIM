@@ -63,6 +63,24 @@ const CONSTRAINT_MESSAGES: Record<string, { status: 400 | 409; error: string; me
   device_models_mfr_name_uq: { status: 409, error: 'conflict', message: 'This manufacturer already has a model with that name' },
   spare_parts_org_dc_pn_uq: { status: 409, error: 'conflict', message: 'This part number is already stocked at that location' },
   spare_parts_qty_ck: { status: 409, error: 'insufficient_stock', message: 'Not enough stock for that change' },
+  interfaces_device_name_uq: { status: 409, error: 'conflict', message: 'This device already has an interface with that name' },
+  interfaces_not_self_ck: { status: 400, error: 'invalid_interface', message: 'An interface cannot be its own LAG or parent' },
+  interfaces_mtu_ck: { status: 400, error: 'invalid_interface', message: 'MTU must be between 64 and 65535' },
+  interfaces_speed_ck: { status: 400, error: 'invalid_interface', message: 'Speed must be greater than zero (leave it empty when unknown)' },
+  cable_ends_interface_uq: { status: 409, error: 'port_in_use', message: 'One of those ports already has a cable' },
+  cable_ends_interface_id_interfaces_id_fk: { status: 409, error: 'port_in_use', message: 'This port has a cable; remove the cable first' },
+  vlans_scope_vid_uq: { status: 409, error: 'conflict', message: 'That VLAN ID is already used in this scope' },
+  vrfs_org_name_uq: { status: 409, error: 'conflict', message: 'A VRF with this name already exists' },
+  vrfs_org_rd_uq: { status: 409, error: 'conflict', message: 'Another VRF already uses this route distinguisher' },
+  providers_org_name_uq: { status: 409, error: 'conflict', message: 'A provider with this name already exists' },
+  circuits_provider_cid_uq: { status: 409, error: 'conflict', message: 'This provider already has a circuit with that ID' },
+  circuits_interface_uq: { status: 409, error: 'port_in_use', message: 'Another active circuit already terminates on that port' },
+  prefixes_vrf_prefix_uq: { status: 409, error: 'prefix_exists', message: 'That prefix already exists in this VRF' },
+  prefixes_gateway_ck: { status: 400, error: 'invalid_gateway', message: 'The gateway must be an address inside the prefix' },
+  ip_addresses_vrf_address_uq: { status: 409, error: 'address_in_use', message: 'That address is already reserved or allocated in this VRF' },
+  ip_addresses_prefix_length_ck: { status: 400, error: 'invalid_prefix_length', message: 'Prefix length is out of range for this address family' },
+  device_credentials_device_kind_uq: { status: 409, error: 'conflict', message: 'This device already has a credential of that type' },
+  discovery_runs_one_active_uq: { status: 409, error: 'discovery_running', message: 'A collection is already queued or running for this device' },
   devices_sized_needs_position_ck: { status: 400, error: 'invalid_placement', message: 'Rack-mounted equipment needs a unit position' },
   devices_position_ck: { status: 400, error: 'invalid_placement', message: 'A placed device needs a rack, a unit and a face' },
   devices_ownership_ck: { status: 400, error: 'invalid_ownership', message: 'Customer-owned equipment must be assigned to a customer' },
@@ -82,8 +100,8 @@ export function rethrowDbError(err: unknown, fallbacks: { fk?: string } = {}): n
       const Ex = known.status === 409 ? ConflictException : BadRequestException;
       throw new Ex({ error: known.error, message: known.message });
     }
-    if (e.code === CHECK_VIOLATION && e.constraint && /^(devices_fit|racks_resize|rack_reservations_fit|devices_rack_org)/.test(e.constraint)) {
-      throw new ConflictException({ error: 'does_not_fit', message: e.message ?? 'The change does not fit the rack' });
+    if (e.code === CHECK_VIOLATION && e.constraint && /^(devices_fit|racks_resize|rack_reservations_fit|devices_rack_org|interfaces_|cable_ends_|cables_two_ends|interface_vlans_|ip_addresses_interface)/.test(e.constraint)) {
+      throw new ConflictException({ error: e.constraint.startsWith('devices_') || e.constraint.startsWith('rack') ? 'does_not_fit' : 'invalid_relation', message: e.message ?? 'That change is not allowed' });
     }
     if (e.code === UNIQUE_VIOLATION) throw new ConflictException({ error: 'conflict', message: 'That record already exists' });
     if (e.code === EXCLUSION_VIOLATION) throw new ConflictException({ error: 'conflict', message: 'That overlaps an existing record' });

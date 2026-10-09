@@ -4,12 +4,14 @@ import {
   bigserial,
   boolean,
   check,
+  cidr,
   customType,
   date,
   index,
   inet,
   integer,
   jsonb,
+  macaddr,
   numeric,
   pgEnum,
   pgTable,
@@ -18,6 +20,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -272,6 +275,7 @@ export const rackFaceEnum = pgEnum('rack_face', ['front', 'rear']);
 export const rackNumberingEnum = pgEnum('rack_numbering', ['bottom_up', 'top_down']);
 export const ownershipEnum = pgEnum('ownership', ['company', 'customer']);
 export const sparePartKindEnum = pgEnum('spare_part_kind', ['ram', 'ssd', 'hdd', 'nvme', 'cpu', 'nic', 'psu', 'rail', 'transceiver', 'cable', 'fan', 'other']);
+export const platformEnum = pgEnum('platform', ['routeros', 'nxos', 'ios', 'iosxe', 'fortios', 'junos', 'linux', 'windows', 'proxmox', 'other']);
 export const mgmtTypeEnum = pgEnum('mgmt_type', ['idrac', 'ilo', 'ipmi', 'redfish', 'other']);
 
 const orgRef = () =>
@@ -474,6 +478,10 @@ export const devices = pgTable(
     assetTag: text('asset_tag').notNull(),
     hostname: text('hostname'),
     serial: text('serial'),
+    /** Network OS / platform (Phase 3), used to pick discovery adapters. */
+    platform: platformEnum('platform'),
+    /** Free-text network role, e.g. edge router, core switch, ToR. */
+    networkRole: text('network_role'),
     lifecycleState: lifecycleStateEnum('lifecycle_state').notNull().default('planned'),
     rackId: uuid('rack_id').references(() => racks.id, { onDelete: 'restrict' }),
     positionU: integer('position_u'),
@@ -613,3 +621,391 @@ export type Rack = typeof racks.$inferSelect;
 export type DeviceModel = typeof deviceModels.$inferSelect;
 export type Device = typeof devices.$inferSelect;
 export type SparePart = typeof spareParts.$inferSelect;
+
+
+/* ======================================================================
+ * Phase 3: network infrastructure and IPAM
+ *
+ * Integrity rules live in the database (migration 0006_network_constraints):
+ * one cable per port, cables only on physical/management ports of the same
+ * organization, LAG members and sub-interfaces on the same device, one
+ * untagged VLAN per port, unique prefixes and addresses per VRF, addresses
+ * stored as host addresses only.
+ * ==================================================================== */
+
+export const interfaceKindEnum = pgEnum('interface_kind', ['physical', 'lag', 'vlan', 'bridge', 'tunnel', 'loopback', 'virtual', 'management']);
+export const interfaceMediaEnum = pgEnum('interface_media', ['copper', 'sfp', 'sfp_plus', 'sfp28', 'qsfp_plus', 'qsfp28', 'qsfp_dd', 'other']);
+export const vlanModeEnum = pgEnum('vlan_mode', ['access', 'tagged', 'tagged_all']);
+export const cableTypeEnum = pgEnum('cable_type', ['cat5e', 'cat6', 'cat6a', 'dac', 'aoc', 'mmf', 'smf', 'other']);
+export const cableStatusEnum = pgEnum('cable_status', ['planned', 'connected', 'decommissioning']);
+export const cableEndEnum = pgEnum('cable_end', ['a', 'b']);
+export const neighborProtocolEnum = pgEnum('neighbor_protocol', ['lldp', 'cdp', 'mndp']);
+export const vlanStatusEnum = pgEnum('vlan_status', ['active', 'reserved', 'deprecated']);
+export const circuitTypeEnum = pgEnum('circuit_type', ['internet_transit', 'ip_peering', 'transport', 'cross_connect', 'mpls', 'other']);
+export const circuitStatusEnum = pgEnum('circuit_status', ['planned', 'provisioning', 'active', 'decommissioned']);
+export const prefixStatusEnum = pgEnum('prefix_status', ['container', 'active', 'reserved', 'deprecated']);
+export const ipStatusEnum = pgEnum('ip_status', ['reserved', 'allocated', 'deprecated', 'released']);
+export const ipRoleEnum = pgEnum('ip_role', ['primary', 'secondary', 'gateway', 'vip', 'anycast', 'loopback', 'management']);
+export const credentialKindEnum = pgEnum('credential_kind', ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'fortios_rest', 'nxapi']);
+export const discoveryStatusEnum = pgEnum('discovery_status', ['queued', 'running', 'succeeded', 'failed']);
+export const discoveryModeEnum = pgEnum('discovery_mode', ['test', 'discover']);
+
+const inetCol = customType<{ data: string; driverData: string }>({ dataType: () => 'inet' });
+
+export const vrfs = pgTable(
+  'vrfs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    rd: text('rd'),
+    description: text('description'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('vrfs_org_name_uq').on(t.orgId, t.name), uniqueIndex('vrfs_org_rd_uq').on(t.orgId, t.rd).where(sql`${t.rd} is not null`)],
+);
+
+export const vlans = pgTable(
+  'vlans',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    /** Null = organization-wide VLAN; otherwise local to one datacenter. */
+    datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'restrict' }),
+    vid: integer('vid').notNull(),
+    name: text('name').notNull(),
+    status: vlanStatusEnum('status').notNull().default('active'),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'restrict' }),
+    description: text('description'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('vlans_scope_vid_uq').on(t.orgId, sql`coalesce(${t.datacenterId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.vid),
+    check('vlans_vid_ck', sql`${t.vid} between 1 and 4094`),
+  ],
+);
+
+export const interfaces = pgTable(
+  'interfaces',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    kind: interfaceKindEnum('kind').notNull(),
+    media: interfaceMediaEnum('media'),
+    description: text('description'),
+    macAddress: macaddr('mac_address'),
+    mtu: integer('mtu'),
+    /** Nominal or configured speed in bit/s; null = unknown (utilization is then not computed). */
+    speedBps: bigint('speed_bps', { mode: 'number' }),
+    enabled: boolean('enabled').notNull().default(true),
+    lagId: uuid('lag_id').references((): AnyPgColumn => interfaces.id, { onDelete: 'set null' }),
+    parentId: uuid('parent_id').references((): AnyPgColumn => interfaces.id, { onDelete: 'set null' }),
+    mode: vlanModeEnum('mode'),
+    untaggedVlanId: uuid('untagged_vlan_id').references(() => vlans.id, { onDelete: 'restrict' }),
+    /** SNMP ifIndex as last discovered; can change across reboots, so the stable key is (device, name). */
+    ifIndex: integer('if_index'),
+    monitored: boolean('monitored').notNull().default(true),
+    /** Whether this port contributes to device and datacenter traffic totals (Phase 4). */
+    countInTotals: boolean('count_in_totals').notNull().default(false),
+    discoveredAt: ts('discovered_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('interfaces_device_name_uq').on(t.deviceId, sql`lower(${t.name})`),
+    index('interfaces_org_idx').on(t.orgId),
+    index('interfaces_lag_idx').on(t.lagId),
+    check('interfaces_mtu_ck', sql`${t.mtu} is null or ${t.mtu} between 64 and 65535`),
+    check('interfaces_speed_ck', sql`${t.speedBps} is null or ${t.speedBps} > 0`),
+    check('interfaces_not_self_ck', sql`${t.lagId} is distinct from ${t.id} and ${t.parentId} is distinct from ${t.id}`),
+  ],
+);
+
+export const interfaceTaggedVlans = pgTable(
+  'interface_tagged_vlans',
+  {
+    interfaceId: uuid('interface_id')
+      .notNull()
+      .references(() => interfaces.id, { onDelete: 'cascade' }),
+    vlanId: uuid('vlan_id')
+      .notNull()
+      .references(() => vlans.id, { onDelete: 'restrict' }),
+  },
+  (t) => [primaryKey({ columns: [t.interfaceId, t.vlanId] }), index('interface_tagged_vlans_vlan_idx').on(t.vlanId)],
+);
+
+export const cables = pgTable('cables', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: orgRef(),
+  type: cableTypeEnum('type'),
+  status: cableStatusEnum('status').notNull().default('connected'),
+  label: text('label'),
+  color: text('color'),
+  lengthM: numeric('length_m', { precision: 8, scale: 2 }),
+  notes: text('notes'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const cableEnds = pgTable(
+  'cable_ends',
+  {
+    cableId: uuid('cable_id')
+      .notNull()
+      .references(() => cables.id, { onDelete: 'cascade' }),
+    end: cableEndEnum('end').notNull(),
+    /** RESTRICT: a port with a cable can't be deleted until the cable is removed. */
+    interfaceId: uuid('interface_id')
+      .notNull()
+      .references(() => interfaces.id, { onDelete: 'restrict' }),
+  },
+  (t) => [primaryKey({ columns: [t.cableId, t.end] }), uniqueIndex('cable_ends_interface_uq').on(t.interfaceId)],
+);
+
+export const neighborObservations = pgTable(
+  'neighbor_observations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    interfaceId: uuid('interface_id')
+      .notNull()
+      .references(() => interfaces.id, { onDelete: 'cascade' }),
+    protocol: neighborProtocolEnum('protocol').notNull(),
+    remoteChassisId: text('remote_chassis_id').notNull().default(''),
+    remoteSystemName: text('remote_system_name'),
+    remotePortId: text('remote_port_id').notNull().default(''),
+    remotePortDescription: text('remote_port_description'),
+    remoteMgmtAddress: text('remote_mgmt_address'),
+    remotePlatform: text('remote_platform'),
+    /** Our interface on the far end, when the neighbor matches a device we know. */
+    matchedInterfaceId: uuid('matched_interface_id').references(() => interfaces.id, { onDelete: 'set null' }),
+    firstSeenAt: ts('first_seen_at').notNull().defaultNow(),
+    lastSeenAt: ts('last_seen_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('neighbor_obs_uq').on(t.interfaceId, t.protocol, t.remoteChassisId, t.remotePortId), index('neighbor_obs_matched_idx').on(t.matchedInterfaceId)],
+);
+
+export const providers = pgTable(
+  'providers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    asn: bigint('asn', { mode: 'number' }),
+    accountNumber: text('account_number'),
+    portalUrl: text('portal_url'),
+    nocEmail: text('noc_email'),
+    nocPhone: text('noc_phone'),
+    notes: text('notes'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('providers_org_name_uq').on(t.orgId, sql`lower(${t.name})`)],
+);
+
+export const circuits = pgTable(
+  'circuits',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    providerId: uuid('provider_id')
+      .notNull()
+      .references(() => providers.id, { onDelete: 'restrict' }),
+    cid: text('cid').notNull(),
+    type: circuitTypeEnum('type').notNull(),
+    status: circuitStatusEnum('status').notNull().default('active'),
+    commitBps: bigint('commit_bps', { mode: 'number' }),
+    portSpeedBps: bigint('port_speed_bps', { mode: 'number' }),
+    installDate: date('install_date'),
+    termEndDate: date('term_end_date'),
+    datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'restrict' }),
+    /** Our port where the circuit terminates (A side). */
+    interfaceId: uuid('interface_id').references(() => interfaces.id, { onDelete: 'set null' }),
+    zSide: text('z_side'),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'restrict' }),
+    description: text('description'),
+    notes: text('notes'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('circuits_provider_cid_uq').on(t.providerId, sql`lower(${t.cid})`),
+    uniqueIndex('circuits_interface_uq').on(t.interfaceId).where(sql`${t.interfaceId} is not null and ${t.status} <> 'decommissioned'`),
+  ],
+);
+
+export const circuitEvents = pgTable(
+  'circuit_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    orgId: orgRef(),
+    circuitId: uuid('circuit_id')
+      .notNull()
+      .references(() => circuits.id, { onDelete: 'cascade' }),
+    occurredAt: ts('occurred_at').notNull().defaultNow(),
+    actorId: uuid('actor_id'),
+    actorLabel: text('actor_label'),
+    kind: text('kind').notNull(),
+    summary: text('summary').notNull(),
+  },
+  (t) => [index('circuit_events_circuit_idx').on(t.circuitId, t.occurredAt)],
+);
+
+export const prefixes = pgTable(
+  'prefixes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    vrfId: uuid('vrf_id').references(() => vrfs.id, { onDelete: 'restrict' }),
+    prefix: cidr('prefix').notNull(),
+    status: prefixStatusEnum('status').notNull().default('active'),
+    /** All addresses usable (no network/broadcast reservation), e.g. loopback or NAT pools. */
+    isPool: boolean('is_pool').notNull().default(false),
+    datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'restrict' }),
+    vlanId: uuid('vlan_id').references(() => vlans.id, { onDelete: 'restrict' }),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'restrict' }),
+    gateway: inetCol('gateway'),
+    description: text('description'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('prefixes_vrf_prefix_uq').on(t.orgId, sql`coalesce(${t.vrfId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.prefix),
+    index('prefixes_org_idx').on(t.orgId),
+    index('prefixes_customer_idx').on(t.customerId),
+    check('prefixes_gateway_ck', sql`${t.gateway} is null or (${t.gateway} <<= ${t.prefix} and masklen(${t.gateway}) = case family(${t.gateway}) when 4 then 32 else 128 end)`),
+  ],
+);
+
+export const ipAddresses = pgTable(
+  'ip_addresses',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    vrfId: uuid('vrf_id').references(() => vrfs.id, { onDelete: 'restrict' }),
+    /** Host address only (/32 or /128); the subnet length used on the interface is prefix_length. */
+    address: inetCol('address').notNull(),
+    prefixLength: integer('prefix_length'),
+    status: ipStatusEnum('status').notNull(),
+    role: ipRoleEnum('role'),
+    dnsName: text('dns_name'),
+    reverseDns: text('reverse_dns'),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'restrict' }),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    interfaceId: uuid('interface_id').references(() => interfaces.id, { onDelete: 'set null' }),
+    /** Reference to a VPS or service in another system until Phases 6–7 model services. */
+    serviceRef: text('service_ref'),
+    reservedUntil: ts('reserved_until'),
+    notes: text('notes'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('ip_addresses_vrf_address_uq').on(t.orgId, sql`coalesce(${t.vrfId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.address),
+    index('ip_addresses_customer_idx').on(t.customerId),
+    index('ip_addresses_device_idx').on(t.deviceId),
+    index('ip_addresses_interface_idx').on(t.interfaceId),
+    check('ip_addresses_host_ck', sql`masklen(${t.address}) = case family(${t.address}) when 4 then 32 else 128 end`),
+    check('ip_addresses_prefix_length_ck', sql`${t.prefixLength} is null or ${t.prefixLength} between 0 and case family(${t.address}) when 4 then 32 else 128 end`),
+    check('ip_addresses_released_ck', sql`${t.status} <> 'released' or (${t.deviceId} is null and ${t.interfaceId} is null and ${t.customerId} is null)`),
+  ],
+);
+
+export const ipEvents = pgTable(
+  'ip_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    orgId: orgRef(),
+    ipId: uuid('ip_id')
+      .notNull()
+      .references(() => ipAddresses.id, { onDelete: 'cascade' }),
+    occurredAt: ts('occurred_at').notNull().defaultNow(),
+    actorId: uuid('actor_id'),
+    actorLabel: text('actor_label'),
+    action: text('action').notNull(),
+    summary: text('summary').notNull(),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  },
+  (t) => [index('ip_events_ip_idx').on(t.ipId, t.occurredAt)],
+);
+
+export interface CredentialParams {
+  timeoutMs?: number;
+  retries?: number;
+  scheme?: 'https' | 'http';
+  verifyTls?: boolean;
+  vdom?: string | null;
+  securityLevel?: 'noAuthNoPriv' | 'authNoPriv' | 'authPriv';
+  authProtocol?: string;
+  privProtocol?: string;
+}
+
+export const deviceCredentials = pgTable(
+  'device_credentials',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    kind: credentialKindEnum('kind').notNull(),
+    /** Optional override of the device management address. */
+    host: text('host'),
+    port: integer('port'),
+    username: text('username'),
+    /** SecretBox ciphertext of a JSON object (community / keys / password / token). Never returned by the API. */
+    secretEnc: text('secret_enc').notNull(),
+    params: jsonb('params').$type<CredentialParams>().notNull().default(sql`'{}'::jsonb`),
+    lastTestAt: ts('last_test_at'),
+    lastTestOk: boolean('last_test_ok'),
+    lastTestMessage: text('last_test_message'),
+    rotatedAt: ts('rotated_at').notNull().defaultNow(),
+    createdBy: uuid('created_by'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('device_credentials_device_kind_uq').on(t.deviceId, t.kind)],
+);
+
+export const discoveryRuns = pgTable(
+  'discovery_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    credentialKind: credentialKindEnum('credential_kind').notNull(),
+    mode: discoveryModeEnum('mode').notNull(),
+    status: discoveryStatusEnum('status').notNull().default('queued'),
+    requestedBy: uuid('requested_by'),
+    requestedLabel: text('requested_label'),
+    startedAt: ts('started_at'),
+    finishedAt: ts('finished_at'),
+    error: text('error'),
+    result: jsonb('result').$type<Record<string, unknown>>(),
+    appliedAt: ts('applied_at'),
+    appliedBy: text('applied_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('discovery_runs_device_idx').on(t.deviceId, t.createdAt),
+    uniqueIndex('discovery_runs_one_active_uq').on(t.deviceId).where(sql`${t.status} in ('queued', 'running')`),
+  ],
+);
+
+export type Interface = typeof interfaces.$inferSelect;
+export type Vlan = typeof vlans.$inferSelect;
+export type Vrf = typeof vrfs.$inferSelect;
+export type Cable = typeof cables.$inferSelect;
+export type Circuit = typeof circuits.$inferSelect;
+export type Prefix = typeof prefixes.$inferSelect;
+export type IpAddress = typeof ipAddresses.$inferSelect;
+export type DeviceCredential = typeof deviceCredentials.$inferSelect;
+export type DiscoveryRun = typeof discoveryRuns.$inferSelect;
