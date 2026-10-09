@@ -1,0 +1,23 @@
+{
+  "name": "crapplet-dcim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Crapplet DCIM — datacenter infrastructure management, network monitoring, power and provisioning platform",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build -w @crapplet/shared && npm run build -w @crapplet/api && npm run build -w @crapplet/web",
+    "dev:api": "npm run dev -w @crapplet/api",
+    "dev:web": "npm run dev -w @crapplet/web",
+    "db:migrate": "npm run db:migrate -w @crapplet/api",
+    "db:seed": "npm run db:seed -w @crapplet/api",
+    "test": "npm run test -w @crapplet/shared && npm run test -w @crapplet/api && npm run test -w @crapplet/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  }
+}

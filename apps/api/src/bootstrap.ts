@@ -1,0 +1,78 @@
+import 'reflect-metadata';
+import { randomUUID } from 'node:crypto';
+import { type INestApplication, VersioningType } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import { pinoHttp } from 'pino-http';
+import type { Logger } from 'pino';
+import { AppModule } from './app.module';
+import type { AppConfig } from './config/config';
+import { PinoNestLogger } from './common/logger';
+
+const REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** Builds the HTTP application. Shared by `main.ts` and the e2e tests so both run identical middleware. */
+export async function createApp(config: AppConfig, logger: Logger): Promise<INestApplication> {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(config, logger), {
+    logger: new PinoNestLogger(logger),
+    bodyParser: false,
+  });
+
+  app.set('trust proxy', config.TRUST_PROXY_HOPS);
+  app.disable('x-powered-by');
+  app.useBodyParser('json', { limit: '1mb' });
+  app.use(
+    helmet({
+      // The API serves JSON only; Swagger UI needs inline scripts/styles.
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:'],
+        },
+      },
+      hsts: config.NODE_ENV === 'production',
+    }),
+  );
+  app.use(cookieParser());
+  app.use(
+    pinoHttp({
+      logger,
+      genReqId: (req, res) => {
+        const incoming = req.headers['x-request-id'];
+        const id = typeof incoming === 'string' && REQUEST_ID.test(incoming) ? incoming : randomUUID();
+        res.setHeader('x-request-id', id);
+        return id;
+      },
+      autoLogging: { ignore: (req) => (req.url ?? '').startsWith('/api/v1/health') },
+      customLogLevel: (_req, res, err) => (err || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'),
+    }),
+  );
+  app.enableCors({
+    origin: config.WEB_ORIGIN.split(',').map((s) => s.trim()),
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Request-Id'],
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
+  });
+  app.setGlobalPrefix('api');
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
+  app.enableShutdownHooks();
+
+  if (config.ENABLE_SWAGGER) {
+    const doc = new DocumentBuilder()
+      .setTitle('Crapplet DCIM API')
+      .setDescription(
+        'Versioned REST API. Authenticate via POST /api/v1/auth/login (session cookie). ' +
+          'State-changing requests must send the X-CSRF-Token header with the value of the cdcim_csrf cookie.',
+      )
+      .setVersion('1.0')
+      .addCookieAuth('cdcim_session')
+      .build();
+    SwaggerModule.setup('api/docs', app, () => SwaggerModule.createDocument(app, doc), { jsonDocumentUrl: 'api/docs/openapi.json' });
+  }
+  return app;
+}
