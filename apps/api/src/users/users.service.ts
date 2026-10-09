@@ -133,12 +133,14 @@ export class UsersService {
     if (self && input.roleIds) throw new ForbiddenException({ error: 'self_role_change', message: 'You cannot change your own roles' });
 
     await this.db.transaction(async (tx) => {
+      // Serialize every change that could affect Super Administrator coverage, so two
+      // admins disabling each other concurrently cannot leave the organization with none.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${'superadmin:' + p.orgId}, 0))`);
       const before = { name: target.name, status: target.status, roleIds: (await this.rolesFor([id], tx)).get(id)?.map((r) => r.id) ?? [] };
-      // Changing someone's roles requires holding every permission they currently have too,
-      // otherwise a junior admin could strip a senior admin's access.
-      if (input.roleIds || input.status === 'disabled') {
-        await this.assertCanManage(p, target, tx);
-      }
+      // Changing anything about another user (roles, status, name) requires holding every
+      // permission they currently have, so a junior admin cannot strip, revive or rename a
+      // more privileged account.
+      if (!self) await this.assertCanManage(p, target, tx);
       if (input.roleIds) {
         await this.rolesSvc.assertAssignable(p, input.roleIds, target.userType, tx);
         await tx.delete(userRoles).where(eq(userRoles.userId, id));
@@ -184,7 +186,8 @@ export class UsersService {
     if (target.id === p.userId) throw new ForbiddenException({ error: 'self_mfa_reset', message: 'Use your profile to manage your own MFA' });
     await this.db.transaction(async (tx) => {
       await this.assertCanManage(p, target, tx);
-      await tx.update(users).set({ mfaEnabledAt: null, mfaSecretEnc: null, mfaLastTimeStep: null }).where(eq(users.id, id));
+      // The admin has verified the person's identity, so clear any lockout caused by failed codes too.
+      await tx.update(users).set({ mfaEnabledAt: null, mfaSecretEnc: null, mfaLastTimeStep: null, failedLoginCount: 0, lockedUntil: null }).where(eq(users.id, id));
       await tx.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, id));
       await this.sessions.revokeAllForUser(id, 'mfa_reset', undefined, tx);
       await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: target.customerId, action: 'user.mfa.reset', target: { type: 'user', id }, outcome: 'success', meta }, tx);

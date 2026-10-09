@@ -5,6 +5,7 @@ import type { Response } from 'express';
 import { changePasswordSchema, loginSchema, mfaDisableSchema, mfaEnableSchema, mfaVerifySchema } from '@crapplet/shared';
 import type { z } from 'zod';
 import { APP_CONFIG, type AppConfig } from '../config/config';
+import { DB, type Db } from '../db/db';
 import { ApiZodBody, ZodPipe } from '../common/zod';
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from './auth.service';
@@ -13,7 +14,9 @@ import { AllowDuringMfaEnrollment, CurrentPrincipal, Public, ReqMeta } from './d
 import { clearSessionCookies, setSessionCookies } from './cookies';
 import type { Principal, RequestMeta } from './principal';
 
-// Login-ish routes get a tighter per-IP budget on top of per-account lockout.
+// Login and re-authentication routes get a tighter per-IP budget on top of per-account lockout.
+// Read from the environment at load time because decorators are static; the same variable is
+// validated by loadConfig() at startup.
 const LOGIN_THROTTLE = { default: { limit: Number(process.env.LOGIN_RATE_LIMIT_PER_MINUTE ?? 10), ttl: 60_000 } };
 
 @ApiTags('auth')
@@ -24,6 +27,7 @@ export class AuthController {
     private readonly sessions: SessionService,
     private readonly audit: AuditService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(DB) private readonly db: Db,
   ) {}
 
   @Public()
@@ -77,6 +81,7 @@ export class AuthController {
     return this.auth.profile(p);
   }
 
+  @Throttle(LOGIN_THROTTLE)
   @Post('password')
   @HttpCode(200)
   @ApiCookieAuth()
@@ -108,6 +113,7 @@ export class AuthController {
     return this.auth.enableMfa(p, body.code, meta);
   }
 
+  @Throttle(LOGIN_THROTTLE)
   @Post('mfa/disable')
   @HttpCode(200)
   @ApiCookieAuth()
@@ -141,8 +147,10 @@ export class AuthController {
   async revokeMySession(@CurrentPrincipal() p: Principal, @Param('id', ParseUUIDPipe) id: string, @ReqMeta() meta: RequestMeta) {
     const mine = (await this.sessions.listForUser(p.userId)).some((s) => s.id === id);
     if (!mine) throw new NotFoundException({ error: 'not_found', message: 'Session not found' });
-    await this.sessions.revoke(id, 'user_revoked');
-    await this.audit.record({ orgId: p.orgId, actor: { type: 'user', id: p.userId, label: p.email }, customerId: p.customerId, action: 'auth.session.revoke', target: { type: 'session', id }, outcome: 'success', meta });
+    await this.db.transaction(async (tx) => {
+      await this.sessions.revoke(id, 'user_revoked', tx);
+      await this.audit.record({ orgId: p.orgId, actor: { type: 'user', id: p.userId, label: p.email }, customerId: p.customerId, action: 'auth.session.revoke', target: { type: 'session', id }, outcome: 'success', meta }, tx);
+    });
     return { ok: true };
   }
 }

@@ -50,6 +50,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | TOTP MFA, replay protection, recovery codes, org-enforced enrollment, admin reset | Done | `auth.e2e` |
 | RBAC with permission catalog, built-in and custom roles, no-escalation rule | Done | `rbac-tenancy.e2e`, `shared.test` |
 | Tenant isolation (org + customer filters, 404 on foreign ids, staff-only fields) | Done | `rbac-tenancy.e2e`, `tenant-scope.test` |
+| Fixes from independent security review (6 defects) | Done | `security-regressions.e2e` |
 | Append-only, hash-chained audit log with verification | Done | `audit-platform.e2e`, `audit-hash.test` |
 | Encrypted secrets with key rotation | Done | `secret-box.test` |
 | Structured logging with secret redaction, request ids | Done | `audit-platform.e2e` (headers) |

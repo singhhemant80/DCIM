@@ -6,6 +6,8 @@ import type Redis from 'ioredis';
 import { DB, type Db } from '../db/db';
 import { REDIS } from '../redis/redis';
 import { Public } from '../auth/decorators';
+import { LOGGER } from '../common/logger';
+import type { Logger } from 'pino';
 
 const startedAt = new Date();
 
@@ -26,6 +28,7 @@ export class HealthController {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(REDIS) private readonly redis: Redis,
+    @Inject(LOGGER) private readonly logger: Logger,
   ) {}
 
   /** Liveness: the process is up and the event loop responds. No dependencies checked. */
@@ -44,7 +47,9 @@ export class HealthController {
         await withTimeout(fn(), 2_000);
         checks[name] = { ok: true, latencyMs: Date.now() - t };
       } catch (err) {
-        checks[name] = { ok: false, error: (err as Error).message };
+        // Details (hosts, ports, auth errors) go to the log only; this endpoint is public.
+        this.logger.warn({ check: name, err }, 'Readiness check failed');
+        checks[name] = { ok: false, error: 'unavailable' };
       }
     };
     await Promise.all([

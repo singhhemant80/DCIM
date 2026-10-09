@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { and, eq, gt, isNull, lt, sql } from 'drizzle-orm';
-import { DB, type Db } from '../db/db';
+import { DB, type Db, type DbOrTx } from '../db/db';
 import { customers, mfaChallenges, mfaRecoveryCodes, organizations, users, type User } from '../db/schema';
 import { SecretBox } from '../common/secret-box';
 import { hashToken, newRecoveryCode, newToken } from '../common/tokens';
@@ -56,56 +56,54 @@ export class AuthService {
     };
 
     if (!user) throw await fail('unknown_email');
-    if (user.lockedUntil && user.lockedUntil > now) throw await fail('locked');
 
-    if (!passwordOk) {
-      // Atomic increment so concurrent guesses cannot skip the lock.
-      const [updated] = await this.db
-        .update(users)
-        .set({ failedLoginCount: sql`${users.failedLoginCount} + 1` })
-        .where(eq(users.id, user.id))
-        .returning({ failed: users.failedLoginCount });
-      const failed = updated?.failed ?? 0;
-      if (failed >= LOCKOUT_THRESHOLD) {
-        const ms = Math.min(LOCKOUT_BASE_MS * 2 ** (failed - LOCKOUT_THRESHOLD), LOCKOUT_MAX_MS);
-        await this.db.update(users).set({ lockedUntil: new Date(now.getTime() + ms) }).where(eq(users.id, user.id));
-        throw await fail(failed === LOCKOUT_THRESHOLD ? 'bad_password_lockout_started' : 'bad_password_locked');
-      }
-      throw await fail('bad_password');
-    }
+    // Decide the outcome under a row lock so concurrent guesses are serialized:
+    // each one re-reads the lock state, so a burst cannot exceed the threshold
+    // and a correct password arriving after the lock engaged is still refused.
+    const outcome = await this.db.transaction(async (tx): Promise<{ reason: string } | { user: User }> => {
+      const [u] = await tx.select().from(users).where(eq(users.id, user.id)).for('update');
+      if (!u) return { reason: 'unknown_email' } as const;
+      if (u.lockedUntil && u.lockedUntil > now) return { reason: 'locked' } as const;
+      if (!passwordOk) return { reason: (await this.registerFailure(tx, u.id, now)).reason };
+      if (u.status !== 'active') return { reason: 'disabled' } as const;
+      const patch: Partial<User> = {};
+      // With MFA the failure counter is only cleared once the second factor succeeds,
+      // so alternating "right password, wrong code" still counts toward lockout.
+      if (!u.mfaEnabledAt) Object.assign(patch, { failedLoginCount: 0, lockedUntil: null });
+      if (this.passwords.needsRehash(u.passwordHash)) patch.passwordHash = await this.passwords.hash(password);
+      if (Object.keys(patch).length) await tx.update(users).set(patch).where(eq(users.id, u.id));
+      return { user: u };
+    });
+    if (!('user' in outcome)) throw await fail(outcome.reason);
+    const current = outcome.user;
 
-    if (user.status !== 'active') throw await fail('disabled');
-    if (user.customerId) {
-      const [c] = await this.db.select({ status: customers.status }).from(customers).where(eq(customers.id, user.customerId));
+    if (current.customerId) {
+      const [c] = await this.db.select({ status: customers.status }).from(customers).where(eq(customers.id, current.customerId));
       if (!c || c.status === 'closed') throw await fail('customer_closed');
     }
 
-    const patch: Partial<User> = { failedLoginCount: 0, lockedUntil: null };
-    if (this.passwords.needsRehash(user.passwordHash)) patch.passwordHash = await this.passwords.hash(password);
-    await this.db.update(users).set(patch).where(eq(users.id, user.id));
-
-    if (user.mfaEnabledAt) {
+    if (current.mfaEnabledAt) {
       const challengeToken = newToken();
       await this.db.insert(mfaChallenges).values({
-        userId: user.id,
+        userId: current.id,
         tokenHash: hashToken(challengeToken),
         expiresAt: new Date(now.getTime() + MFA_CHALLENGE_TTL_MS),
         ip: meta.ip,
         userAgent: meta.userAgent,
       });
       await this.audit.record({
-        orgId: user.orgId,
-        actor: { type: 'user', id: user.id, label: user.email },
-        customerId: user.customerId,
+        orgId: current.orgId,
+        actor: { type: 'user', id: current.id, label: current.email },
+        customerId: current.customerId,
         action: 'auth.login.password_ok_mfa_pending',
-        target: { type: 'user', id: user.id },
+        target: { type: 'user', id: current.id },
         outcome: 'success',
         meta,
       });
       return { kind: 'mfa', challengeToken };
     }
 
-    return { kind: 'session', issued: await this.completeLogin(user, meta, 'password'), user };
+    return { kind: 'session', issued: await this.completeLogin(current, meta, 'password'), user: current };
   }
 
   async verifyMfaChallenge(challengeToken: string, code: string, meta: RequestMeta) {
@@ -127,7 +125,7 @@ export class AuthService {
       throw new UnauthorizedException({ error: 'mfa_challenge_invalid', message: 'Sign-in expired. Please start again.' });
     }
     const [user] = await this.db.select().from(users).where(eq(users.id, challenge.userId));
-    if (!user || user.status !== 'active' || !user.mfaEnabledAt || !user.mfaSecretEnc) {
+    if (!user || user.status !== 'active' || !user.mfaEnabledAt || !user.mfaSecretEnc || (user.lockedUntil && user.lockedUntil > now)) {
       throw new UnauthorizedException({ error: 'mfa_challenge_invalid', message: 'Sign-in expired. Please start again.' });
     }
 
@@ -160,6 +158,9 @@ export class AuthService {
     }
 
     if (!method) {
+      // Failed codes count toward the same per-account lockout as bad passwords,
+      // so fresh challenges cannot be used to keep guessing.
+      const { reason } = await this.db.transaction((tx) => this.registerFailure(tx, user.id, now));
       await this.audit.record({
         orgId: user.orgId,
         actor: { type: 'user', id: user.id, label: user.email },
@@ -168,7 +169,7 @@ export class AuthService {
         target: { type: 'user', id: user.id },
         outcome: 'failure',
         meta,
-        metadata: { attempt: challenge.attempts },
+        metadata: { attempt: challenge.attempts, reason },
       });
       throw new UnauthorizedException({ error: 'mfa_invalid_code', message: 'Invalid verification code' });
     }
@@ -180,7 +181,7 @@ export class AuthService {
   private async completeLogin(user: User, meta: RequestMeta, method: string): Promise<IssuedSession> {
     return this.db.transaction(async (tx) => {
       const issued = await this.sessionsSvc.create(user, meta, true, tx);
-      await tx.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+      await tx.update(users).set({ lastLoginAt: new Date(), failedLoginCount: 0, lockedUntil: null }).where(eq(users.id, user.id));
       await this.audit.record(
         {
           orgId: user.orgId,
@@ -198,6 +199,49 @@ export class AuthService {
     });
   }
 
+  /**
+   * Counts one failed authentication attempt (bad password, bad MFA code, or a
+   * failed re-authentication inside a session) and engages an exponential lock
+   * once the threshold is reached. Must run in a transaction.
+   */
+  private async registerFailure(tx: DbOrTx, userId: string, now: Date): Promise<{ reason: string; locked: boolean }> {
+    const [updated] = await tx
+      .update(users)
+      .set({ failedLoginCount: sql`${users.failedLoginCount} + 1` })
+      .where(eq(users.id, userId))
+      .returning({ failed: users.failedLoginCount });
+    const failed = updated?.failed ?? 0;
+    if (failed < LOCKOUT_THRESHOLD) return { reason: 'bad_credentials', locked: false };
+    const ms = Math.min(LOCKOUT_BASE_MS * 2 ** (failed - LOCKOUT_THRESHOLD), LOCKOUT_MAX_MS);
+    await tx.update(users).set({ lockedUntil: new Date(now.getTime() + ms) }).where(eq(users.id, userId));
+    return { reason: failed === LOCKOUT_THRESHOLD ? 'lockout_started' : 'locked_extended', locked: true };
+  }
+
+  /**
+   * Re-checks the password of an already signed-in user before a sensitive
+   * change. Failures are audited and count toward lockout; reaching the lock
+   * also ends every session, so a stolen session cookie cannot be used to
+   * guess the password indefinitely.
+   */
+  private async reauthenticate(p: Principal, password: string, action: string, meta: RequestMeta): Promise<User> {
+    const [user] = await this.db.select().from(users).where(eq(users.id, p.userId));
+    const now = new Date();
+    const ok = await this.passwords.verify(user?.passwordHash ?? null, password);
+    if (user && ok && !(user.lockedUntil && user.lockedUntil > now)) {
+      if (user.failedLoginCount) await this.db.update(users).set({ failedLoginCount: 0 }).where(eq(users.id, user.id));
+      return user;
+    }
+    await this.db.transaction(async (tx) => {
+      const { reason, locked } = user ? await this.registerFailure(tx, user.id, now) : { reason: 'missing_user', locked: false };
+      if (locked) await this.sessionsSvc.revokeAllForUser(p.userId, 'reauth_lockout', undefined, tx);
+      await this.audit.record(
+        { orgId: p.orgId, actor: { type: 'user', id: p.userId, label: p.email }, customerId: p.customerId, action, target: { type: 'user', id: p.userId }, outcome: 'failure', meta, metadata: { reason: `bad_current_password:${reason}`, sessionsRevoked: locked } },
+        tx,
+      );
+    });
+    throw new BadRequestException({ error: 'invalid_password', message: 'Password is incorrect' });
+  }
+
   async logout(p: Principal, meta: RequestMeta): Promise<void> {
     await this.db.transaction(async (tx) => {
       await this.sessionsSvc.revoke(p.sessionId, 'logout', tx);
@@ -209,11 +253,7 @@ export class AuthService {
   }
 
   async changePassword(p: Principal, current: string, next: string, meta: RequestMeta): Promise<void> {
-    const [user] = await this.db.select().from(users).where(eq(users.id, p.userId));
-    if (!user || !(await this.passwords.verify(user.passwordHash, current))) {
-      await this.audit.record({ orgId: p.orgId, actor: { type: 'user', id: p.userId, label: p.email }, customerId: p.customerId, action: 'auth.password.change', target: { type: 'user', id: p.userId }, outcome: 'failure', meta, metadata: { reason: 'bad_current_password' } });
-      throw new BadRequestException({ error: 'invalid_password', message: 'Current password is incorrect' });
-    }
+    const user = await this.reauthenticate(p, current, 'auth.password.change', meta);
     const weak = this.passwords.weakness(next, { email: user.email, name: user.name });
     if (weak) throw new BadRequestException({ error: 'weak_password', message: weak });
     if (await this.passwords.verify(user.passwordHash, next)) {
@@ -272,10 +312,7 @@ export class AuthService {
   }
 
   async disableMfa(p: Principal, password: string, meta: RequestMeta): Promise<void> {
-    const [user] = await this.db.select().from(users).where(eq(users.id, p.userId));
-    if (!user || !(await this.passwords.verify(user.passwordHash, password))) {
-      throw new BadRequestException({ error: 'invalid_password', message: 'Password is incorrect' });
-    }
+    const user = await this.reauthenticate(p, password, 'auth.mfa.disable', meta);
     const [org] = await this.db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, user.orgId));
     if (user.userType === 'staff' && org?.settings.requireMfaForStaff) {
       throw new BadRequestException({ error: 'mfa_required_by_policy', message: 'Your organization requires MFA for staff accounts' });

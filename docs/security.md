@@ -44,9 +44,10 @@ flowchart TB
 | Password storage | Argon2id, 19 MiB memory, t=2, p=1 (OWASP). Parameters are upgraded transparently at next login. |
 | Password policy | Minimum 12 characters, plus a ban on common passwords, single repeated characters and passwords containing the user's email. |
 | Enumeration resistance | Unknown email and wrong password return the same message, and a dummy hash keeps timing equal. |
-| Lockout | After 5 consecutive failures, exponential lock (15 min doubling, max 24 h). Increments are atomic. |
+| Lockout | After 5 consecutive failures, exponential lock (15 min doubling, max 24 h). The outcome is decided under a row lock (`SELECT … FOR UPDATE`), so parallel guesses cannot exceed the threshold and a correct password is refused while locked. Failed MFA codes and failed in-session re-authentication count toward the same limit. |
 | Rate limit | Per-IP throttle on login and MFA routes (`LOGIN_RATE_LIMIT_PER_MINUTE`), plus a general per-IP budget. |
 | MFA | RFC 6238 TOTP. The secret is encrypted at rest, codes cannot be replayed (last time step stored and updated conditionally), there are 10 single-use recovery codes, and each challenge allows 5 attempts with a 5-minute TTL. |
+| Re-authentication | Changing the password or turning off MFA requires the current password. Failures are audited, throttled per IP and count toward lockout. Reaching the lock this way also ends all of the user's sessions, so a stolen session cookie can't be used to guess the password. |
 | MFA policy | Organization setting `requireMfaForStaff`. Staff without MFA are restricted to enrollment routes. |
 | Sessions | 256-bit random token in an HttpOnly, SameSite=Lax, Secure (prod) cookie. Only its SHA-256 hash is stored. Idle and absolute timeouts are set per organization. |
 | Session revocation | On logout, password change (other sessions), MFA enable or reset, user disable, customer closure, or admin "sign out everywhere". |
@@ -57,8 +58,8 @@ flowchart TB
 - Permissions are `resource.action` strings from a single catalog ([`permissions.ts`](../packages/shared/src/permissions.ts)).
 - `*.read` never implies a write. Control operations (`hardware.control`, `network.config`, `provisioning.execute`) are separate permissions, so a read-only NOC role can never power-cycle a server or push a configuration.
 - Permissions flagged **staff-only** cannot be placed in customer roles (rejected on save) and are dropped at request time for customer users even if a role were misconfigured. Unknown permission strings grant nothing.
-- **No privilege escalation:** you can only assign roles, edit roles or manage users whose permissions you already hold.
-- The organization always keeps at least one active Super Administrator. Users cannot disable themselves or change their own roles.
+- **No privilege escalation:** you can only assign roles, edit roles, or change anything about another user (roles, status, name) when you already hold every permission involved.
+- The organization always keeps at least one active Super Administrator. User changes are serialized per organization with an advisory lock, so two admins disabling each other at once cannot leave none. Users cannot disable themselves or change their own roles.
 - Every denial is audited with the missing permissions.
 
 ## Tenant isolation
@@ -92,7 +93,13 @@ flowchart TB
 - Helmet applies CSP, `X-Content-Type-Options`, frame denial and other headers. `X-Powered-By` is removed.
 - Request bodies are limited to 1 MB.
 
+## Independent review
+
+At the end of Phase 1, a separate reviewer audited this code. It found six defects, all fixed with regression tests in `apps/api/test/security-regressions.e2e.test.ts`: concurrent lockout bypass, a race between two super admins, unlimited MFA guessing across fresh challenges, a lower-privileged admin able to re-enable a super admin, unthrottled and unaudited in-session password checks, and a self-session revocation audited outside its transaction. The public readiness endpoint no longer returns raw dependency errors.
+
 ## Known limitations (Phase 1)
+
+- The audit hash chain detects edits and deletions in the middle of the log, but not removal of the newest records, because the verifier has no external anchor. Phase 9 adds periodic export of the chain head (to object storage or email) as that anchor.
 
 - API keys for machine clients are not implemented yet (Phase 8). Today, only interactive sessions authenticate.
 - Rate limiting is per API process (in memory). With multiple API processes, move the throttler storage to Redis (planned with Phase 4's worker split).
