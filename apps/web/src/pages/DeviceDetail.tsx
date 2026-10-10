@@ -6,6 +6,7 @@ import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime, relativeTime } from '../lib/format';
 import { daysUntil, STATE_TONE, useRacks, type DeviceT, type EventT } from '../lib/dcim';
+import { PowerControlPanel } from '../components/PowerControl';
 import { Button, Chip, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Textarea } from '../components/ui';
 import { DeviceForm } from './Hardware';
 import { formatWattsShort } from '@crapplet/shared';
@@ -336,6 +337,7 @@ export function DeviceDetailPage() {
             )}
           </Panel>
           {can('power.read') && d.lifecycleState !== 'retired' && <DevicePowerPanel id={d.id} />}
+          {can('hardware.control') && d.category === 'server' && d.lifecycleState !== 'retired' && <PowerControlPanel deviceId={d.id} />}
           {staff && (
             <Panel title="Purchase and warranty">
               <Facts

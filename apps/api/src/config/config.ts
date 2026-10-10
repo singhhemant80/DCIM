@@ -61,6 +61,24 @@ const envSchema = z.object({
    * (COOKIE_SECURE=false), e.g. a lab install reached by IP before TLS is set up.
    */
   ALLOW_INSECURE_HTTP: bool.optional(),
+  /**
+   * Base URL at which servers being installed reach this DCIM (iPXE script,
+   * unattended-install config, installer callback), e.g. http://10.0.0.5:8080.
+   * Required for OS installs; usually an address on the management network.
+   */
+  CDCIM_PUBLIC_URL: z
+    .string()
+    .url()
+    .refine((u) => /^https?:\/\/[^/]+\/?$/.test(u), 'Scheme and host only, e.g. http://10.0.0.5:8080')
+    .transform((u) => u.replace(/\/$/, ''))
+    .optional(),
+  /**
+   * Source addresses allowed to fetch boot scripts and install configs (CIDR list).
+   * Defaults to the private ranges. Loopback is not included: behind a reverse
+   * proxy on the same host every request would look local unless
+   * TRUST_PROXY_HOPS is set, so allowing it must be a deliberate choice.
+   */
+  CDCIM_BOOT_ALLOW: z.string().default('10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,fc00::/7'),
 });
 
 export type AppConfig = Omit<z.infer<typeof envSchema>, 'COOKIE_SECURE' | 'ENABLE_SWAGGER' | 'ALLOW_INSECURE_HTTP'> & {

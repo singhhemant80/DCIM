@@ -2,7 +2,7 @@
 
 Updated at the end of every phase. **Done** means it has frontend, backend logic, persistence, access control, error handling and automated tests. Anything less is listed as Partial or Not started, with the reason.
 
-Last updated: Phase 5, 10 October 2026.
+Last updated: Phase 6, 10 October 2026.
 
 ## Navigation sections
 
@@ -19,10 +19,10 @@ Last updated: Phase 5, 10 October 2026.
 | 9 | IP Address Management | **Done** | 3 | IPv4/IPv6 prefixes with hierarchy and utilization, VRFs, pools, atomic next-free allocation, reservations with expiry, release with history, conflict report, CSV import/export. Customers see their own subnets and addresses read-only |
 | 10 | Power Consumption | **Done** | 5 | Measured power from Redfish and IPMI DCMI BMCs, APC metered PDU outlets (SNMP), RouterOS `/system/health` and NX-OS supply input; per-device estimates (admin figure, else model typical draw); one source per instant by priority; hourly energy with measured, estimated and unknown kept apart; tariffs per datacenter with validity dates; device, rack (budget %), datacenter, category and customer views; CSV export; customers see their own equipment without cost. Simulator-tested only |
 | 11 | Colocation Management | Not started | 7 | |
-| 12 | Server Provisioning | Not started | 6 | |
-| 13 | Operating Systems and Images | Not started | 6 | |
-| 14 | Proxmox Integration | Not started | 6 | |
-| 15 | Virtualizor Integration | Not started | 6 | |
+| 12 | Server Provisioning | **Done** | 6 | Job engine (queued → running ⇄ waiting → verifying → completed; failed, cancelled, recovery) with leases, retries, idempotency keys, one active job per server/VM, deadlines and cancellation with cleanup; power actions through a separate BMC control credential (Redfish or IPMI) with typed confirmation; OS installation by Redfish virtual media or PXE/iPXE with unattended-install templates, installer callback or TCP verification; operator decisions for interrupted steps; job history with every step and log line. Simulator-tested only |
+| 13 | Operating Systems and Images | **Done** | 6 | ISO and kernel/initrd library with SHA-256 per file, verification by download (required before use), kickstart / preseed / autoinstall templates with checked variables. Staff only |
+| 14 | Proxmox Integration | **Done** | 6 | Read-only token sync of nodes and VMs (missing ones kept and marked), operator-mapped node → server links, VM assignment to customers, VM actions only with a second token, verified by the hypervisor's state (reboot by uptime). Simulator-tested only |
+| 15 | Virtualizor Integration | **Done** | 6 | Server and VPS sync, customer assignment, start / shut down / power off / reboot only after an explicit opt-in; suspend/resume not offered (administrative in Virtualizor). Simulator-tested only; response shapes from the API documentation |
 | 16 | Customers and Tenants | **Done** | 1 | List, search, filter, create and edit; closing a customer revokes its sessions |
 | 17 | Orders and Services | Not started | 7 | |
 | 18 | Monitoring and Alerts | **Done** | 4 | Alert rules (utilization, traffic, errors, discards, port down, device unreachable) with duration and consecutive-sample logic, acknowledgement, maintenance windows with suppression, notifications by email, signed webhook, Slack and Telegram with retries, polling configuration and health, retention settings. Staff only |
@@ -161,6 +161,29 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Period boundaries exactly on a half-hour time-zone offset | Partial | Energy is stored per UTC hour; in Asia/Kolkata a month starts at 18:00 UTC instead of 18:30 (stated on screen and in the API) |
 | Independent review of Phase 5 (8 confirmed defects + suspicions) | Done | All fixed; regression tests in `power.e2e`, `energy.test` |
 
+## Phase 6 capabilities
+
+| Capability (brief §13–14) | Status | Tests |
+|---|---|---|
+| Job state machine in PostgreSQL: claimed with `FOR UPDATE SKIP LOCKED`, lease fenced by worker id, heartbeat, per-step attempts, exponential backoff, permanent errors, deadline, cancellation with cleanup | Done | `provisioning-engine.e2e` (10) |
+| Steps marked safe or unsafe to repeat; a crash or failure inside an unsafe step moves the job to `recovery` for an operator decision (retry, skip, fail) instead of repeating it | Done | `provisioning-engine.e2e`, `provisioning.e2e` (crash during "Start the server", recovery decisions) |
+| Idempotency-Key header (same key + same request → same job; different request → 409), one active job per server and per VM (database-enforced) | Done | `provisioning.e2e` |
+| Power actions (on, hard off, ACPI shutdown, hard reset, ACPI restart, power cycle) through a separate write-only BMC control credential; typed server name; customers on their own servers (`hardware.control`) | Done | `provisioning.e2e` (Redfish mock with state, stand-in ipmitool) |
+| Verification of power actions: the BMC must report the expected state; a reset needs a new boot reported by the BMC (Redfish `BootProgress.LastStateTime`); without that the job is "Completed · not verified"; a graceful request the OS ignores fails, never escalates to hard off | Done | `provisioning.e2e` |
+| OS image library with SHA-256 per file; verification by download, pinned file set, edits blocked while in use, mismatch reported; loopback/metadata URLs refused | Done | `provisioning.e2e` |
+| Install by Redfish virtual media: eject, insert ISO, one-time boot from CD, start, wait for installer, eject, verify (power on, no override, media ejected) | Done | `provisioning.e2e` |
+| Install by PXE/iPXE: one-time network boot, iPXE script by MAC or token, kernel arguments and config rendered per job, served once; a second request before the installer reports stops the job | Done | `provisioning.e2e` |
+| Unattended-install templates (kickstart, preseed, autoinstall) with `{{variables}}` and `{{#if}}`; root password only as a SHA-512 crypt hash; unknown variables rejected | Done | `crypt.test` (reference vectors), `provisioning.e2e` |
+| Installer verification: callback with a per-job token (stored hashed), or TCP port on the new address counted only after it was seen closed; the one-time boot must have been consumed | Done | `provisioning.e2e` |
+| Inventory updated (host name, OS, device history) only after a verified install | Done | `provisioning.e2e` |
+| Proxmox VE: read-only token sync, separate action token, VM actions verified (reboot by uptime, suspend by `qmpstatus`) | Done | `provisioning.e2e` (Proxmox API mock) |
+| Virtualizor: sync, opt-in actions, graceful vs hard stop mapped as documented | Done (mapping from the API docs, not a live panel) | `provisioning.e2e` (Virtualizor mock) |
+| Server Provisioning, OS & Images, Proxmox, Virtualizor pages; power-control panel on the server page | Done | Screenshots at desktop and phone width |
+| Windows installs (WDS/unattend.xml), firmware/BIOS settings, RAID configuration, serial-over-LAN console | Not started | Templates are text-only; no RAID or firmware steps |
+| Per-job ISO remastering for virtual media | Not started | A virtual-media install fetches its configuration by MAC (`/api/v1/boot/config?mac=`), so the ISO must be prepared to do that |
+| Proxmox VM creation / Virtualizor VPS ordering | Not started | Phase 7 (services) |
+| Independent review of Phase 6 (4 high, 6 medium, 3 low + 4 found in the re-check) | Done | All fixed or documented below; regression tests in `provisioning.e2e` |
+
 ## Integration compatibility matrix
 
 "Simulator tested" means the collector passed automated tests against a protocol simulator built from published documentation (a real SNMP agent in-process, HTTP mocks of the vendor APIs). It does not prove compatibility with a specific firmware release. Nothing is marked hardware-verified without a recorded run against the device.
@@ -183,4 +206,9 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | IPMI v2.0 DCMI via ipmitool | `mc info`, `dcmi power reading` | Stand-in ipmitool only (`power.e2e`) | No |
 | APC rack PDU (PowerNet-MIB rPDU2) | SNMP walk of outlet metered status and device status | Yes (`power.e2e`) | No |
 | RouterOS `/system/health`, NX-OS `show environment power` | read only | Yes (mocks, `power.e2e`) | No (CCR2004 power-consumption support depends on the model) |
-| Proxmox, Virtualizor, WHMCS | — | Not started | Not started |
+| Redfish control (iDRAC 9, iLO 5/6, XClarity, Supermicro) | `ComputerSystem.Reset` (checked against `ResetType@Redfish.AllowableValues`), `PATCH Systems/*` Boot override (Once/Disabled, Cd/Pxe), `Managers/*/VirtualMedia` CD `InsertMedia`/`EjectMedia`, `BootProgress.LastStateTime` | Yes (`provisioning.e2e`, stateful mock) | No (Dell R630/R640 pending) |
+| IPMI chassis control via ipmitool | `chassis power status/on/off/soft/reset/cycle`, `chassis bootdev pxe/none`, `chassis bootparam get 5` | Stand-in ipmitool only | No |
+| iPXE / PXE | DHCP chainload to `/api/v1/boot/ipxe` (configured on your DHCP server) | Requests simulated in `provisioning.e2e` | No |
+| Proxmox VE API | GET `/version`, `/nodes`, `/cluster/resources?type=vm`, `/nodes/*/qemu|lxc/*/status/current`; POST `…/status/{start,stop,shutdown,reboot,suspend,resume}` (action token only) | Yes (`provisioning.e2e`) | No |
+| Virtualizor admin API | `act=servers`, `act=vs` (list, filter by `vpsid`, `action=start|stop|poweroff|restart`) | Yes (`provisioning.e2e`) | No |
+| WHMCS | — | Not started | Not started |

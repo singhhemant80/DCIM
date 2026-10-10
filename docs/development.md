@@ -47,7 +47,11 @@ Then add an SNMP v2c credential (host `127.0.0.1`, port `16161`, community `demo
 
 The simulators also start a Redfish BMC (`http://127.0.0.1:18080`, `root` / `demo-bmc-pass`, scheme HTTP) and an APC metered PDU (SNMP v2c on UDP 16162, community `demo-pdu-ro`) whose figures wander, for trying Power Consumption. Their power figures are invented. IPMI needs `ipmitool` on the worker host (`IPMITOOL_PATH` overrides its location).
 
-Worker settings: `POLL_CONCURRENCY` (devices polled at once, default 16), `DISCOVERY_CONCURRENCY` (default 4), `CDCIM_NOTIFY_ALLOW_PRIVATE=true` to allow webhook/SMTP destinations on private or local addresses.
+For Phase 6 the simulators add a Redfish BMC that changes power, boot override and virtual media (`http://127.0.0.1:18081`, `dcim-ctl` / `demo-ctl-pass`) and plays the installer for MAC `52:54:00:de:00:01` (it fetches its config from `DCIM_URL`, default `http://127.0.0.1:4000`, and reports done), an image mirror on `http://127.0.0.1:18090` (SHA-256 values printed at start), a Proxmox VE API on `http://127.0.0.1:18006` (read token `dcim@pve!read` / `demo-pve-read`, action token `dcim@pve!ops` / `demo-pve-ops`) and a Virtualizor API on `http://127.0.0.1:14085` (`DEMOKEY-VZ-2026` / `demo-vz-pass`). To use them locally start the API and worker with `CDCIM_PUBLIC_URL=http://127.0.0.1:4000`, `CDCIM_BOOT_ALLOW=127.0.0.0/8` and `CDCIM_IMAGE_ALLOW_LOCAL=true`. Everything they report is simulated.
+
+Worker settings: `POLL_CONCURRENCY` (devices polled at once, default 16), `DISCOVERY_CONCURRENCY` (default 4), `PROVISIONING_CONCURRENCY` (jobs run at once, default 4), `CDCIM_NOTIFY_ALLOW_PRIVATE=true` to allow webhook/SMTP destinations on private or local addresses, `CDCIM_IMAGE_ALLOW_LOCAL=true` to allow image URLs on loopback/link-local addresses.
+
+Provisioning settings (API and worker): `CDCIM_PUBLIC_URL` (scheme and host the installing servers use to reach DCIM, e.g. `http://10.0.0.5:8080`; required for PXE and templates) and `CDCIM_BOOT_ALLOW` (CIDR list allowed to use `/api/v1/boot/*`, default the private ranges).
 
 If `CDCIM_ADMIN_PASSWORD` is not set, `admin:create` generates a strong password and prints it once.
 

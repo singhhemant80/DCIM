@@ -9,11 +9,23 @@
  * Redfish BMC mock: http://127.0.0.1:18080, user "root", password "demo-bmc-pass",
  * power wandering around 300 W.
  * APC metered PDU: udp 127.0.0.1:16162, community "demo-pdu-ro", 8 outlets.
+ * Phase 6 control targets:
+ *  - Redfish BMC with power/boot/virtual media: http://127.0.0.1:18081, user
+ *    "dcim-ctl", password "demo-ctl-pass". When it boots from virtual CD or PXE
+ *    it plays the installer: fetches /api/v1/boot/config?mac=52:54:00:de:00:01
+ *    from DCIM_URL (default http://127.0.0.1:4000) and reports "done".
+ *  - Image mirror: http://127.0.0.1:18090/demo.iso, /vmlinuz, /initrd.img
+ *    (fake bytes; SHA-256 values printed at start).
+ *  - Proxmox VE API: http://127.0.0.1:18006, read token "dcim@pve!read" /
+ *    "demo-pve-read", action token "dcim@pve!ops" / "demo-pve-ops".
+ *  - Virtualizor API: http://127.0.0.1:14085, key "DEMOKEY-VZ-2026" / pass "demo-vz-pass".
  * These are simulators, not real devices; the traffic they report is invented.
  */
 import { DEFAULT_SIM, startSnmpAgent } from './snmp-agent';
 import { ROUTEROS_FIXTURE, startRouterOs } from './http-devices';
+import { createHash } from 'node:crypto';
 import { ROUTEROS_HEALTH, startRedfish } from './power-devices';
+import { startControlRedfish, startFileServer, startProxmox, startVirtualizor } from './provisioning-devices';
 
 void (async () => {
   const agent = await startSnmpAgent(16161, undefined, { community: 'demo-public-ro', counters: 'hc' });
@@ -34,6 +46,33 @@ void (async () => {
     });
     pdu.setPduTotal(Math.round(total / 10));
   }, 5000);
+  const DCIM = process.env.DCIM_URL ?? 'http://127.0.0.1:4000';
+  const DEMO_MAC = '52:54:00:de:00:01';
+  const ctl = await startControlRedfish('dcim-ctl', 'demo-ctl-pass', { port: 18081, powerDelayMs: 3000, initialPower: 'On' });
+  ctl.onBoot((src) => {
+    if (src !== 'Cd' && src !== 'Pxe') return;
+    // Play the installer after a short "install".
+    setTimeout(async () => {
+      try {
+        if (src === 'Pxe') await fetch(`${DCIM}/api/v1/boot/ipxe?mac=${DEMO_MAC}`);
+        const cfg = await (await fetch(`${DCIM}/api/v1/boot/config?mac=${DEMO_MAC}`)).text();
+        const cb = /(https?:\/\/\S+\/api\/v1\/boot\/callback\/[\w-]+)/.exec(cfg)?.[1];
+        if (!cb) return;
+        const path = new URL(cb).pathname;
+        await fetch(`${DCIM}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'started' }) });
+        setTimeout(() => void fetch(`${DCIM}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'done', message: 'simulated installer finished' }) }), 20_000);
+      } catch (e) {
+        process.stderr.write(`simulated installer: ${(e as Error).message}\n`);
+      }
+    }, 5000);
+  });
+  const iso = Buffer.from('demo-iso-'.repeat(200_000));
+  const kernel = Buffer.from('demo-kernel-'.repeat(50_000));
+  const initrd = Buffer.from('demo-initrd-'.repeat(100_000));
+  await startFileServer({ '/demo.iso': iso, '/vmlinuz': kernel, '/initrd.img': initrd }, 18090);
+  await startProxmox({ id: 'dcim@pve!read', secret: 'demo-pve-read' }, { id: 'dcim@pve!ops', secret: 'demo-pve-ops' }, { actionDelayMs: 4000, port: 18006 });
+  await startVirtualizor('DEMOKEY-VZ-2026', 'demo-vz-pass', 14085);
+  const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
   const started = Date.now();
   // Base load per port in bit/s (ether1 is a 1 Gbit/s uplink in the simulator).
   const profile: Record<number, { inBps: number; outBps: number }> = { 1: { inBps: 420e6, outBps: 160e6 }, 2: { inBps: 0, outBps: 0 }, 5: { inBps: 35e6, outBps: 22e6 } };
@@ -63,6 +102,6 @@ void (async () => {
   step();
   setInterval(step, 5000);
   process.stdout.write(
-    `SNMP simulator on udp/127.0.0.1:16161 (community demo-public-ro), counters advance every 5 s\nRedfish BMC mock on http://127.0.0.1:${bmc.port} (root / demo-bmc-pass, scheme HTTP)\nAPC PDU simulator on udp/127.0.0.1:16162 (community demo-pdu-ro)\nRouterOS REST mock on http://127.0.0.1:${ros.port} (dcim-ro / demo-pass, use scheme HTTP)\nCtrl+C to stop.\n`,
+    `SNMP simulator on udp/127.0.0.1:16161 (community demo-public-ro), counters advance every 5 s\nRedfish BMC mock on http://127.0.0.1:${bmc.port} (root / demo-bmc-pass, scheme HTTP)\nAPC PDU simulator on udp/127.0.0.1:16162 (community demo-pdu-ro)\nRouterOS REST mock on http://127.0.0.1:${ros.port} (dcim-ro / demo-pass, use scheme HTTP)\nControl Redfish BMC on http://127.0.0.1:18081 (dcim-ctl / demo-ctl-pass), demo installer MAC ${DEMO_MAC}\nImage mirror http://127.0.0.1:18090: demo.iso ${sha(iso)}\n  vmlinuz ${sha(kernel)}\n  initrd.img ${sha(initrd)}\nProxmox VE mock on http://127.0.0.1:18006, Virtualizor mock on http://127.0.0.1:14085\nCtrl+C to stop.\n`,
   );
 })();

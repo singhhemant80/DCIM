@@ -43,6 +43,9 @@ import { AlertsService } from './monitoring/alerts.service';
 import { MonitoringStream } from './monitoring/stream.service';
 import { PowerController } from './power/power.controller';
 import { PowerService } from './power/power.service';
+import { BootController, ProvisioningController, VirtualizationController } from './provisioning/provisioning.controller';
+import { ProvisioningService } from './provisioning/provisioning.service';
+import { BootService } from './provisioning/boot.service';
 import { RolesController } from './roles/roles.controller';
 import { RolesService } from './roles/roles.service';
 import { SettingsController } from './settings/settings.controller';
@@ -91,6 +94,9 @@ export class AppModule {
         MonitoringController,
         AlertsController,
         PowerController,
+        ProvisioningController,
+        VirtualizationController,
+        BootController,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
@@ -125,6 +131,8 @@ export class AppModule {
         AlertsService,
         MonitoringStream,
         PowerService,
+        ProvisioningService,
+        BootService,
         // Order matters: rate limit → authenticate → authorize.
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthGuard },

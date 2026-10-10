@@ -19,6 +19,8 @@ import { deliverDue } from './monitoring/notify';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
+import { createJobLoop } from './provisioning/engine';
+import { PROVISIONING_KINDS, syncDueIntegrations, type ProvisioningDeps } from './provisioning/kinds';
 
 /**
  * Background worker, a separate process from the API so that device and DNS
@@ -31,7 +33,9 @@ import { applyPowerRetention, rollupPower } from './power/rollup';
  *    downsamples and expires them, evaluates alert rules and delivers
  *    notifications. Polling runs whether or not anyone has the UI open,
  *  - reads equipment power (Redfish, IPMI DCMI, PDUs, switch supplies),
- *    builds hourly energy and expires old readings.
+ *    builds hourly energy and expires old readings,
+ *  - runs provisioning jobs (power actions, OS installs, image checks, VM
+ *    actions) step by step, and syncs hypervisor inventory (read-only).
  * Run one instance (systemd unit crapplet-dcim-worker); schedules and DNS rows
  * are claimed with row locks, so a second instance would not duplicate work.
  */
@@ -95,6 +99,7 @@ async function main() {
       void publish(orgId, { type: 'alert', ...rest });
     }
   };
+  const provisioning: ProvisioningDeps = { db, secrets, logger, kinds: PROVISIONING_KINDS, publicUrl: config.CDCIM_PUBLIC_URL, imageAllowLocal: process.env.CDCIM_IMAGE_ALLOW_LOCAL === 'true' };
   const pollConcurrency = Math.max(1, Math.min(64, Number(process.env.POLL_CONCURRENCY ?? 16) || 16));
 
   const timers = [
@@ -124,9 +129,11 @@ async function main() {
       const r = await applyPowerRetention(db);
       if (r.raw + r.hourly) logger.info(r, 'old power data removed');
     }),
+    every('provisioning', 2_000, createJobLoop(provisioning, Math.max(1, Math.min(32, Number(process.env.PROVISIONING_CONCURRENCY ?? 4) || 4)))),
+    every('virt-sync', 30_000, () => syncDueIntegrations(provisioning)),
     every('notify', 10_000, () => deliverDue({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
   ];
-  logger.info({ concurrency }, 'Crapplet DCIM worker started (discovery, schedules, DNS, monitoring, power)');
+  logger.info({ concurrency }, 'Crapplet DCIM worker started (discovery, schedules, DNS, monitoring, power, provisioning)');
 
   const stop = async (signal: string) => {
     logger.info({ signal }, 'stopping worker');

@@ -139,6 +139,16 @@ Pure functions in [`power/energy.ts`](../apps/api/src/power/energy.ts) (unit-tes
 
 The worker builds `power_hourly` every minute (current and previous hour; after downtime it catches up a day per run from its progress mark). An hour keeps the customer, rack, datacenter, category and estimate it was first computed with, so later changes never rewrite history. Cost is computed when reported: each hour's energy × the tariff in force for that hour (the datacenter's own, else the organization's).
 
+## Provisioning design (Phase 6, implemented)
+
+Jobs live in PostgreSQL. The worker claims due jobs (`status in (queued, waiting, verifying)` with `next_run_at <= now`, or an expired lease) with `FOR UPDATE SKIP LOCKED`, takes a lease fenced by its worker id (a worker that lost the lease cannot write), and runs the job's steps in order ([`engine.ts`](../apps/api/src/worker/provisioning/engine.ts)):
+
+- A step returns *done*, or *wait* (poll again later; not an attempt), or throws. Errors in a step marked safe to repeat are retried with exponential backoff; a `PermanentError` fails the job; an error — or a worker crash — inside a step **not** safe to repeat (sending a reset, starting the server) moves the job to `recovery`, where an operator retries, skips (after checking the equipment) or fails it.
+- Cancellation and deadlines are checked between steps; every non-success end runs the kind's cleanup (eject media, clear the one-time boot override).
+- The last step of every kind is verification. `onCompleted` runs only after it (for installs: host name, OS and device history), and is idempotent.
+
+The boot endpoints never write the job's state; they write a separate `signals` column (script served, config served, callback, conflicts) and wake the job, so they cannot race the worker's state saves.
+
 ## Configuration
 
 All configuration comes from environment variables, validated at startup ([`config.ts`](../apps/api/src/config/config.ts)). The process refuses to start when a value is missing or insecure, for example `COOKIE_SECURE=false` in production. See [`deploy/env.example`](../deploy/env.example).

@@ -171,6 +171,10 @@ WEB_ORIGIN=http://localhost:$PORT
 WEB_DIST_DIR=$APP_DIR/apps/web/dist
 TRUST_PROXY_HOPS=0
 LOG_LEVEL=info
+# Provisioning (OS installs): the address installing servers use to reach DCIM,
+# and the networks allowed to use the boot endpoints (default: private ranges).
+# CDCIM_PUBLIC_URL=http://10.0.0.5:$PORT
+# CDCIM_BOOT_ALLOW=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 $INSECURE
 EOF
   chown root:"$RUN_USER" "$ENV_FILE"; chmod 0640 "$ENV_FILE"

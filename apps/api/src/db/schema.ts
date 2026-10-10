@@ -1528,3 +1528,237 @@ export const powerSettings = pgTable('power_settings', {
 export type PowerMonitoring = typeof powerMonitoring.$inferSelect;
 export type PduOutlet = typeof pduOutlets.$inferSelect;
 export type PowerTariff = typeof powerTariffs.$inferSelect;
+
+/* ============================================================== Phase 6: provisioning and virtualization */
+
+export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action']);
+export const jobStatusEnum = pgEnum('job_status', ['queued', 'running', 'waiting', 'verifying', 'completed', 'failed', 'cancelled', 'recovery']);
+export const stepStatusEnum = pgEnum('job_step_status', ['pending', 'running', 'done', 'failed', 'skipped']);
+export const bmcKindEnum = pgEnum('bmc_kind', ['redfish', 'ipmi']);
+export const imageVerifyEnum = pgEnum('image_verify_status', ['unverified', 'verifying', 'verified', 'mismatch', 'error']);
+export const virtKindEnum = pgEnum('virt_kind', ['proxmox', 'virtualizor']);
+
+/**
+ * BMC access with a privilege that can change power and boot settings.
+ * Kept apart from the read-only `device_credentials` used for monitoring.
+ */
+export const controlCredentials = pgTable('control_credentials', {
+  deviceId: uuid('device_id')
+    .primaryKey()
+    .references(() => devices.id, { onDelete: 'cascade' }),
+  orgId: orgRef(),
+  kind: bmcKindEnum('kind').notNull(),
+  host: text('host').notNull(),
+  port: integer('port'),
+  username: text('username').notNull(),
+  params: jsonb('params').$type<CredentialParams>().notNull().default(sql`'{}'::jsonb`),
+  /** SecretBox ciphertext, AAD (org, device, "control", kind, host, port). */
+  secretEnc: text('secret_enc').notNull(),
+  rotatedAt: ts('rotated_at').notNull().defaultNow(),
+  lastTestAt: ts('last_test_at'),
+  lastTestOk: boolean('last_test_ok'),
+  lastTestMessage: text('last_test_message'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const osImages = pgTable(
+  'os_images',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    family: text('family').notNull(),
+    version: text('version'),
+    arch: text('arch').notNull().default('x86_64'),
+    isoUrl: text('iso_url'),
+    isoSha256: text('iso_sha256'),
+    kernelUrl: text('kernel_url'),
+    kernelSha256: text('kernel_sha256'),
+    initrdUrl: text('initrd_url'),
+    initrdSha256: text('initrd_sha256'),
+    bootArgs: text('boot_args'),
+    templateKind: text('template_kind').notNull().default('none'),
+    template: text('template'),
+    enabled: boolean('enabled').notNull().default(true),
+    notes: text('notes'),
+    verifyStatus: imageVerifyEnum('verify_status').notNull().default('unverified'),
+    verifiedAt: ts('verified_at'),
+    verifyError: text('verify_error'),
+    /** Sizes found by the last verification, per file. */
+    sizes: jsonb('sizes').$type<Record<string, number>>().notNull().default(sql`'{}'::jsonb`),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('os_images_org_name_uq').on(t.orgId, sql`lower(${t.name})`)],
+);
+
+/**
+ * Provisioning jobs. A job runs as numbered steps; each step is recorded so an
+ * interrupted job resumes (or stops for a decision) at the right place.
+ */
+export const provisioningJobs = pgTable(
+  'provisioning_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    kind: jobKindEnum('kind').notNull(),
+    status: jobStatusEnum('status').notNull().default('queued'),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    guestId: uuid('guest_id'),
+    imageId: uuid('image_id').references(() => osImages.id, { onDelete: 'set null' }),
+    /** What was asked (no secrets). */
+    params: jsonb('params').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    /** Working data written by the steps (what was done, for idempotent re-runs and cleanup). */
+    state: jsonb('state').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    /** Written only by the boot endpoints (script fetched, config fetched, installer callback); read by the steps. */
+    signals: jsonb('signals').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    /** SecretBox ciphertext of job secrets (e.g. the root password), AAD bound to the job. */
+    secretEnc: text('secret_enc'),
+    idempotencyKey: text('idempotency_key'),
+    requestHash: text('request_hash'),
+    /** sha256 of the boot token handed to the installer (PXE script, config, callback). */
+    bootTokenHash: text('boot_token_hash'),
+    bootMac: text('boot_mac'),
+    currentStep: integer('current_step').notNull().default(0),
+    cancelRequested: boolean('cancel_requested').notNull().default(false),
+    nextRunAt: ts('next_run_at').notNull().defaultNow(),
+    leaseUntil: ts('lease_until'),
+    workerId: text('worker_id'),
+    deadlineAt: ts('deadline_at'),
+    result: jsonb('result').$type<Record<string, unknown>>(),
+    error: text('error'),
+    createdBy: text('created_by'),
+    createdByUserId: uuid('created_by_user_id'),
+    customerRequest: boolean('customer_request').notNull().default(false),
+    startedAt: ts('started_at'),
+    finishedAt: ts('finished_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('provisioning_jobs_idem_uq').on(t.orgId, t.idempotencyKey).where(sql`${t.idempotencyKey} is not null`),
+    // One active job per device and per VM: no two operations fight over the same machine.
+    uniqueIndex('provisioning_jobs_device_active_uq').on(t.deviceId).where(sql`${t.deviceId} is not null and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
+    uniqueIndex('provisioning_jobs_guest_active_uq').on(t.guestId).where(sql`${t.guestId} is not null and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
+    uniqueIndex('provisioning_jobs_boot_token_uq').on(t.bootTokenHash).where(sql`${t.bootTokenHash} is not null`),
+    // Boot endpoints look jobs up by MAC across organizations: one active install per MAC (cleared when a job ends).
+    uniqueIndex('provisioning_jobs_mac_active_uq').on(t.bootMac).where(sql`${t.bootMac} is not null`),
+    uniqueIndex('provisioning_jobs_image_verify_active_uq').on(t.imageId).where(sql`${t.kind} = 'image_verify' and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
+    index('provisioning_jobs_due_idx').on(t.status, t.nextRunAt),
+    index('provisioning_jobs_org_idx').on(t.orgId, t.createdAt),
+  ],
+);
+
+export const provisioningSteps = pgTable(
+  'provisioning_steps',
+  {
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => provisioningJobs.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    name: text('name').notNull(),
+    status: stepStatusEnum('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    startedAt: ts('started_at'),
+    finishedAt: ts('finished_at'),
+    detail: text('detail'),
+    error: text('error'),
+  },
+  (t) => [primaryKey({ columns: [t.jobId, t.seq] })],
+);
+
+export const provisioningEvents = pgTable(
+  'provisioning_events',
+  {
+    id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => provisioningJobs.id, { onDelete: 'cascade' }),
+    at: ts('at').notNull().defaultNow(),
+    level: text('level').notNull().default('info'),
+    message: text('message').notNull(),
+  },
+  (t) => [index('provisioning_events_job_idx').on(t.jobId, t.id)],
+);
+
+export const virtIntegrations = pgTable(
+  'virt_integrations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    kind: virtKindEnum('kind').notNull(),
+    name: text('name').notNull(),
+    url: text('url').notNull(),
+    verifyTls: boolean('verify_tls').notNull().default(true),
+    /** Non-secret settings (token ids). */
+    params: jsonb('params').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    secretEnc: text('secret_enc').notNull(),
+    actionsEnabled: boolean('actions_enabled').notNull().default(false),
+    enabled: boolean('enabled').notNull().default(true),
+    syncMinutes: integer('sync_minutes').notNull().default(5),
+    nextSyncAt: ts('next_sync_at').notNull().defaultNow(),
+    lastSyncAt: ts('last_sync_at'),
+    lastSyncOk: boolean('last_sync_ok'),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('virt_integrations_org_name_uq').on(t.orgId, sql`lower(${t.name})`)],
+);
+
+export const virtHosts = pgTable(
+  'virt_hosts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    integrationId: uuid('integration_id')
+      .notNull()
+      .references(() => virtIntegrations.id, { onDelete: 'cascade' }),
+    externalId: text('external_id').notNull(),
+    name: text('name').notNull(),
+    status: text('status'),
+    cpuPct: real('cpu_pct'),
+    cpus: integer('cpus'),
+    memUsed: bigint('mem_used', { mode: 'number' }),
+    memTotal: bigint('mem_total', { mode: 'number' }),
+    uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
+    /** The DCIM device this host runs on (staff mapping; also matched by hostname on first sync). */
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    lastSeenAt: ts('last_seen_at'),
+    missingSince: ts('missing_since'),
+  },
+  (t) => [uniqueIndex('virt_hosts_ext_uq').on(t.integrationId, t.externalId)],
+);
+
+export const virtGuests = pgTable(
+  'virt_guests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    integrationId: uuid('integration_id')
+      .notNull()
+      .references(() => virtIntegrations.id, { onDelete: 'cascade' }),
+    hostId: uuid('host_id').references(() => virtHosts.id, { onDelete: 'set null' }),
+    externalId: text('external_id').notNull(),
+    /** Proxmox: qemu or lxc. Virtualizor: kvm, xen, openvz… */
+    virtType: text('virt_type'),
+    name: text('name').notNull(),
+    status: text('status'),
+    cpus: integer('cpus'),
+    memBytes: bigint('mem_bytes', { mode: 'number' }),
+    diskBytes: bigint('disk_bytes', { mode: 'number' }),
+    uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
+    ipAddresses: text('ip_addresses').array().notNull().default(sql`'{}'::text[]`),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+    lastSeenAt: ts('last_seen_at'),
+    missingSince: ts('missing_since'),
+  },
+  (t) => [uniqueIndex('virt_guests_ext_uq').on(t.integrationId, t.externalId), index('virt_guests_customer_idx').on(t.customerId)],
+);
+
+export type ProvisioningJob = typeof provisioningJobs.$inferSelect;
+export type OsImage = typeof osImages.$inferSelect;
+export type ControlCredential = typeof controlCredentials.$inferSelect;
+export type VirtIntegration = typeof virtIntegrations.$inferSelect;
+export type VirtGuest = typeof virtGuests.$inferSelect;

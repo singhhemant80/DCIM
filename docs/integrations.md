@@ -50,6 +50,17 @@ Each adapter that can read power implements `power()`:
 
 A PDU's own total is stored (source `snmp`) and shown beside the rack's equipment load, never added to it.
 
+## Control and provisioning (Phase 6)
+
+| Platform | Credential | Operations | Notes |
+|---|---|---|---|
+| Redfish BMCs (iDRAC 9, iLO 5/6, XClarity, Supermicro) | control `redfish` (a role that can change power and boot: iDRAC "Operator", iLO "Virtual Power and Reset" + "Virtual Media") | `ComputerSystem.Reset` within the allowed values; Boot override `Once`/`Disabled` with `Cd`/`Pxe`; first CD/DVD virtual-media slot under `Managers/*/VirtualMedia`; `BootProgress.LastStateTime` for reset verification | Older firmware without Redfish virtual media is refused with a clear error; BMCs without `BootProgress` give "not verified" restarts |
+| IPMI 2.0 | control `ipmi` (OPERATOR) | `chassis power …`, `chassis bootdev pxe/none`, `chassis bootparam get 5` | No virtual media; no ACPI restart |
+| PXE / iPXE | — | Your DHCP server chainloads iPXE and points it at `http(s)://<CDCIM_PUBLIC_URL>/api/v1/boot/ipxe?mac=${net0/mac}` (an unknown MAC gets `exit`) | DCIM does not run DHCP or TFTP |
+| Redfish virtual media + template | — | The ISO must fetch `…/api/v1/boot/config?mac=<mac>` (for example via a remastered `inst.ks=` or `ds=nocloud-net;s=` argument) | DCIM does not remaster ISOs |
+| Proxmox VE | API token (`PVEAuditor`) + optional action token (`PVEVMUser` or `VM.PowerMgmt`) | Nodes, VMs and containers, status; start, stop, shutdown, reboot, suspend, resume | Templates are skipped. Reboots verified by uptime |
+| Virtualizor | Admin API key and password | Servers and VPSes; start, stop (graceful), power off, restart when enabled | Admin keys can't be limited, so actions are off until enabled; suspend/unsuspend (billing) not offered. Mapping from the API docs, not yet run against a live panel |
+
 ## Original adapter plan
 
 This plan fixed the adapter shape so that each phase adds adapters without changing the core.

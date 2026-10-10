@@ -69,7 +69,7 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
   app.enableCors({
     origin: config.WEB_ORIGIN.split(',').map((s) => s.trim()),
     credentials: true,
-    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Request-Id'],
+    allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Request-Id', 'Idempotency-Key'],
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
   });
   if (config.WEB_DIST_DIR) serveWebApp(app as NestExpressApplication, config.WEB_DIST_DIR);

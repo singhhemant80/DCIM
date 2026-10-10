@@ -166,3 +166,20 @@ Migration `0009_power.sql` (adds `redfish` and `ipmi` to `credential_kind`).
 | `power_tariffs` | Price per kWh with currency (ISO code) and start date, for the organization or one datacenter |
 | `power_settings` | Retention per organization |
 | `power_rollup_state` | How far the hourly rollup has got (lets it catch up after downtime without rescanning) |
+
+### Phase 6: provisioning and virtualization (implemented)
+
+Migration `0010_provisioning.sql`.
+
+| Table | Purpose and rules |
+|---|---|
+| `control_credentials` | One per device: `redfish` or `ipmi`, host, port, user, params, encrypted password (AAD bound to org, device, kind, host, port). Separate from the read-only monitoring credentials |
+| `os_images` | Name (unique per organization, case-insensitive), family, version, arch, ISO and kernel/initrd URLs each with SHA-256, kernel arguments, template kind and text, enabled, verification status (`unverified`, `verifying`, `verified`, `mismatch`, `error`), sizes |
+| `provisioning_jobs` | Kind (`power_action`, `os_install`, `image_verify`, `guest_action`), status, target (device, VM or image), params (with the image files pinned at request time), working `state`, `signals` written only by the boot endpoints, encrypted job secret (root password hash and boot token, removed when the job ends), idempotency key and request hash, boot token hash and MAC (cleared when the job ends), current step, cancel flag, `next_run_at`, lease and worker id, deadline, result, error, requester |
+| `provisioning_steps` | Per job and step: name, status (`pending`, `running`, `done`, `failed`, `skipped`), attempts, times, detail, error |
+| `provisioning_events` | Job log lines with level |
+| `virt_integrations` | Proxmox or Virtualizor endpoint, params (token ids), encrypted secrets, whether actions are allowed, sync interval and result |
+| `virt_hosts` | Nodes / servers as reported, with an operator-set link to a DCIM device; `missing_since` instead of deletion |
+| `virt_guests` | VMs as reported (status, size, uptime, addresses), customer assignment kept across syncs; `missing_since` instead of deletion |
+
+Partial unique indexes enforce one active job per device, per VM, per boot MAC and per image verification, one job per idempotency key per organization, and unique boot-token hashes. Triggers keep every row in the organization of the device, image, integration or customer it references.

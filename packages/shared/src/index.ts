@@ -7,3 +7,4 @@ export * from './dcim';
 export * from './network';
 export * from './monitoring';
 export * from './power';
+export * from './provisioning';

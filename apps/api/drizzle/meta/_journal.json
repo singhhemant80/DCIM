@@ -71,6 +71,13 @@
       "when": 1791610302997,
       "tag": "0009_power",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791617793739,
+      "tag": "0010_provisioning",
+      "breakpoints": true
     }
   ]
 }

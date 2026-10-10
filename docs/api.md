@@ -164,10 +164,43 @@ Error codes added: `no_credential`, `duplicate_name`, `too_many_streams`.
 
 `GET /api/v1/overview/power` returns the dashboard power panel. Device credentials accept `redfish` (`username`, `password`, `scheme`, `verifyTls`) and `ipmi` (`username`, `password` up to 20 characters, `ipmiPrivilege`); these are used for power and a connection test, not for network discovery.
 
+## Phase 6 endpoints (implemented)
+
+**Provisioning** — under `/api/v1/provisioning`. Every action is a job; `201` means queued. `POST` requests accept an `Idempotency-Key` header (up to 200 printable characters): the same key with the same body returns the same job (`replayed: true`), with a different body `409 idempotency_conflict`. A second job for a server or VM that has one active gets `409 job_in_progress` with its id.
+
+| Method and path | Notes |
+|---|---|
+| `GET /summary` | Staff. Active, needing a decision, completed (verified / not verified) and failed in 7 days |
+| `GET /jobs?status=active\|finished\|all&kind=&deviceId=` · `GET /jobs/:id` | Staff with `provisioning.read`; customers with `hardware.control` see power and VM actions on their own equipment. Detail has steps and log. Completed jobs carry `verified` (false when the outcome could not be observed) |
+| `POST /jobs/:id/cancel` | `provisioning.execute`, staff. Queued: cancelled at once. Running: stops at the next step boundary after cleanup |
+| `POST /jobs/:id/recovery` | `{ decision: retry\|skip\|fail, note? }` for a job in `recovery` |
+| `GET /devices/:id/control` | `hardware.control`. Whether power control is set up, which actions it supports, the active job; staff also see the credential's host and user (never the password) |
+| `PUT /devices/:id/control` · `DELETE /devices/:id/control` | `provisioning.execute`, staff. `redfish { host, port, username, password, scheme, verifyTls, timeoutMs }` or `ipmi { host, port, username ≤16, password ≤20, ipmiPrivilege }` |
+| `POST /devices/:id/power-actions` | `hardware.control` (customers: own servers). `{ action, confirm }`; `confirm` is the host name or asset tag. IPMI has no `graceful_restart` |
+| `POST /installs` | `provisioning.execute`, staff. `{ deviceId, imageId, method: redfish_virtual_media\|pxe, hostname, macAddress, network: dhcp\|static{address,prefixLength,gateway,nameservers}, rootPassword?, sshKeys[], verify: callback\|tcp{port}, timeoutMinutes, confirm, wipeAcknowledged: true }`. Refused if the image is not verified, the address belongs to something else in IPAM or another active install, or the control credential can't do the method |
+| `GET /images` · `POST /images` · `PUT /images/:id` · `DELETE /images/:id` · `POST /images/:id/verify` | Staff. File changes reset verification and are refused while a job uses the image |
+
+**Virtualization** — under `/api/v1/virtualization`.
+
+| Method and path | Notes |
+|---|---|
+| `GET, POST /integrations` · `PUT, DELETE /integrations/:id` · `POST /integrations/:id/sync` | Staff. Proxmox `{ url, verifyTls, tokenId, tokenSecret, actionTokenId?, actionTokenSecret?, syncMinutes, enabled }`; Virtualizor `{ url, verifyTls, apiKey, apiPass, actionsEnabled, syncMinutes, enabled }`. Secrets are write-only and must be re-entered on update |
+| `GET /hosts?integrationId=` · `PUT /hosts/:id/device` | Staff. Link a node to a DCIM server `{ deviceId }` (never inferred) |
+| `GET /guests?kind=&integrationId=&q=&status=` | `services.read`; customers see VMs assigned to them, without host or integration names |
+| `PUT /guests/:id/customer` | Staff. `{ customerId }` |
+| `POST /guests/:id/actions` | `hardware.control`. `{ action: start\|stop\|shutdown\|reboot\|suspend\|resume, confirm }`; needs actions enabled on the integration. Virtualizor: no suspend/resume |
+
+**Boot endpoints** — `/api/v1/boot/*`, no session. Only from `CDCIM_BOOT_ALLOW` networks, only for an active install that has reached its boot step, keyed by the job's boot token or its MAC.
+
+| Method and path | Notes |
+|---|---|
+| `GET /ipxe?mac=` · `GET /ipxe/:token` | iPXE script (`kernel` + `initrd` from the pinned image files, rendered kernel arguments). Unknown MAC or no install: a script that `exit`s to the next boot device. Served once; a second request before the installer reports stops the job |
+| `GET /config/:token` (also `/user-data`, `/meta-data`) · `GET /config?mac=` | Rendered install file. By MAC only once per job |
+| `POST /callback/:token` | `{ status: started\|done\|failed, message? }` from the installer |
+
 ## Planned resources
 
 | Phase | Resources |
 |---|---|
-| 6 | `/provisioning/jobs` (idempotency-key header), `/os-images`, `/integrations/proxmox/*`, `/integrations/virtualizor/*`, `/devices/:id/power-actions` (`hardware.control`, confirmation token) |
 | 7 | `/services`, `/colocation/allocations`, `/cross-connects`, `/tickets`, `/remote-hands`, `/visitors` |
 | 8 | `/billing/whmcs/webhook` (HMAC-signed, idempotent), `/billing/mappings`, `/reports/*` (CSV/PDF), `/workflows`, `/api-keys`, `/webhook-subscriptions` |

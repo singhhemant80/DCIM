@@ -23,8 +23,8 @@ export function readCookie(name: string): string | undefined {
 
 type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
-async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' };
+async function request<T>(method: Method, path: string, body?: unknown, extra?: Record<string, string>): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json', ...extra };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET') {
     const csrf = readCookie('cdcim_csrf');
@@ -60,7 +60,7 @@ async function request<T>(method: Method, path: string, body?: unknown): Promise
 
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
-  post: <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
+  post: <T>(path: string, body?: unknown, headers?: Record<string, string>) => request<T>('POST', path, body ?? {}, headers),
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
   put: <T>(path: string, body: unknown) => request<T>('PUT', path, body),
   delete: <T = void>(path: string) => request<T>('DELETE', path),
