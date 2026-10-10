@@ -78,7 +78,7 @@ function AppRoutes() {
 
 export function App() {
   const { me, loading } = useAuth();
-  if (loading) return <Loading label="Starting Crapplet DCIM" />;
+  if (loading) return <Loading label="Starting NexoraDC" />;
   if (!me) return <LoginPage />;
   if (me.mfaEnrollmentRequired) return <EnrollMfaPage />;
   return <AppRoutes />;

@@ -39,7 +39,7 @@ async function request<T>(method: Method, path: string, body?: unknown, extra?: 
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new ApiError(0, 'network_error', 'Cannot reach the Crapplet DCIM server. Check your connection and try again.');
+    throw new ApiError(0, 'network_error', 'Cannot reach the NexoraDC server. Check your connection and try again.');
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();

@@ -418,7 +418,7 @@ describe('alerts, maintenance and notifications', () => {
     expect(r.sent).toBe(1);
     expect(smtp.mails).toHaveLength(1);
     expect(smtp.mails[0]).toMatchObject({ from: 'dcim@example.net', to: ['noc@example.net'] });
-    expect(smtp.mails[0]!.data).toContain('Crapplet DCIM test notification');
+    expect(smtp.mails[0]!.data).toContain('NexoraDC test notification');
   });
 
   it('fires only after both the duration and the sample count, notifies once, and resolves after clear samples', async () => {

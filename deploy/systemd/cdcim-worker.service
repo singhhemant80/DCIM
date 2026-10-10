@@ -1,5 +1,5 @@
 [Unit]
-Description=Crapplet DCIM worker (read-only discovery and polling, alerts, notifications, DNS)
+Description=NexoraDC worker (read-only discovery and polling, alerts, notifications, DNS)
 After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
 

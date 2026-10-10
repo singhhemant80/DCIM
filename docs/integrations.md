@@ -110,7 +110,7 @@ Rules:
 | PDU (optional) | SNMP vendor MIBs | per-outlet watts, the preferred measured source when mapped | none | 5 |
 | Proxmox VE | REST API with a least-privilege API token (`PVEAuditor` for sync, a separate role for actions) | nodes, VMs, state, resources, storage, node power via `/nodes/{node}/status` | VM start, stop, reboot (permissioned) | 6 |
 | Virtualizor | Admin API (key + pass) | servers, VPS, IPs, plans, status | suspend, unsuspend, power (permissioned) | 6 |
-| WHMCS | Server-module package (PHP) that calls the Crapplet DCIM API; DCIM receives HMAC-signed webhooks | client and product mapping, orders, lifecycle, usage push | provision, suspend, terminate via idempotent jobs | 8 |
+| WHMCS | Server-module package (PHP) that calls the NexoraDC API; DCIM receives HMAC-signed webhooks | client and product mapping, orders, lifecycle, usage push | provision, suspend, terminate via idempotent jobs | 8 |
 | Notifications | SMTP, Telegram Bot API, Slack webhooks, generic signed webhooks | none | none | 4 and 8 |
 
 ## What the reference platforms informed
@@ -119,7 +119,7 @@ Rules:
 - **NetBox / Nautobot:** separating device type from device (component templates copied onto instances), first-class interfaces and MAC addresses, validated cable endpoints, and a strict source-of-truth stance. Phase 2's `device_models` and Phase 3's `interfaces` and `cables` follow this. Topology is drawn only from cables, LLDP/CDP observations and verified circuits, never inferred.
 - **Device42 / Sunbird:** lifecycle tracking, rack capacity (space, power, weight) and power planning against contracted allocations.
 
-No proprietary code, assets or branding are reused. Crapplet DCIM is an independent design.
+No proprietary code, assets or branding are reused. NexoraDC is an independent design.
 
 ## Verification policy
 

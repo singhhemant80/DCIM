@@ -159,7 +159,7 @@ export class BootService {
     }
     if (/[\r\n]/.test(args)) return '#!ipxe\necho Boot arguments must be one line\nexit\n';
     await this.signal(j.id, { ipxeServedAt: new Date().toISOString(), ipxeFrom: ip }, `Boot script served to ${ip ?? 'unknown'}`);
-    return ['#!ipxe', `echo Crapplet DCIM: installing ${l.img.name} as ${l.vars.hostname}`, `kernel ${files.kernelUrl} initrd=initrd ${args}`.trimEnd(), `initrd --name initrd ${files.initrdUrl}`, 'boot', ''].join('\n');
+    return ['#!ipxe', `echo NexoraDC: installing ${l.img.name} as ${l.vars.hostname}`, `kernel ${files.kernelUrl} initrd=initrd ${args}`.trimEnd(), `initrd --name initrd ${files.initrdUrl}`, 'boot', ''].join('\n');
   }
 
   /** Rendered unattended-install file (kickstart, preseed or autoinstall user-data). */

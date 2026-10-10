@@ -2,7 +2,7 @@
   "name": "crapplet-dcim",
   "version": "0.1.0",
   "private": true,
-  "description": "Crapplet DCIM \u2014 datacenter infrastructure management, network monitoring, power and provisioning platform",
+  "description": "NexoraDC by Crapplet Cloud \u2014 datacenter infrastructure management, network monitoring, power and provisioning platform",
   "workspaces": [
     "packages/*",
     "apps/*"

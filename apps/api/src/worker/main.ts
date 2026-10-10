@@ -133,7 +133,7 @@ async function main() {
     every('virt-sync', 30_000, () => syncDueIntegrations(provisioning)),
     every('notify', 10_000, () => deliverDue({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
   ];
-  logger.info({ concurrency }, 'Crapplet DCIM worker started (discovery, schedules, DNS, monitoring, power, provisioning)');
+  logger.info({ concurrency }, 'NexoraDC worker started (discovery, schedules, DNS, monitoring, power, provisioning)');
 
   const stop = async (signal: string) => {
     logger.info({ signal }, 'stopping worker');

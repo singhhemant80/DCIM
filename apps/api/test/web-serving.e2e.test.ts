@@ -11,7 +11,7 @@ let dir: string;
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cdcim-web-'));
   fs.mkdirSync(path.join(dir, 'assets'));
-  fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><title>Crapplet DCIM</title>');
+  fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><title>NexoraDC</title>');
   fs.writeFileSync(path.join(dir, 'assets', 'app-abc123.js'), 'console.log(1)');
   ctx = await setupTestApp({ WEB_DIST_DIR: dir });
 });
@@ -25,7 +25,7 @@ describe('single-process mode (API serves the web app)', () => {
     for (const p of ['/', '/customers', '/users?page=2']) {
       const res = await request(ctx.server).get(p);
       expect(res.status).toBe(200);
-      expect(res.text).toContain('Crapplet DCIM');
+      expect(res.text).toContain('NexoraDC');
       expect(res.headers['cache-control']).toBe('no-cache');
     }
   });

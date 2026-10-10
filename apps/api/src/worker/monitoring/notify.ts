@@ -88,7 +88,7 @@ type Claimed = {
 
 async function payloadFor(db: Db, n: Claimed): Promise<NotificationPayload> {
   if (n.event === 'test' || !n.alert_id) {
-    return { event: 'test', title: 'Crapplet DCIM test notification', text: 'This is a test notification from Crapplet DCIM. If you can read it, the channel works.', alert: null };
+    return { event: 'test', title: 'NexoraDC test notification', text: 'This is a test notification from NexoraDC. If you can read it, the channel works.', alert: null };
   }
   const r = await db.execute<Record<string, unknown>>(sql`
     select a.*, coalesce(d.hostname, d.asset_tag) as device_name, i.name as interface_name

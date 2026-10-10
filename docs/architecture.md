@@ -1,4 +1,4 @@
-# Crapplet DCIM: architecture
+# NexoraDC: architecture
 
 Status: Phase 1 (Foundation) implemented. Later phases are designed here so the foundation does not need rework, but they are **not built yet**. See [feature-matrix.md](feature-matrix.md) for what works today.
 

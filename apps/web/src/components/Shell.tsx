@@ -4,6 +4,7 @@ import { NAV_SECTIONS, type NavSection } from '@crapplet/shared';
 import { useAuth } from '../lib/auth';
 import { getTheme, setTheme, type ThemeChoice } from '../lib/theme';
 import { cx } from './ui';
+import { LogoMark } from './Logo';
 
 const GROUP_ORDER: NavSection['group'][] = ['Overview', 'Physical', 'Network', 'Power', 'Services', 'Operations', 'Administration'];
 
@@ -74,16 +75,11 @@ function RackNav({ onNavigate }: { onNavigate?: () => void }) {
 function Brand() {
   return (
     <div className="flex h-14 items-center gap-2.5 px-5">
-      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden>
-        <rect x="5" y="3" width="22" height="26" rx="2" fill="#2F4BC4" />
-        <g fill="#fff">
-          <rect x="8" y="7" width="16" height="3" rx=".6" />
-          <rect x="8" y="12" width="16" height="3" rx=".6" />
-          <rect x="8" y="17" width="16" height="3" rx=".6" />
-        </g>
-        <circle cx="21.5" cy="24.5" r="1.6" fill="#5BE0A0" />
-      </svg>
-      <span className="text-[15px] font-semibold tracking-[-0.01em] text-white">Crapplet DCIM</span>
+      <LogoMark size={22} />
+      <span className="flex flex-col leading-none">
+        <span className="text-[15px] font-semibold tracking-[-0.01em] text-white">NexoraDC</span>
+        <span className="mt-0.5 text-[10.5px] text-white/55">by Crapplet Cloud</span>
+      </span>
     </div>
   );
 }

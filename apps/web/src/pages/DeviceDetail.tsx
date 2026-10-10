@@ -406,7 +406,7 @@ export function DeviceLabelPage() {
   return (
     <>
       <style>{`@media print { body * { visibility: hidden; } #label, #label * { visibility: visible; } #label { position: absolute; left: 0; top: 0; box-shadow: none !important; } }`}</style>
-      <PageHeader title="Asset label" description="Scanning the code opens this device in Crapplet DCIM." actions={<Button variant="primary" onClick={() => window.print()}>Print</Button>} />
+      <PageHeader title="Asset label" description="Scanning the code opens this device in NexoraDC." actions={<Button variant="primary" onClick={() => window.print()}>Print</Button>} />
       <div id="label" className="flex w-[62mm] gap-[3mm] rounded-md border border-black bg-white p-[3mm] text-black shadow-lg" style={{ fontFamily: 'var(--font-sans)' }}>
         <div className="size-[22mm] shrink-0 [&_svg]:size-full" dangerouslySetInnerHTML={{ __html: l.qrSvg }} />
         <div className="min-w-0 leading-tight">

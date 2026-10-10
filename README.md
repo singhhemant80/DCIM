@@ -1,6 +1,8 @@
-# Crapplet DCIM
+# NexoraDC
 
-Datacenter infrastructure management for Crapplet Infotech Private Limited: physical inventory, racks, network and IPAM, real-time port bandwidth, equipment power (no physical meters needed), server provisioning, colocation, a customer portal and WHMCS billing integration.
+<img src="apps/web/public/favicon.svg" width="64" alt="NexoraDC logo">
+
+**NexoraDC by Crapplet Cloud** — data center infrastructure management for Crapplet Infotech Private Limited: physical inventory, racks, network and IPAM, real-time port bandwidth, equipment power (no physical meters needed), server provisioning, colocation, a customer portal and WHMCS billing integration.
 
 **Current state: Phases 1–5 complete.** Sign-in with two-step verification, roles and permissions, customer tenants, a tamper-evident audit log and system settings; physical DCIM (datacenters, rooms, floor plans, racks with database-enforced placement, hardware inventory with lifecycle, CSV, QR labels, spare parts); and network infrastructure and IPAM: ports and logical interfaces, cabling, VLANs, VRFs, circuits, a topology drawn only from verified sources, IPv4/IPv6 prefixes with concurrency-safe allocation, read-only discovery over SNMP, RouterOS REST and API, FortiOS REST and NX-API through a separate worker process (on demand or on a schedule), recording discovered addresses in IPAM, and publishing IPAM names to PowerDNS or Cloudflare; and real-time network monitoring: per-port traffic polled from the same read-only access methods, live updates, history with 95th percentile, totals, alert rules with maintenance windows and email/webhook/Slack/Telegram notifications; and equipment power: measured readings from Redfish and IPMI BMCs, metered PDU outlets and switch supplies, labelled estimates where nothing is measured, hourly energy, tariffs and cost by rack, datacenter and customer. Device adapters are tested against simulators, not yet on real hardware. Sections not built yet are marked as planned in the UI. See the [feature matrix](docs/feature-matrix.md).
 

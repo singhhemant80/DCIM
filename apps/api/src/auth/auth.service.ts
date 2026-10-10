@@ -283,7 +283,7 @@ export class AuthService {
       .update(users)
       .set({ mfaSecretEnc: this.secrets.encrypt(secret, mfaContext(user.id)), mfaLastTimeStep: null })
       .where(eq(users.id, user.id));
-    const { uri, qrDataUrl } = await this.mfa.provisioning(secret, user.email, org?.name ?? 'Crapplet DCIM');
+    const { uri, qrDataUrl } = await this.mfa.provisioning(secret, user.email, org?.name ?? 'NexoraDC');
     // The secret is shown once here so it can be typed manually; it is never retrievable afterwards.
     return { secret, otpauthUri: uri, qrDataUrl };
   }

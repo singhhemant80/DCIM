@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Crapplet DCIM installer and upgrader for Ubuntu 22.04/24.04 and Debian 12
+# NexoraDC installer and upgrader for Ubuntu 22.04/24.04 and Debian 12
 # (including WSL2 on Windows).
 #
 # One-shot install from GitHub (public repository):
@@ -121,7 +121,7 @@ install -d -o "$RUN_USER" -g "$RUN_USER" -m 0750 "$PREFIX" "$STATE_DIR" "$LOG_DI
 install -d -o root -g "$RUN_USER" -m 0750 "$ENV_DIR"
 ok "User '$RUN_USER', $PREFIX"
 
-step "Fetching Crapplet DCIM"
+step "Fetching NexoraDC"
 if [ -n "$SOURCE_DIR" ]; then
   rsync -a --delete --exclude node_modules --exclude 'dist' --exclude '.env' "$SOURCE_DIR"/ "$APP_DIR"/
   ok "Copied from $SOURCE_DIR"
@@ -214,7 +214,7 @@ step "Starting the service"
 if has_systemd; then
   cat >/etc/systemd/system/$SERVICE.service <<EOF
 [Unit]
-Description=Crapplet DCIM
+Description=NexoraDC
 After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
 
@@ -242,7 +242,7 @@ EOF
   # Background worker: the only process that decrypts credentials and talks to devices (read-only): discovery, polling, alerts, notifications, DNS.
   cat >/etc/systemd/system/$SERVICE-worker.service <<EOF
 [Unit]
-Description=Crapplet DCIM worker (discovery, monitoring, alerts, DNS)
+Description=NexoraDC worker (discovery, monitoring, alerts, DNS)
 After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
 
@@ -325,13 +325,13 @@ for i in $(seq 1 40); do
   sleep 1
 done
 curl -fsS "http://127.0.0.1:$PORT/api/v1/health/ready" >/dev/null 2>&1 || die "Service did not become ready. Check logs: $LOGS_CMD"
-ok "Crapplet DCIM is running"
+ok "NexoraDC is running"
 
 # ---------------------------------------------------------------------------
 HOST_SHOWN=localhost; [ "$BIND" = "0.0.0.0" ] && HOST_SHOWN="$(hostname -I 2>/dev/null | awk '{print $1}')"
 cat <<EOF
 
-${c_green}Crapplet DCIM $( [ "$UPGRADE" -eq 1 ] && echo upgraded || echo installed ) successfully.${c_off}
+${c_green}NexoraDC $( [ "$UPGRADE" -eq 1 ] && echo upgraded || echo installed ) successfully.${c_off}
 
   Open:        http://$HOST_SHOWN:$PORT
 EOF

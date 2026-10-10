@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { Button, ErrorNote, Field, Input } from '../components/ui';
+import { LogoMark } from '../components/Logo';
 
 type Step = { kind: 'password' } | { kind: 'mfa'; challengeToken: string };
 
@@ -58,20 +59,15 @@ export function LoginPage() {
       <aside className="glass-rack relative hidden flex-col justify-between overflow-hidden p-10 text-rack-ink lg:flex">
         <div aria-hidden className="pointer-events-none absolute inset-y-0 left-0 w-[14px] bg-[radial-gradient(circle_at_7px_11px,rgb(0_0_0/0.5)_2px,transparent_2.5px)] bg-[length:14px_22px]" />
         <div className="flex items-center gap-2.5 pl-4">
-          <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden>
-            <rect x="5" y="3" width="22" height="26" rx="2" fill="#2F4BC4" />
-            <g fill="#fff">
-              <rect x="8" y="7" width="16" height="3" rx=".6" />
-              <rect x="8" y="12" width="16" height="3" rx=".6" />
-              <rect x="8" y="17" width="16" height="3" rx=".6" />
-            </g>
-            <circle cx="21.5" cy="24.5" r="1.6" fill="#5BE0A0" />
-          </svg>
-          <span className="text-[16px] font-semibold text-white">Crapplet DCIM</span>
+          <LogoMark size={26} />
+          <span className="flex flex-col leading-none">
+            <span className="text-[16px] font-semibold text-white">NexoraDC</span>
+            <span className="mt-1 text-[11px] text-white/55">by Crapplet Cloud</span>
+          </span>
         </div>
         <div className="max-w-[34ch] pl-4">
           <p className="text-[26px] leading-[1.2] font-semibold tracking-[-0.015em] text-white">Every rack, port and watt in one place.</p>
-          <p className="mt-3 text-rack-ink/75">Datacenter infrastructure management for Crapplet Infotech operations staff and customers.</p>
+          <p className="mt-3 text-rack-ink/75">Data center infrastructure management, power analytics, asset management and monitoring for Crapplet Cloud staff and customers.</p>
         </div>
         <p className="pl-4 text-[12.5px] text-rack-ink/50">Access is logged. Use only accounts issued to you.</p>
       </aside>

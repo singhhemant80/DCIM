@@ -9,7 +9,7 @@ async function main() {
 
   const app = await createApp(config, logger);
   await app.listen(config.PORT, config.HOST);
-  logger.info({ host: config.HOST, port: config.PORT, swagger: config.ENABLE_SWAGGER }, 'Crapplet DCIM API listening');
+  logger.info({ host: config.HOST, port: config.PORT, swagger: config.ENABLE_SWAGGER }, 'NexoraDC API listening');
 }
 
 main().catch((err) => {

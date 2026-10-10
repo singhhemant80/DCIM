@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return (
       <div role="alert" className="grid h-full place-items-center p-6 text-center">
         <div className="max-w-sm">
-          <p className="text-base font-semibold">Crapplet DCIM is unreachable</p>
+          <p className="text-base font-semibold">NexoraDC is unreachable</p>
           <p className="mt-1 text-ink-2">{(q.error as Error).message}</p>
           <button className="mt-4 rounded-md bg-accent px-3 py-1.5 font-medium text-accent-ink" onClick={() => q.refetch()}>
             Try again

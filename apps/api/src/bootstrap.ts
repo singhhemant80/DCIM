@@ -79,7 +79,7 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
 
   if (config.ENABLE_SWAGGER) {
     const doc = new DocumentBuilder()
-      .setTitle('Crapplet DCIM API')
+      .setTitle('NexoraDC API')
       .setDescription(
         'Versioned REST API. Authenticate via POST /api/v1/auth/login (session cookie). ' +
           'State-changing requests must send the X-CSRF-Token header with the value of the cdcim_csrf cookie.',

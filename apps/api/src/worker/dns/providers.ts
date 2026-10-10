@@ -9,6 +9,7 @@ import { deviceRequest } from '../adapters/http';
  * conflict and is left untouched.
  */
 /** Marks a record as created by this DCIM organization (two organizations sharing a zone never touch each other's records). */
+// Kept as "Crapplet DCIM" after the rename to NexoraDC: it identifies the DNS records this system already created.
 export const markerFor = (orgId: string) => `Managed by Crapplet DCIM (${orgId})`;
 const accountFor = (orgId: string) => `crapplet-dcim:${orgId}`;
 export const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
