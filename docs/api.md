@@ -147,11 +147,27 @@ Error codes added: `invalid_relation`, `not_cableable`, `port_in_use`, `prefix_e
 
 Error codes added: `no_credential`, `duplicate_name`, `too_many_streams`.
 
+## Phase 5 endpoints (implemented)
+
+**Power** — under `/api/v1/power`. Reads need `power.read`; customers get only devices assigned to them, without cost, location or collection details. Configuration needs `power.configure` (staff). Every figure carries `quality` (`measured`, `estimated`, `unknown`, `off`) and `source`.
+
+| Method and path | Notes |
+|---|---|
+| `GET /summary?period=&datacenterId=` | Now (measured W, estimated W, unknown devices), energy and cost for `24h`, `7d`, `30d`, `mtd`, `last_month`, by datacenter (staff) and category, largest draw |
+| `GET /devices` · `GET /devices/:id` · `GET /devices/:id/history?range=24h\|7d\|30d` | Paginated with energy per device; detail has model spec, estimate, latest reading per source and outlets (staff); history has raw readings (24 h) and hourly rows |
+| `PUT /devices/:id/profile` | `{ estimateW, includeInTotals, notes }` |
+| `GET /racks` · `GET /pdus` · `PUT /outlets/:id` | Staff. Rack load vs budget and PDU input; PDU outlets; map an outlet `{ deviceId, label }` |
+| `GET /polling` · `PUT /polling/:deviceId` · `DELETE /polling/:deviceId` | Staff. `{ enabled, credentialKind, intervalSeconds }`; needs a stored credential of that kind |
+| `GET, POST /tariffs` · `PUT, DELETE /tariffs/:id` | Staff. `{ name, datacenterId?, currency, pricePerKwh, validFrom }` |
+| `GET /settings` · `PUT /settings` | Staff. Retention `{ rawDays, hourlyDays }` |
+| `GET /energy?period=&groupBy=` · `GET /energy.csv?period=&groupBy=` | Grouped by device, rack, datacenter, customer or category (customers: device or category) |
+
+`GET /api/v1/overview/power` returns the dashboard power panel. Device credentials accept `redfish` (`username`, `password`, `scheme`, `verifyTls`) and `ipmi` (`username`, `password` up to 20 characters, `ipmiPrivilege`); these are used for power and a connection test, not for network discovery.
+
 ## Planned resources
 
 | Phase | Resources |
 |---|---|
-| 5 | `/power/summary`, `/power/devices`, `/power/racks/:id`, `/devices/:id/power-profile`, `/power/readings`, `/tariffs` |
 | 6 | `/provisioning/jobs` (idempotency-key header), `/os-images`, `/integrations/proxmox/*`, `/integrations/virtualizor/*`, `/devices/:id/power-actions` (`hardware.control`, confirmation token) |
 | 7 | `/services`, `/colocation/allocations`, `/cross-connects`, `/tickets`, `/remote-hands`, `/visitors` |
 | 8 | `/billing/whmcs/webhook` (HMAC-signed, idempotent), `/billing/mappings`, `/reports/*` (CSV/PDF), `/workflows`, `/api-keys`, `/webhook-subscriptions` |

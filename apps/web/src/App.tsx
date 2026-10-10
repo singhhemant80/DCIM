@@ -24,6 +24,7 @@ import { NetworkDevicePage } from './pages/NetworkDevice';
 import { IpamPage, PrefixDetailPage } from './pages/Ipam';
 import { NetworkMonitoringPage } from './pages/NetworkMonitoring';
 import { AlertsPage } from './pages/Alerts';
+import { PowerPage } from './pages/Power';
 
 /** Implemented sections. Every key here must be `available` in NAV_SECTIONS (checked by a test). */
 export const IMPLEMENTED: Record<string, ComponentType> = {
@@ -41,6 +42,7 @@ export const IMPLEMENTED: Record<string, ComponentType> = {
   ipam: IpamPage,
   'network-monitoring': NetworkMonitoringPage,
   alerts: AlertsPage,
+  power: PowerPage,
 };
 
 function AppRoutes() {

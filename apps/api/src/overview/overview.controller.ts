@@ -8,6 +8,7 @@ import type { Principal } from '../auth/principal';
 import { AuditService } from '../audit/audit.service';
 import { MonitoringService } from '../monitoring/monitoring.service';
 import { AlertsService } from '../monitoring/alerts.service';
+import { PowerService } from '../power/power.service';
 
 /**
  * Phase 1 overview: real counts from the identity/tenancy/audit tables.
@@ -24,7 +25,16 @@ export class OverviewController {
     private readonly audit: AuditService,
     private readonly monitoring: MonitoringService,
     private readonly alerts: AlertsService,
+    private readonly power: PowerService,
   ) {}
+
+  @Get('power')
+  @ApiOperation({ summary: 'Dashboard power panel: current draw (measured / estimated / unknown) and the last 24 h. Null without power.read.' })
+  async powerPanel(@CurrentPrincipal() p: Principal) {
+    if (!p.permissions.has('power.read')) return null;
+    const s = await this.power.summary(p, '24h');
+    return { now: s.now, energy: s.energy, byDatacenter: s.byDatacenter, top: s.top.slice(0, 5) };
+  }
 
   @Get()
   @ApiOperation({ summary: 'Platform counts for the staff dashboard.' })

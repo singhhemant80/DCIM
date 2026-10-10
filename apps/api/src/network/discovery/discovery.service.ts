@@ -1,3 +1,4 @@
+import { BMC_CREDENTIAL_KINDS } from '@crapplet/shared';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { z } from 'zod';
@@ -36,6 +37,7 @@ export class DiscoveryService {
 
   async start(p: Principal, deviceId: string, kind: CredentialKind, mode: 'test' | 'discover', meta: RequestMeta) {
     await ownDevice(this.db, p, deviceId);
+    if (mode === 'discover' && BMC_CREDENTIAL_KINDS.includes(kind)) throw new BadRequestException({ error: 'not_applicable', message: 'Redfish and IPMI are used for power readings; use Test to check them' });
     const [cred] = await this.db.select({ host: deviceCredentials.host }).from(deviceCredentials).where(and(eq(deviceCredentials.deviceId, deviceId), eq(deviceCredentials.kind, kind)));
     if (!cred) throw new BadRequestException({ error: 'no_credential', message: 'Add a credential of this type to the device first' });
     if (!cred.host) throw new BadRequestException({ error: 'no_address', message: 'This credential has no host; enter it again' });

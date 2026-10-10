@@ -101,7 +101,7 @@ export const IP_ROLES = ['primary', 'secondary', 'gateway', 'vip', 'anycast', 'l
 
 export const VLAN_STATUSES = ['active', 'reserved', 'deprecated'] as const;
 
-export const CREDENTIAL_KINDS = ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'routeros_api', 'fortios_rest', 'nxapi'] as const;
+export const CREDENTIAL_KINDS = ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'routeros_api', 'fortios_rest', 'nxapi', 'redfish', 'ipmi'] as const;
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
 export const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
   snmp_v2c: 'SNMP v2c',
@@ -110,7 +110,11 @@ export const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
   fortios_rest: 'FortiGate REST API',
   nxapi: 'Cisco NX-API',
   routeros_api: 'MikroTik RouterOS API (api / api-ssl)',
+  redfish: 'Redfish (iDRAC, iLO, XClarity…)',
+  ipmi: 'IPMI over LAN (DCMI)',
 };
+/** Access methods that only serve power readings and server facts, not network discovery. */
+export const BMC_CREDENTIAL_KINDS: readonly CredentialKind[] = ['redfish', 'ipmi'];
 
 export const SNMP_AUTH_PROTOCOLS = ['md5', 'sha', 'sha224', 'sha256', 'sha384', 'sha512'] as const;
 export const SNMP_PRIV_PROTOCOLS = ['des', 'aes', 'aes256b', 'aes256r'] as const;
@@ -548,6 +552,28 @@ export const credentialSchema = z.discriminatedUnion('kind', [
     scheme: z.enum(['https', 'http']).default('https'),
     verifyTls: z.boolean().default(true),
     timeoutMs: z.number().int().min(500).max(30_000).default(8000),
+  }),
+  z.object({
+    kind: z.literal('redfish'),
+    host: z.string().trim().max(255).nullable().optional(),
+    port: z.number().int().min(1).max(65535).nullable().optional(),
+    username: z.string().trim().min(1).max(64),
+    password: secretText,
+    scheme: z.enum(['https', 'http']).default('https'),
+    verifyTls: z.boolean().default(true),
+    timeoutMs: z.number().int().min(500).max(30_000).default(10_000),
+  }),
+  z.object({
+    kind: z.literal('ipmi'),
+    host: z.string().trim().max(255).nullable().optional(),
+    port: z.number().int().min(1).max(65535).nullable().optional(),
+    username: z.string().trim().min(1).max(16),
+    /** IPMI 2.0 passwords are at most 20 bytes. */
+    password: z.string().min(1).max(20, 'IPMI passwords are at most 20 characters'),
+    /** Lowest privilege that can read DCMI power on the BMC (USER is enough on most). */
+    ipmiPrivilege: z.enum(['USER', 'OPERATOR', 'ADMINISTRATOR']).default('USER'),
+    timeoutMs: z.number().int().min(500).max(30_000).default(10_000),
+    retries: z.number().int().min(0).max(5).default(1),
   }),
 ]);
 export type CredentialInput = z.infer<typeof credentialSchema>;

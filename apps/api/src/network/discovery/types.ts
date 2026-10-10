@@ -86,6 +86,7 @@ export interface AdapterTarget {
     verifyTls?: boolean;
     vdom?: string | null;
     securityLevel?: 'noAuthNoPriv' | 'authNoPriv' | 'authPriv';
+    ipmiPrivilege?: 'USER' | 'OPERATOR' | 'ADMINISTRATOR';
     authProtocol?: string;
     privProtocol?: string;
   };
@@ -120,11 +121,25 @@ export interface CounterSnapshot {
   interfaces: CounterReading[];
 }
 
+/** One power reading of a device (measured), and for a PDU its outlets. */
+export interface PowerSnapshot {
+  /** Measured input power of the device itself; null when it reports none (e.g. a PDU with outlet metering only). */
+  watts: number | null;
+  /** Source label stored with the reading. */
+  source: 'redfish' | 'ipmi' | 'nxos' | 'routeros' | 'snmp';
+  /** PDU outlets with their measured power (null when the outlet isn't metered). */
+  outlets?: { number: number; name: string | null; watts: number | null }[];
+  /** Free-text notes for the operator (e.g. which chassis or sensor was read). */
+  detail?: string;
+}
+
 export interface Adapter {
   test(t: AdapterTarget): Promise<TestResult>;
   discover(t: AdapterTarget): Promise<DiscoveryResult>;
   /** Read-only counter collection for monitoring. */
   counters?(t: AdapterTarget): Promise<CounterSnapshot>;
+  /** Read-only power collection (Phase 5). */
+  power?(t: AdapterTarget): Promise<PowerSnapshot>;
 }
 
 /** The secret fields of each credential kind (everything else is stored in plain params). */
@@ -135,6 +150,8 @@ export const SECRET_FIELDS: Record<CredentialKind, string[]> = {
   fortios_rest: ['token'],
   nxapi: ['password'],
   routeros_api: ['password'],
+  redfish: ['password'],
+  ipmi: ['password'],
 };
 
 /**

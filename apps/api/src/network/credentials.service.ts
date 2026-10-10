@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BMC_CREDENTIAL_KINDS } from '@crapplet/shared';
 import { and, eq } from 'drizzle-orm';
 import type { CredentialInput, CredentialKind } from '@crapplet/shared';
 import { DB, type Db } from '../db/db';
@@ -48,6 +49,7 @@ export class CredentialsService {
 
   /** Turns automatic (scheduled) discovery on or off for one credential. Runs are still only previews. */
   async setSchedule(p: Principal, deviceId: string, kind: CredentialKind, hours: number | null, meta: RequestMeta) {
+    if (hours && BMC_CREDENTIAL_KINDS.includes(kind)) throw new BadRequestException({ error: 'not_applicable', message: 'Scheduled discovery does not apply to Redfish or IPMI; enable power collection instead' });
     await ownDevice(this.db, p, deviceId);
     return this.db.transaction(async (tx) => {
       const [row] = await tx
@@ -116,7 +118,7 @@ export function split(input: CredentialInput): { secret: Record<string, string |
   const secret: Record<string, string | null> = {};
   for (const f of SECRET_FIELDS[input.kind]) secret[f] = (raw[f] as string | null | undefined) ?? null;
   const params: CredentialParams = {};
-  for (const k of ['timeoutMs', 'retries', 'scheme', 'tls', 'verifyTls', 'vdom', 'securityLevel', 'authProtocol', 'privProtocol'] as const) {
+  for (const k of ['timeoutMs', 'retries', 'scheme', 'tls', 'verifyTls', 'vdom', 'securityLevel', 'authProtocol', 'privProtocol', 'ipmiPrivilege'] as const) {
     if (raw[k] !== undefined) (params as Record<string, unknown>)[k] = raw[k];
   }
   return { secret, params, username: (raw.username as string | undefined) ?? null };

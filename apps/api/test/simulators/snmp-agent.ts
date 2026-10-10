@@ -70,6 +70,16 @@ export interface RunningAgent {
   setOper: (ifIndex: number, up: boolean) => void;
   /** sysUpTime in hundredths of a second. */
   setUptime: (ticks: number) => void;
+  /** APC rPDU2 outlet power in watts (only with `pdu`). */
+  setOutletWatts: (outlet: number, watts: number) => void;
+  /** APC rPDU2 device power in hundredths of kW (only with `pdu`). */
+  setPduTotal: (hundredthsKw: number) => void;
+}
+
+/** An APC metered-by-outlet rack PDU (PowerNet-MIB rPDU2) as published; not a capture from hardware. */
+export interface SimPdu {
+  outlets: { number: number; name: string; watts: number }[];
+  totalHundredthsKw: number;
 }
 export type CounterName = 'inOctets' | 'outOctets' | 'inPkts' | 'outPkts' | 'inErrors' | 'outErrors' | 'inDiscards' | 'outDiscards';
 
@@ -80,7 +90,7 @@ const c64 = (v: bigint) => {
 };
 const c32 = (v: bigint) => Number(BigInt.asUintN(32, v));
 
-export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM, opts: { community?: string; v3User?: { name: string; authKey: string; privKey: string }; counters?: 'hc' | '32' } = {}): Promise<RunningAgent> {
+export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM, opts: { community?: string; v3User?: { name: string; authKey: string; privKey: string }; counters?: 'hc' | '32'; pdu?: SimPdu } = {}): Promise<RunningAgent> {
   const agent = snmp.createAgent({ port, address: '127.0.0.1', disableAuthorization: false }, () => undefined);
   const auth = agent.getAuthorizer();
   if (opts.community) auth.addCommunity(opts.community);
@@ -231,6 +241,30 @@ export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM,
     ['bgpPeerRemoteAddr'],
     sim.bgp.map((b) => [b.state, b.peer, b.remoteAs, b.up]),
   );
+  if (opts.pdu) {
+    table(
+      'rPDU2OutletMeteredStatusTable',
+      '1.3.6.1.4.1.318.1.1.26.9.4.3.1',
+      [
+        { number: 1, name: 'rPDU2OutletMeteredStatusIndex', type: T.Integer, access: NA },
+        { number: 3, name: 'rPDU2OutletMeteredStatusName', type: T.OctetString },
+        { number: 4, name: 'rPDU2OutletMeteredStatusNumber', type: T.Integer },
+        { number: 7, name: 'rPDU2OutletMeteredStatusPower', type: T.Integer },
+      ],
+      ['rPDU2OutletMeteredStatusIndex'],
+      opts.pdu.outlets.map((o) => [o.number, o.name, o.number, o.watts]),
+    );
+    table(
+      'rPDU2DeviceStatusTable',
+      '1.3.6.1.4.1.318.1.1.26.4.3.1',
+      [
+        { number: 1, name: 'rPDU2DeviceStatusIndex', type: T.Integer, access: NA },
+        { number: 5, name: 'rPDU2DeviceStatusPower', type: T.Integer },
+      ],
+      ['rPDU2DeviceStatusIndex'],
+      [[1, opts.pdu.totalHundredthsKw]],
+    );
+  }
   // Give the socket a moment to bind.
   await new Promise((r) => setTimeout(r, 50));
   const hcCol: Partial<Record<CounterName, number>> = { inOctets: 6, inPkts: 7, outOctets: 10, outPkts: 11 };
@@ -251,5 +285,7 @@ export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM,
     },
     setOper: (ifIndex, up) => mib.setTableSingleCell('ifTable', 8, [ifIndex], up ? 1 : 2),
     setUptime: (ticks) => mib.setScalarValue('sysUpTime', ticks),
+    setOutletWatts: (outlet, watts) => mib.setTableSingleCell('rPDU2OutletMeteredStatusTable', 7, [outlet], watts),
+    setPduTotal: (v) => mib.setTableSingleCell('rPDU2DeviceStatusTable', 5, [1], v),
   };
 }

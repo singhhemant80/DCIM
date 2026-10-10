@@ -17,6 +17,8 @@ import { applyRetention, rollup } from './monitoring/rollup';
 import { closeUnmonitoredAlerts, evaluateAlerts } from './monitoring/alerts';
 import { deliverDue } from './monitoring/notify';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
+import { createPowerPollLoop } from './power/poller';
+import { applyPowerRetention, rollupPower } from './power/rollup';
 
 /**
  * Background worker, a separate process from the API so that device and DNS
@@ -27,7 +29,9 @@ import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
  *  - pushes pending IPAM DNS changes to the configured DNS servers,
  *  - polls interface counters of monitored devices (read-only), stores rates,
  *    downsamples and expires them, evaluates alert rules and delivers
- *    notifications. Polling runs whether or not anyone has the UI open.
+ *    notifications. Polling runs whether or not anyone has the UI open,
+ *  - reads equipment power (Redfish, IPMI DCMI, PDUs, switch supplies),
+ *    builds hourly energy and expires old readings.
  * Run one instance (systemd unit crapplet-dcim-worker); schedules and DNS rows
  * are claimed with row locks, so a second instance would not duplicate work.
  */
@@ -114,9 +118,15 @@ async function main() {
       const r = await applyRetention(db);
       if (r.raw + r.fiveMinute + r.hourly) logger.info(r, 'old monitoring data removed');
     }),
+    every('power-poll', 2_000, createPowerPollLoop({ db, secrets, logger }, pollConcurrency)),
+    every('power-rollup', 60_000, () => rollupPower(db)),
+    every('power-retention', 3_600_000, async () => {
+      const r = await applyPowerRetention(db);
+      if (r.raw + r.hourly) logger.info(r, 'old power data removed');
+    }),
     every('notify', 10_000, () => deliverDue({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
   ];
-  logger.info({ concurrency }, 'Crapplet DCIM worker started (discovery, schedules, DNS, monitoring)');
+  logger.info({ concurrency }, 'Crapplet DCIM worker started (discovery, schedules, DNS, monitoring, power)');
 
   const stop = async (signal: string) => {
     logger.info({ signal }, 'stopping worker');

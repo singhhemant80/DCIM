@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import tls from 'node:tls';
-import type { Adapter, AdapterTarget, CounterSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
-import { parseRouterOs, parseRouterOsCounters, routerosUptime } from './routeros';
+import type { Adapter, AdapterTarget, CounterSnapshot, PowerSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import { parseRouterOs, parseRouterOsCounters, parseRouterOsPower, routerosUptime } from './routeros';
 import { str } from './http';
 
 /**
@@ -220,6 +220,16 @@ export function routerOsApiAdapter(): Adapter {
           latencyMs: Date.now() - started,
           facts: { sysName: str(id?.name), osVersion: str(res?.version)?.split(' ')[0] ?? null, uptimeSeconds: routerosUptime(res?.uptime), vendor: 'MikroTik' },
         };
+      } finally {
+        c.close();
+      }
+    },
+    async power(t): Promise<PowerSnapshot> {
+      const c = await open(t);
+      try {
+        const r = parseRouterOsPower(await c.print('/system/health'));
+        if (!r) throw new Error('This RouterOS device reports no power-consumption in /system/health');
+        return r;
       } finally {
         c.close();
       }

@@ -1,5 +1,5 @@
 import type { InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import type { Adapter, AdapterTarget, CounterSnapshot, PowerSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
 import { DeviceHttpError, asArray, basicAuth, counter, deviceRequest, int, normalizeMac, str } from './http';
 
 /**
@@ -177,6 +177,32 @@ export function parseNxosCounters(version: Row | null, iface: unknown): CounterS
   };
 }
 
+const watts = (v: unknown): number | null => {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*W?\s*$/i.exec(String(v ?? ''));
+  return m ? Number(m[1]) : null;
+};
+
+/** Total input power from `show environment power` (summary when present, else the sum of the supplies' input). */
+export function parseNxosPower(doc: unknown): PowerSnapshot | null {
+  let total: number | null = null;
+  const inputs: number[] = [];
+  const walk = (v: unknown) => {
+    if (!v || typeof v !== 'object') return;
+    if (Array.isArray(v)) return v.forEach(walk);
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+      if (/^tot_pow_input_actual_draw$/i.test(k) && total === null) total = watts(x);
+      else if (/^actual_input$/i.test(k)) {
+        const w = watts(x);
+        if (w !== null) inputs.push(w);
+      } else walk(x);
+    }
+  };
+  walk(doc);
+  if (total !== null) return { watts: total, source: 'nxos', detail: 'total input power (actual draw)' };
+  if (inputs.length) return { watts: inputs.reduce((a, b) => a + b, 0), source: 'nxos', detail: `sum of ${inputs.length} supply input(s)` };
+  return null;
+}
+
 export function nxApiAdapter(): Adapter {
   const show = async (t: AdapterTarget, cmd: string): Promise<Row | null> => {
     const r = await deviceRequest(t, 'POST', '/ins', {
@@ -195,6 +221,11 @@ export function nxApiAdapter(): Adapter {
       const started = Date.now();
       const v = (await show(t, 'show version')) ?? {};
       return { ok: true, message: `Connected: ${str(v.host_name) ?? 'NX-OS'} — ${str(v.chassis_id) ?? ''} ${str(v.nxos_ver_str) ?? str(v.sys_ver_str) ?? ''}`.replace(/\s+/g, ' ').trim(), latencyMs: Date.now() - started, facts: { sysName: str(v.host_name), serial: str(v.proc_board_id), osVersion: str(v.nxos_ver_str) ?? str(v.sys_ver_str), vendor: 'Cisco' } };
+    },
+    async power(t): Promise<PowerSnapshot> {
+      const r = parseNxosPower(await show(t, 'show environment power'));
+      if (!r) throw new Error('show environment power returned no input power figures');
+      return r;
     },
     async counters(t): Promise<CounterSnapshot> {
       const version = await show(t, 'show version');

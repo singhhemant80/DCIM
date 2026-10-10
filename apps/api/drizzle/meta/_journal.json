@@ -64,6 +64,13 @@
       "when": 1791594049937,
       "tag": "0008_monitoring",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791610302997,
+      "tag": "0009_power",
+      "breakpoints": true
     }
   ]
 }

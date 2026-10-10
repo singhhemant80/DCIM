@@ -6,3 +6,4 @@ export * from './units';
 export * from './dcim';
 export * from './network';
 export * from './monitoring';
+export * from './power';

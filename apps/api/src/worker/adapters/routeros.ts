@@ -1,5 +1,5 @@
 import type { InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import type { Adapter, AdapterTarget, CounterSnapshot, PowerSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
 import { DeviceHttpError, basicAuth, bool, counter, deviceRequest, int, normalizeMac, speed, str } from './http';
 
 /**
@@ -142,6 +142,17 @@ export function parseRouterOsCounters(resource: Row | null, rows: Row[]): Counte
   };
 }
 
+/** `power-consumption` from /system/health (v7: list of {name, value, type}; v6: one object). */
+export function parseRouterOsPower(health: unknown): PowerSnapshot | null {
+  const rows = Array.isArray(health) ? (health as Row[]) : health && typeof health === 'object' ? [health as Row] : [];
+  for (const r of rows) {
+    const v = r.name === 'power-consumption' ? r.value : r['power-consumption'];
+    const w = v === undefined || v === null ? null : Number(v);
+    if (w !== null && Number.isFinite(w) && w >= 0) return { watts: w, source: 'routeros', detail: '/system/health power-consumption' };
+  }
+  return null;
+}
+
 export const ROUTEROS_COUNTER_PROPS = 'name,rx-byte,tx-byte,rx-packet,tx-packet,rx-error,tx-error,rx-drop,tx-drop,running';
 
 export function routerOsAdapter(): Adapter {
@@ -155,6 +166,11 @@ export function routerOsAdapter(): Adapter {
       const res = (await get(t, '/system/resource')) as Row;
       const id = (await get(t, '/system/identity').catch(() => null)) as Row | null;
       return { ok: true, message: `Connected: ${str(id?.name) ?? 'RouterOS'} — ${str(res['board-name']) ?? ''} RouterOS ${str(res.version) ?? '?'}`.trim(), latencyMs: Date.now() - started, facts: { sysName: str(id?.name), osVersion: str(res.version)?.split(' ')[0] ?? null, uptimeSeconds: routerosUptime(res.uptime), vendor: 'MikroTik' } };
+    },
+    async power(t): Promise<PowerSnapshot> {
+      const r = parseRouterOsPower(await get(t, '/system/health'));
+      if (!r) throw new Error('This RouterOS device reports no power-consumption in /system/health');
+      return r;
     },
     async counters(t): Promise<CounterSnapshot> {
       const resource = (await get(t, '/system/resource')) as Row;

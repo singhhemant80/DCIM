@@ -649,7 +649,7 @@ export const circuitStatusEnum = pgEnum('circuit_status', ['planned', 'provision
 export const prefixStatusEnum = pgEnum('prefix_status', ['container', 'active', 'reserved', 'deprecated']);
 export const ipStatusEnum = pgEnum('ip_status', ['reserved', 'allocated', 'deprecated', 'released']);
 export const ipRoleEnum = pgEnum('ip_role', ['primary', 'secondary', 'gateway', 'vip', 'anycast', 'loopback', 'management']);
-export const credentialKindEnum = pgEnum('credential_kind', ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'fortios_rest', 'nxapi', 'routeros_api']);
+export const credentialKindEnum = pgEnum('credential_kind', ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'fortios_rest', 'nxapi', 'routeros_api', 'redfish', 'ipmi']);
 export const discoveryTriggerEnum = pgEnum('discovery_trigger', ['manual', 'schedule']);
 export const dnsServerKindEnum = pgEnum('dns_server_kind', ['powerdns', 'cloudflare']);
 export const dnsZoneKindEnum = pgEnum('dns_zone_kind', ['forward', 'reverse']);
@@ -958,6 +958,7 @@ export interface CredentialParams {
   securityLevel?: 'noAuthNoPriv' | 'authNoPriv' | 'authPriv';
   authProtocol?: string;
   privProtocol?: string;
+  ipmiPrivilege?: 'USER' | 'OPERATOR' | 'ADMINISTRATOR';
 }
 
 export const deviceCredentials = pgTable(
@@ -1376,3 +1377,154 @@ export type AlertRule = typeof alertRules.$inferSelect;
 export type Alert = typeof alerts.$inferSelect;
 export type MaintenanceWindow = typeof maintenanceWindows.$inferSelect;
 export type NotificationChannel = typeof notificationChannels.$inferSelect;
+
+/* ============================================================== Phase 5: power */
+
+export const powerSourceEnum = pgEnum('power_source', ['pdu_outlet', 'redfish', 'ipmi', 'nxos', 'routeros', 'snmp']);
+
+/** Power collection configuration and health per device (a server's BMC, a switch, a PDU). */
+export const powerMonitoring = pgTable(
+  'power_monitoring',
+  {
+    deviceId: uuid('device_id')
+      .primaryKey()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    orgId: orgRef(),
+    enabled: boolean('enabled').notNull().default(true),
+    credentialKind: credentialKindEnum('credential_kind').notNull(),
+    intervalSeconds: integer('interval_seconds').notNull().default(60),
+    nextPollAt: ts('next_poll_at'),
+    lastPollAt: ts('last_poll_at'),
+    lastOkAt: ts('last_ok_at'),
+    lastError: text('last_error'),
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    lastDurationMs: integer('last_duration_ms'),
+    lastWatts: real('last_watts'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('power_monitoring_due_idx').on(t.nextPollAt), check('power_monitoring_interval_ck', sql`${t.intervalSeconds} between 30 and 3600`)],
+);
+
+/** Admin power estimate and inclusion per device. */
+export const powerProfiles = pgTable('power_profiles', {
+  deviceId: uuid('device_id')
+    .primaryKey()
+    .references(() => devices.id, { onDelete: 'cascade' }),
+  orgId: orgRef(),
+  estimateW: integer('estimate_w'),
+  includeInTotals: boolean('include_in_totals').notNull().default(true),
+  notes: text('notes'),
+  updatedAt: updatedAt(),
+});
+
+/** Outlets of a metered PDU as last reported, and which device each one feeds. */
+export const pduOutlets = pgTable(
+  'pdu_outlets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    pduDeviceId: uuid('pdu_device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    outletNumber: integer('outlet_number').notNull(),
+    /** Name reported by the PDU. */
+    name: text('name'),
+    /** Admin label. */
+    label: text('label'),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    lastWatts: real('last_watts'),
+    lastAt: ts('last_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('pdu_outlets_pdu_number_uq').on(t.pduDeviceId, t.outletNumber), index('pdu_outlets_device_idx').on(t.deviceId), check('pdu_outlets_not_self_ck', sql`${t.deviceId} is distinct from ${t.pduDeviceId}`)],
+);
+
+/** Measured readings (raw). One row per device, source and instant. */
+export const powerReadings = pgTable(
+  'power_readings',
+  {
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    source: powerSourceEnum('source').notNull(),
+    at: ts('at').notNull(),
+    orgId: orgRef(),
+    watts: real('watts').notNull(),
+    /** Polling interval in force; readings further apart than 3× this are not joined. */
+    periodSeconds: integer('period_seconds').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.deviceId, t.source, t.at] }), index('power_readings_at_idx').on(t.at)],
+);
+
+/**
+ * Hourly energy per device: measured part (one source), estimated part and
+ * unknown time, kept apart. Device attributes are copied in so later moves
+ * don't rewrite history.
+ */
+export const powerHourly = pgTable(
+  'power_hourly',
+  {
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    hour: ts('hour').notNull(),
+    orgId: orgRef(),
+    datacenterId: uuid('datacenter_id'),
+    rackId: uuid('rack_id'),
+    customerId: uuid('customer_id'),
+    category: text('category').notNull(),
+    /** Counted in equipment totals (powered, included, not a PDU/UPS). */
+    counted: boolean('counted').notNull(),
+    source: powerSourceEnum('source'),
+    measuredWh: doublePrecision('measured_wh').notNull().default(0),
+    measuredSeconds: integer('measured_seconds').notNull().default(0),
+    estimatedWh: doublePrecision('estimated_wh').notNull().default(0),
+    estimatedSeconds: integer('estimated_seconds').notNull().default(0),
+    estimateKind: text('estimate_kind'),
+    /** The estimate in force when the hour was first computed (kept when the hour is recomputed later). */
+    estimateW: real('estimate_w'),
+    unknownSeconds: integer('unknown_seconds').notNull().default(0),
+    avgMeasuredW: real('avg_measured_w'),
+    maxMeasuredW: real('max_measured_w'),
+    samples: integer('samples').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.deviceId, t.hour] }), index('power_hourly_org_hour_idx').on(t.orgId, t.hour)],
+);
+
+export const powerTariffs = pgTable(
+  'power_tariffs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    currency: text('currency').notNull(),
+    pricePerKwh: numeric('price_per_kwh', { precision: 14, scale: 6 }).notNull(),
+    validFrom: ts('valid_from').notNull(),
+    notes: text('notes'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('power_tariffs_org_idx').on(t.orgId, t.validFrom), check('power_tariffs_price_ck', sql`${t.pricePerKwh} > 0`), check('power_tariffs_currency_ck', sql`${t.currency} ~ '^[A-Z]{3}$'`)],
+);
+
+/** How far the hourly energy rollup has got (one row). */
+export const powerRollupState = pgTable('power_rollup_state', {
+  id: integer('id').primaryKey().default(1),
+  rolledTo: ts('rolled_to').notNull(),
+});
+
+export const powerSettings = pgTable('power_settings', {
+  orgId: uuid('org_id')
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  rawDays: integer('raw_days').notNull().default(35),
+  hourlyDays: integer('hourly_days').notNull().default(1095),
+  updatedAt: updatedAt(),
+});
+
+export type PowerMonitoring = typeof powerMonitoring.$inferSelect;
+export type PduOutlet = typeof pduOutlets.$inferSelect;
+export type PowerTariff = typeof powerTariffs.$inferSelect;

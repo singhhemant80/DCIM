@@ -45,6 +45,8 @@ npx tsx apps/api/test/simulators/run.ts
 
 Then add an SNMP v2c credential (host `127.0.0.1`, port `16161`, community `demo-public-ro`) to a router and run a discovery. The SNMP simulator's counters advance every 5 s with invented traffic, so you can also enable polling for that router (Monitoring & Alerts → Polling) and watch Network Monitoring. That traffic is simulated.
 
+The simulators also start a Redfish BMC (`http://127.0.0.1:18080`, `root` / `demo-bmc-pass`, scheme HTTP) and an APC metered PDU (SNMP v2c on UDP 16162, community `demo-pdu-ro`) whose figures wander, for trying Power Consumption. Their power figures are invented. IPMI needs `ipmitool` on the worker host (`IPMITOOL_PATH` overrides its location).
+
 Worker settings: `POLL_CONCURRENCY` (devices polled at once, default 16), `DISCOVERY_CONCURRENCY` (default 4), `CDCIM_NOTIFY_ALLOW_PRIVATE=true` to allow webhook/SMTP destinations on private or local addresses.
 
 If `CDCIM_ADMIN_PASSWORD` is not set, `admin:create` generates a strong password and prints it once.

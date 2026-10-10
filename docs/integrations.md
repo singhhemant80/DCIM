@@ -36,6 +36,20 @@ Counters are matched to inventory ports by name (case-insensitive), with SNMP `i
 
 Notification channels: SMTP (STARTTLS, implicit TLS or none, via nodemailer), signed JSON webhooks, Slack incoming webhooks and the Telegram Bot API `sendMessage`.
 
+## Power collection (Phase 5)
+
+Each adapter that can read power implements `power()`:
+
+| Platform | Credential | Reads | Notes |
+|---|---|---|---|
+| Dell iDRAC 8/9, HPE iLO 5/6, Lenovo XClarity, Supermicro (Redfish) | `redfish` (read-only BMC user) | `GET /redfish/v1/Chassis` → each chassis → `Power` (`PowerControl[].PowerConsumedWatts`) or `EnvironmentMetrics` (`PowerWatts.Reading`) | iDRAC: enable Redfish (on by default on iDRAC 9) |
+| Any BMC with IPMI 2.0 DCMI | `ipmi` (USER privilege) | `ipmitool -I lanplus … dcmi power reading` | Needs `ipmitool` on the worker host (the installer adds it); some BMCs need DCMI power reading activated |
+| APC / Schneider metered-by-outlet PDUs | `snmp_v2c` / `snmp_v3` | PowerNet-MIB `rPDU2OutletMeteredStatusTable` (module, name, number, power W) and `rPDU2DeviceStatusPower` (hundredths of kW) | Daisy-chained units are numbered 2001, 2002… for unit 2 |
+| MikroTik RouterOS 7 | `routeros_rest` / `routeros_api` | `/system/health` `power-consumption` | Only models with a power sensor report it; others return a clear error |
+| Cisco Nexus | `nxapi` | `show environment power` total input draw, else the sum of the supplies' `actual_input` | |
+
+A PDU's own total is stored (source `snmp`) and shown beside the rack's equipment load, never added to it.
+
 ## Original adapter plan
 
 This plan fixed the adapter shape so that each phase adds adapters without changing the core.

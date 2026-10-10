@@ -41,6 +41,8 @@ import { AlertsController, MonitoringController } from './monitoring/monitoring.
 import { MonitoringService } from './monitoring/monitoring.service';
 import { AlertsService } from './monitoring/alerts.service';
 import { MonitoringStream } from './monitoring/stream.service';
+import { PowerController } from './power/power.controller';
+import { PowerService } from './power/power.service';
 import { RolesController } from './roles/roles.controller';
 import { RolesService } from './roles/roles.service';
 import { SettingsController } from './settings/settings.controller';
@@ -88,6 +90,7 @@ export class AppModule {
         DnsController,
         MonitoringController,
         AlertsController,
+        PowerController,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
@@ -121,6 +124,7 @@ export class AppModule {
         MonitoringService,
         AlertsService,
         MonitoringStream,
+        PowerService,
         // Order matters: rate limit → authenticate → authorize.
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthGuard },

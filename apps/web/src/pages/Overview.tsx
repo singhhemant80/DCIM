@@ -13,6 +13,8 @@ import { OccupancyBar } from './Racks';
 import { formatBps } from '../lib/network';
 import { bps, type AlertSummaryT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
 import { RateChart } from '../components/RateChart';
+import { formatKwh, formatWattsShort } from '@crapplet/shared';
+import type { EnergyT, PowerNowT } from '../lib/power';
 
 interface DcimSummary {
   counts: { datacenters: number; rooms: number; racks: number; devices: number; unracked: number };
@@ -146,6 +148,24 @@ function BandwidthPanel() {
   );
 }
 
+function PowerPanel() {
+  const q = useQuery({ queryKey: ['overview', 'power'], queryFn: () => api.get<{ now: PowerNowT; energy: EnergyT | null; byDatacenter: { datacenterCode: string | null; now: PowerNowT }[] } | null>('/overview/power'), refetchInterval: 60_000 });
+  if (q.isLoading) return <Loading />;
+  if (q.error) return <ErrorNote error={q.error} />;
+  const d = q.data;
+  if (!d) return null;
+  return (
+    <Panel title="Equipment power" actions={<Link to="/power" className="text-[13px] text-accent hover:underline">Power</Link>}>
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+        <Stat label="Measured now" value={formatWattsShort(d.now.measuredW)} note={`${d.now.measuredDevices} devices reporting`} />
+        <Stat label="Estimated now" value={<span className="text-est">{formatWattsShort(d.now.estimatedW)}</span>} note={`${d.now.estimatedDevices} from estimates`} />
+        <Stat label="Unknown" value={d.now.unknownDevices} tone={d.now.unknownDevices ? 'warn' : undefined} note="No figure, not in totals" />
+        <Stat label="Energy, 24 h" value={formatKwh(d.energy ? d.energy.measuredKwh + d.energy.estimatedKwh : 0)} note={d.energy ? `${formatKwh(d.energy.estimatedKwh)} of it estimated` : 'No hourly data yet'} />
+      </dl>
+    </Panel>
+  );
+}
+
 function NetworkPanel() {
   const { can } = useAuth();
   const net = useQuery({ queryKey: ['network', 'summary'], queryFn: () => api.get<{ networkDevices: number; interfaces: number; physicalInterfaces: number; cables: number; vlans: number; activeCircuits: number; committedTransitBps: number }>('/network/summary'), enabled: can('network.read') });
@@ -239,7 +259,7 @@ function StaffOverview() {
     <>
       <PageHeader
         title="Overview"
-        description={`${me!.organization.name}. Bandwidth is measured from interface counters; power figures appear when that module goes live. Nothing on this page is sample data.`}
+        description={`${me!.organization.name}. Bandwidth and power come from the devices themselves; power estimates are labelled as estimates. Nothing on this page is sample data.`}
       />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
@@ -247,6 +267,7 @@ function StaffOverview() {
         <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
           <div className="flex flex-col gap-5">
             {can('monitoring.read') && <BandwidthPanel />}
+            {can('power.read') && <PowerPanel />}
             {can('dcim.read') && <PhysicalPanel />}
             <NetworkPanel />
             <Panel title="Customers and access">
@@ -309,7 +330,7 @@ function CustomerOverview() {
   const c = q.data;
   return (
     <>
-      <PageHeader title="Your account" description="Power for your account will be added here when that module goes live. Bandwidth is on the Network Monitoring page." />
+      <PageHeader title="Your account" description="Bandwidth is on the Network Monitoring page and power on the Power page." />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
       {c && (
@@ -340,6 +361,10 @@ function CustomerOverview() {
         {' · '}
         <Link to="/network-monitoring" className="text-accent hover:underline">
           View your bandwidth
+        </Link>
+        {' · '}
+        <Link to="/power" className="text-accent hover:underline">
+          View your power
         </Link>
       </p>
     </>

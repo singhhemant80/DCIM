@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import {
+  BMC_CREDENTIAL_KINDS,
   CREDENTIAL_KINDS,
   CREDENTIAL_KIND_LABELS,
   INTERFACE_KINDS,
@@ -739,7 +740,12 @@ function CredentialsPanel({ device, creds }: { device: NetworkDeviceT; creds: Cr
       setDel(null);
     },
   });
-  const order = device.platform && SUGGESTED[device.platform] ? SUGGESTED[device.platform]! : (['snmp_v3', 'snmp_v2c', 'routeros_rest', 'routeros_api', 'fortios_rest', 'nxapi'] as CredentialKind[]);
+  const server = ['server', 'gpu_server', 'storage'].includes(device.category);
+  const order = server
+    ? (['redfish', 'ipmi', 'snmp_v3', 'snmp_v2c'] as CredentialKind[])
+    : device.platform && SUGGESTED[device.platform]
+      ? SUGGESTED[device.platform]!
+      : (['snmp_v3', 'snmp_v2c', 'routeros_rest', 'routeros_api', 'fortios_rest', 'nxapi', 'redfish', 'ipmi'] as CredentialKind[]);
   const missing = order.filter((k) => !creds.some((c) => c.kind === k));
   return (
     <Panel title="Read-only access">
@@ -861,6 +867,7 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
     vdom: s(p.vdom),
     timeoutMs: s(p.timeoutMs),
     tls: p.tls === undefined ? true : !!p.tls,
+    ipmiPrivilege: s(p.ipmiPrivilege) || 'USER',
   });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((x) => ({ ...x, [k]: e.target.value }));
   const snmp = kind === 'snmp_v2c' || kind === 'snmp_v3';
@@ -873,6 +880,8 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
       if (kind === 'routeros_rest' || kind === 'nxapi') Object.assign(base, { username: f.username, password: f.password, scheme: f.scheme, verifyTls: f.verifyTls });
       if (kind === 'fortios_rest') Object.assign(base, { token: f.token, scheme: f.scheme, verifyTls: f.verifyTls, vdom: t(f.vdom) });
       if (kind === 'routeros_api') Object.assign(base, { username: f.username, password: f.password, tls: f.tls, verifyTls: f.verifyTls });
+      if (kind === 'redfish') Object.assign(base, { username: f.username, password: f.password, scheme: f.scheme, verifyTls: f.verifyTls });
+      if (kind === 'ipmi') Object.assign(base, { username: f.username, password: f.password, ipmiPrivilege: f.ipmiPrivilege });
       return api.put(`/network/devices/${device.id}/credentials`, base);
     },
     onSuccess: async () => {
@@ -897,7 +906,7 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
         <Field label="Host" hint={device.mgmtAddress ? `Empty: ${device.mgmtAddress}. The host is saved with the secret; later changes to the management address don't redirect it.` : 'The device has no management address; enter one here'}>
           {(id, d) => <Input id={id} aria-describedby={d} required={!device.mgmtAddress} value={f.host} onChange={set('host')} className="font-mono" />}
         </Field>
-        <Field label="Port" hint={snmp ? 'Default 161/udp' : kind === 'routeros_api' ? (f.tls ? 'Default 8729 (api-ssl); use the port in IP → Services' : 'Default 8728 (api); use the port in IP → Services') : f.scheme === 'https' ? 'Default 443' : 'Default 80'}>
+        <Field label="Port" hint={snmp ? 'Default 161/udp' : kind === 'ipmi' ? 'Default 623/udp' : kind === 'routeros_api' ? (f.tls ? 'Default 8729 (api-ssl); use the port in IP → Services' : 'Default 8728 (api); use the port in IP → Services') : f.scheme === 'https' ? 'Default 443' : 'Default 80'}>
           {(id, d) => <Input id={id} aria-describedby={d} type="number" min={1} max={65535} value={f.port} onChange={set('port')} />}
         </Field>
         {kind === 'snmp_v2c' && secret('Community', 'community')}
@@ -951,6 +960,25 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
             {secret('Password', 'password')}
           </>
         )}
+        {(kind === 'redfish' || kind === 'ipmi') && (
+          <>
+            <Field label="BMC user" hint={kind === 'redfish' ? 'A read-only BMC account (iDRAC "Read Only", iLO "Login" privilege)' : 'An IPMI user with USER privilege is enough for DCMI power readings'}>
+              {(id, d) => <Input id={id} aria-describedby={d} required value={f.username} onChange={set('username')} />}
+            </Field>
+            {secret('Password', 'password')}
+          </>
+        )}
+        {kind === 'ipmi' && (
+          <Field label="Privilege level" hint="ipmitool must be installed on the worker host">
+            {(id, d) => (
+              <Select id={id} aria-describedby={d} value={f.ipmiPrivilege} onChange={set('ipmiPrivilege')}>
+                <option value="USER">USER (recommended)</option>
+                <option value="OPERATOR">OPERATOR</option>
+                <option value="ADMINISTRATOR">ADMINISTRATOR</option>
+              </Select>
+            )}
+          </Field>
+        )}
         {kind === 'fortios_rest' && (
           <>
             {secret('REST API token', 'token', true, 'From a REST API admin with a read-only profile')}
@@ -974,7 +1002,7 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
             )}
           </>
         )}
-        {!snmp && kind !== 'routeros_api' && (
+        {!snmp && kind !== 'routeros_api' && kind !== 'ipmi' && (
           <>
             <Field label="Protocol">
               {(id) => (
@@ -1062,7 +1090,7 @@ function RunsPanel({ device, runs, creds }: { device: NetworkDeviceT; runs: RunT
           <Button disabled={!k || active} busy={start.isPending && start.variables === 'test'} onClick={() => start.mutate('test')}>
             Test connection
           </Button>
-          <Button variant="primary" disabled={!k || active} busy={start.isPending && start.variables === 'discover'} onClick={() => start.mutate('discover')}>
+          <Button variant="primary" disabled={!k || active || BMC_CREDENTIAL_KINDS.includes(k)} title={k && BMC_CREDENTIAL_KINDS.includes(k) ? 'Redfish and IPMI are used for power readings; use Test' : undefined} busy={start.isPending && start.variables === 'discover'} onClick={() => start.mutate('discover')}>
             Run discovery
           </Button>
         </div>

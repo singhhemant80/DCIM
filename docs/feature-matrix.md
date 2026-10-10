@@ -2,13 +2,13 @@
 
 Updated at the end of every phase. **Done** means it has frontend, backend logic, persistence, access control, error handling and automated tests. Anything less is listed as Partial or Not started, with the reason.
 
-Last updated: Phase 4, 10 October 2026.
+Last updated: Phase 5, 10 October 2026.
 
 ## Navigation sections
 
 | # | Section | Status | Phase | Notes |
 |---|---|---|---|---|
-| 1 | Overview Dashboard | **Partial** | 1 → 5 | Live counts: physical capacity, devices by state and category, warranty expiry, low spare parts, network devices, cables, circuits and committed transit, IPv4 utilization and nearly-full subnets, customers, users, security activity, audit integrity; measured bandwidth now, last 24 h with 95th percentile, alerts firing (Phase 4). Power arrives with Phase 5. |
+| 1 | Overview Dashboard | **Done** | 1 → 5 | Live counts: physical capacity, devices by state and category, warranty expiry, low spare parts, network devices, cables, circuits and committed transit, IPv4 utilization and nearly-full subnets, customers, users, security activity, audit integrity; measured bandwidth now, last 24 h with 95th percentile, alerts firing (Phase 4); equipment power now (measured / estimated / unknown) and energy over 24 h (Phase 5). |
 | 2 | Datacenters | **Done** | 2 | Create, edit, delete (only when empty), counts per site |
 | 3 | Buildings and Rooms | **Done** | 2 | Buildings, rooms (floor size), rows; deletes refused while in use |
 | 4 | Floor Plans | **Done** | 2 | Tile grid per room; drag or click to position racks; fill colour by occupancy |
@@ -17,7 +17,7 @@ Last updated: Phase 4, 10 October 2026.
 | 7 | Network Infrastructure | **Done** | 3 | Network devices, physical and logical interfaces (LAG, VLAN, bridge, tunnel, loopback), cables, VLANs, VRFs, providers and circuits with history, topology, write-only access credentials, read-only discovery with preview and apply. Staff only. Live traffic is Phase 4 |
 | 8 | Network Monitoring | **Done** | 4 | Live per-port RX/TX, utilization, errors/discards and link state measured from counters (SNMP, RouterOS REST/API, FortiOS, NX-API); SSE live updates; history charts (1 h–30 d) with 95th percentile; totals over uplink ports with LAG de-duplication; live rates on the device page; customers see their own ports and the ports cabled to them. Simulator-tested only |
 | 9 | IP Address Management | **Done** | 3 | IPv4/IPv6 prefixes with hierarchy and utilization, VRFs, pools, atomic next-free allocation, reservations with expiry, release with history, conflict report, CSV import/export. Customers see their own subnets and addresses read-only |
-| 10 | Power Consumption | Not started | 5 | |
+| 10 | Power Consumption | **Done** | 5 | Measured power from Redfish and IPMI DCMI BMCs, APC metered PDU outlets (SNMP), RouterOS `/system/health` and NX-OS supply input; per-device estimates (admin figure, else model typical draw); one source per instant by priority; hourly energy with measured, estimated and unknown kept apart; tariffs per datacenter with validity dates; device, rack (budget %), datacenter, category and customer views; CSV export; customers see their own equipment without cost. Simulator-tested only |
 | 11 | Colocation Management | Not started | 7 | |
 | 12 | Server Provisioning | Not started | 6 | |
 | 13 | Operating Systems and Images | Not started | 6 | |
@@ -81,7 +81,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Warranty reminders | Partial | Shown on the overview and filterable. Notification channels exist since Phase 4, but warranty reminders are not sent through them yet (Phase 8) |
 | QR codes and printable labels | Done | `dcim.e2e` |
 | Customer view of own equipment (no internal fields) | Done | `dcim.e2e` |
-| Power and network connection records | Partial | Network connections (cables, ports, circuits) done in Phase 3; power connections and readings in Phase 5 |
+| Power and network connection records | Done | Network connections in Phase 3; PDU outlet → device mapping and power readings in Phase 5 |
 | Environmental sensor associations | Not started | Needs the monitoring collectors (Phase 4) |
 | Attachments (S3-compatible storage) | Not started | Planned with the object-storage integration; no files are stored yet |
 | Inventory reconciliation against discovered hardware | Not started | Needs Redfish/SNMP discovery (Phases 3 and 6) |
@@ -138,6 +138,29 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | TimescaleDB storage | Not done (deviation) | Plain PostgreSQL tables with worker rollups; see [database](database.md#phase-4-network-monitoring-implemented) |
 | Independent review of Phase 4 (6 confirmed defects + plausible items) | Done | All fixed; regression tests in `monitoring.e2e` |
 
+## Phase 5 capabilities
+
+| Capability (brief §12) | Status | Tests |
+|---|---|---|
+| Power collection in the worker (claimed with `FOR UPDATE SKIP LOCKED`, 30 s–1 h per device, timeouts), read-only | Done | `power.e2e` (racing claims, `pollDuePower` with no client); live run of the built worker against simulators |
+| Redfish (`Chassis/*/Power` `PowerControl.PowerConsumedWatts`, or `EnvironmentMetrics.PowerWatts`), GET only | Done | `power.e2e` (Redfish mock) |
+| IPMI DCMI power reading through `ipmitool` (password only in the environment, no shell) | Done | `power.e2e` (stand-in ipmitool recording its arguments) |
+| APC metered PDUs (PowerNet-MIB rPDU2): outlet watts, device total, daisy-chained units | Done (outlets and total); daisy-chain numbering not exercised by a test | `power.e2e` (real SNMP agent with the rPDU2 tables) |
+| RouterOS `/system/health` power-consumption, NX-OS `show environment power` | Done | `power.e2e` (mocks) |
+| PDU outlet → device mapping; a device fed by several outlets (A+B) measured as their sum only when every outlet reports and all power supplies are mapped | Done | `power.e2e` |
+| Source priority without double counting (PDU outlet → BMC → switch supply → …; lower sources fill only uncovered time; PDUs/UPS and anything feeding outlets never counted as load) | Done | `energy.test`, `power.e2e` |
+| Estimates: admin per-device figure, else model typical draw; only in powered lifecycle states; never before the device existed; labelled everywhere | Done | `energy.test`, `power.e2e` |
+| Energy: trapezoidal integration, no gap bridging (3 × each source's own period), duplicates once, implausible values dropped, window clipping | Done | `energy.test` (17) |
+| Hourly energy rows with measured / estimated / unknown seconds and Wh; closed hours keep their attributes and estimate; catch-up after downtime; single runner; retention | Done | `power.e2e` |
+| Tariffs per datacenter or organization with validity dates; cost per hour; share of cost from estimates | Done | `power.e2e` |
+| Totals by rack (with power budget %), datacenter, category, customer; PDU input shown beside rack load, not added | Done | `power.e2e` |
+| Energy report and CSV (device, rack, datacenter, customer, category) | Done | `power.e2e` |
+| Customer view: own equipment, current power and energy, no cost, location or collection details; history limited to hours the device was theirs | Done | `power.e2e` |
+| Power alerts (rack over budget, device over threshold) | Not started | The alert engine (Phase 4) evaluates port metrics only; power rules are a follow-up |
+| Other PDU families (Raritan, ServerTech, Vertiv), UPS (UPS-MIB), CISCO-ENTITY-SENSOR-MIB | Not started | Only APC rPDU2 is implemented |
+| Period boundaries exactly on a half-hour time-zone offset | Partial | Energy is stored per UTC hour; in Asia/Kolkata a month starts at 18:00 UTC instead of 18:30 (stated on screen and in the API) |
+| Independent review of Phase 5 (8 confirmed defects + suspicions) | Done | All fixed; regression tests in `power.e2e`, `energy.test` |
+
 ## Integration compatibility matrix
 
 "Simulator tested" means the collector passed automated tests against a protocol simulator built from published documentation (a real SNMP agent in-process, HTTP mocks of the vendor APIs). It does not prove compatibility with a specific firmware release. Nothing is marked hardware-verified without a recorded run against the device.
@@ -156,4 +179,8 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | SMTP (notifications) | STARTTLS / TLS / none, optional auth | Yes (local SMTP server in `monitoring.e2e`) | No |
 | Webhook (notifications) | POST JSON, HMAC-SHA256 signature | Yes (`monitoring.e2e`) | No |
 | Slack incoming webhook, Telegram Bot API | POST `{ text }`; `sendMessage` | No (implemented; not exercised against the services) | No |
-| Redfish, IPMI, Proxmox, Virtualizor, WHMCS | — | Not started | Not started |
+| Redfish (iDRAC 8/9, iLO 5/6, XClarity, Supermicro) | GET `/redfish/v1/Systems`, `/Systems/*`, `/Chassis`, `/Chassis/*`, `…/Power`, `…/EnvironmentMetrics` | Yes (`power.e2e`) | No (Dell R630/R640 pending) |
+| IPMI v2.0 DCMI via ipmitool | `mc info`, `dcmi power reading` | Stand-in ipmitool only (`power.e2e`) | No |
+| APC rack PDU (PowerNet-MIB rPDU2) | SNMP walk of outlet metered status and device status | Yes (`power.e2e`) | No |
+| RouterOS `/system/health`, NX-OS `show environment power` | read only | Yes (mocks, `power.e2e`) | No (CCR2004 power-consumption support depends on the model) |
+| Proxmox, Virtualizor, WHMCS | — | Not started | Not started |

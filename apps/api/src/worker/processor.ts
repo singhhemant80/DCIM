@@ -10,6 +10,8 @@ import { routerOsAdapter } from './adapters/routeros';
 import { fortiOsAdapter } from './adapters/fortios';
 import { nxApiAdapter } from './adapters/nxapi';
 import { routerOsApiAdapter } from './adapters/routeros-api';
+import { redfishAdapter } from './adapters/redfish';
+import { ipmiAdapter } from './adapters/ipmi';
 
 export interface WorkerDeps {
   db: Db;
@@ -30,6 +32,8 @@ export function defaultAdapters(): Record<CredentialKind, Adapter> {
     fortios_rest: fortiOsAdapter(),
     nxapi: nxApiAdapter(),
     routeros_api: routerOsApiAdapter(),
+    redfish: redfishAdapter(),
+    ipmi: ipmiAdapter(),
   };
 }
 

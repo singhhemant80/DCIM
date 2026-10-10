@@ -119,9 +119,25 @@ Every minute the worker rebuilds recent 5-minute and hourly buckets (time-weight
 
 Alerts fire only when the condition has held for `forSeconds` **and** for `minSamples` consecutive samples; they resolve after `clearSamples` good samples. A poll with no value (first reading, reset, gap, unreachable device) neither advances nor clears a streak, and a streak doesn't continue across a gap longer than three intervals. In a maintenance window an alert is recorded as suppressed with no notification; if it is still firing when the window ends, it is notified then. No alert, rule or notification ever changes a device.
 
-## Power design (Phase 5)
+## Power design (Phase 5, implemented)
 
-Each device has at most one **effective power source** per reading window, chosen by priority: measured telemetry (Redfish/iDRAC/SNMP/PDU outlet) → vendor-reported → admin estimate → spec-based estimate → unknown. Totals report measured and estimated subtotals separately and list unknown devices. Energy from measured data is a time-weighted trapezoidal integration over timestamped readings that does not bridge gaps. Estimated energy is `W × hours / 1000`, with its assumptions shown.
+Collection works like interface polling: the worker claims due `power_monitoring` rows from PostgreSQL and reads each device with its stored read-only credential, storing every value as a measured reading with its source:
+
+| Source (priority order) | Read from |
+|---|---|
+| `pdu_outlet` | Sum of the metered PDU outlets mapped to the device, written only when every mapped outlet has a fresh value and every power supply is mapped |
+| `redfish` | BMC chassis power (`PowerConsumedWatts`) |
+| `ipmi` | BMC DCMI instantaneous reading (`ipmitool`) |
+| `nxos`, `routeros` | Switch/router supply input power |
+| `snmp` | A PDU's own input total (shown for the rack, never counted as load) |
+
+Pure functions in [`power/energy.ts`](../apps/api/src/power/energy.ts) (unit-tested) decide everything:
+
+- **Current power:** the newest reading of the highest-priority source that is fresh (within 3 polling periods); otherwise the estimate (admin figure, else the model's typical draw) labelled as estimated; otherwise unknown. Devices not in a powered lifecycle state and not measured are "not powered".
+- **Energy:** trapezoidal integration of readings, joining two readings only when they are at most 3 of that source's polling periods apart; duplicates count once; impossible values are dropped; windows clip segments at their edges. Sources are taken in priority order and each fills only time no higher source covered, so an instant is never counted twice. Uncovered time is estimated (kept separate) or, with no estimate, unknown (no energy).
+- **Totals** add only counted devices (powered or measured, included, not PDU/UPS, not feeding outlets) and report measured W, estimated W and the number of unknown devices separately.
+
+The worker builds `power_hourly` every minute (current and previous hour; after downtime it catches up a day per run from its progress mark). An hour keeps the customer, rack, datacenter, category and estimate it was first computed with, so later changes never rewrite history. Cost is computed when reported: each hour's energy × the tariff in force for that hour (the datacenter's own, else the organization's).
 
 ## Configuration
 

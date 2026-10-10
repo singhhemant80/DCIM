@@ -1,6 +1,6 @@
 import * as snmp from 'net-snmp';
 import { formatIp, type InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, CounterReading, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, DeviceFacts, TestResult } from '../../network/discovery/types';
+import type { PowerSnapshot, Adapter, AdapterTarget, CounterReading, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, DeviceFacts, TestResult } from '../../network/discovery/types';
 
 /**
  * Read-only SNMP collector (v2c and v3). Only GET and GETBULK are issued.
@@ -417,6 +417,38 @@ export function parseCounters(sys: Map<string, Value>, ifT: Table, ifX: Table): 
 // Adapter
 // ---------------------------------------------------------------------------
 
+/**
+ * APC / Schneider rack PDUs (PowerNet-MIB rPDU2): per-outlet power on
+ * metered-by-outlet models and the device total. Other PDU families are not
+ * read yet. OIDs as published in PowerNet-MIB; not yet checked on hardware.
+ */
+export const APC = {
+  /** rPDU2OutletMeteredStatusEntry: .2 module (unit in a daisy chain), .3 name, .4 outlet number, .7 power (W). */
+  outletEntry: '1.3.6.1.4.1.318.1.1.26.9.4.3.1',
+  /** rPDU2DeviceStatusEntry: .5 power (hundredths of kW). */
+  deviceEntry: '1.3.6.1.4.1.318.1.1.26.4.3.1',
+};
+
+export function parseApcPower(outlets: Table, device: Table): PowerSnapshot | null {
+  const modules = outlets.get(2) ?? new Map<string, Value>();
+  const names = outlets.get(3) ?? new Map<string, Value>();
+  const numbers = outlets.get(4) ?? new Map<string, Value>();
+  const power = outlets.get(7) ?? new Map<string, Value>();
+  const idxs = new Set([...numbers.keys(), ...power.keys()]);
+  const list = [...idxs]
+    .map((idx) => {
+      const n = num(numbers.get(idx)) ?? Number(idx);
+      const unit = num(modules.get(idx)) ?? 1;
+      // Daisy-chained units repeat outlet numbers: unit 2 outlet 3 becomes 2003.
+      return { number: unit > 1 ? unit * 1000 + n : n, name: unit > 1 ? `Unit ${unit}: ${text(names.get(idx)) ?? `outlet ${n}`}` : text(names.get(idx)), watts: num(power.get(idx)) };
+    })
+    .filter((o) => Number.isInteger(o.number) && o.number > 0)
+    .sort((a, b) => a.number - b.number);
+  const totals = [...(device.get(5)?.values() ?? [])].map((v) => num(v)).filter((v): v is number => v !== null && v >= 0);
+  if (!list.length && !totals.length) return null;
+  return { watts: totals.length ? totals.reduce((a, b) => a + b, 0) * 10 : null, source: 'snmp', outlets: list, detail: 'APC rPDU2' };
+}
+
 export function snmpAdapter(kind: 'snmp_v2c' | 'snmp_v3', makeTransport = createTransport): Adapter {
   const sysOids = [OID.sysDescr, OID.sysObjectID, OID.sysUpTime, OID.sysName];
   return {
@@ -428,6 +460,18 @@ export function snmpAdapter(kind: 'snmp_v2c' | 'snmp_v3', makeTransport = create
         if (!sys.size) return { ok: false, message: 'The device answered but returned no system information', latencyMs: Date.now() - started };
         const facts = parseFacts(sys, null);
         return { ok: true, message: `Connected: ${facts.sysName ?? 'unnamed'}${facts.sysDescr ? ` — ${facts.sysDescr.split('\n')[0]!.slice(0, 120)}` : ''}`, latencyMs: Date.now() - started, facts };
+      } finally {
+        tr.close();
+      }
+    },
+    async power(t: AdapterTarget): Promise<PowerSnapshot> {
+      const tr = makeTransport(t, kind);
+      try {
+        const outlets = await walkColumns(tr, APC.outletEntry, [2, 3, 4, 7]);
+        const device = await walkColumns(tr, APC.deviceEntry, [5]);
+        const r = parseApcPower(outlets, device);
+        if (!r) throw new Error('No supported power MIB found (APC PowerNet rPDU2 is supported for PDUs)');
+        return r;
       } finally {
         tr.close();
       }

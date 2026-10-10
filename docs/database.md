@@ -151,3 +151,18 @@ Migration `0008_monitoring.sql`.
 | `maintenance_windows` | Start/end (end after start, at most 31 days), scope all, datacenter or devices |
 | `notification_channels` | Email (SMTP), signed webhook, Slack, Telegram. `config` holds non-secret settings; `secret_enc` is SecretBox ciphertext bound to organization, channel id and kind |
 | `notifications` | Outbox: pending/sent/failed, attempts, `next_attempt_at` (exponential backoff, 6 attempts), last error. Sent and failed rows are deleted after 30 days |
+
+### Phase 5: equipment power (implemented)
+
+Migration `0009_power.sql` (adds `redfish` and `ipmi` to `credential_kind`).
+
+| Table | Purpose and rules |
+|---|---|
+| `power_monitoring` | Power collection per device: credential kind, interval (30–3600 s), `next_poll_at` (claimed with `FOR UPDATE SKIP LOCKED`), health, last reading. Trigger keeps it in the device's organization |
+| `power_profiles` | Admin estimate (W), include-in-totals flag, notes |
+| `pdu_outlets` | Outlets of a metered PDU as reported (number, name, last watts and time), the device each one feeds and an admin label. Unique `(pdu, outlet number)`; a PDU cannot feed itself; organization checked by trigger for both ends |
+| `power_readings` | Raw measured readings: PK `(device, source, at)`, watts, the polling period in force. Default retention 35 days |
+| `power_hourly` | Per device and UTC hour: measured Wh and seconds (and the main source), estimated Wh and seconds with the estimate kind and value, unknown seconds, average and peak measured W, and the device's datacenter, rack, customer and category at the time. `counted` says whether it adds to totals. Default retention 1095 days |
+| `power_tariffs` | Price per kWh with currency (ISO code) and start date, for the organization or one datacenter |
+| `power_settings` | Retention per organization |
+| `power_rollup_state` | How far the hourly rollup has got (lets it catch up after downtime without rescanning) |

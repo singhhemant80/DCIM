@@ -24,7 +24,7 @@ export interface NavSection {
 }
 
 export const NAV_SECTIONS: readonly NavSection[] = [
-  { key: 'overview', label: 'Overview', path: '/', group: 'Overview', status: 'available', phase: 1, summary: 'Operational dashboard: physical capacity now; network and power metrics arrive with Phases 4–5.' },
+  { key: 'overview', label: 'Overview', path: '/', group: 'Overview', status: 'available', phase: 1, summary: 'Operational dashboard: capacity, network, bandwidth and power at a glance.' },
   { key: 'datacenters', label: 'Datacenters', path: '/datacenters', group: 'Physical', permission: 'dcim.read', status: 'available', phase: 2, staffOnly: true, summary: 'Datacenter sites and their hierarchy.' },
   { key: 'rooms', label: 'Buildings & Rooms', path: '/rooms', group: 'Physical', permission: 'dcim.read', status: 'available', phase: 2, staffOnly: true, summary: 'Buildings, rooms and rows inside each datacenter.' },
   { key: 'floor-plans', label: 'Floor Plans', path: '/floor-plans', group: 'Physical', permission: 'dcim.read', status: 'available', phase: 2, staffOnly: true, summary: 'Room layouts with rack positions.' },
@@ -33,7 +33,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   { key: 'network', label: 'Network Infrastructure', path: '/network', group: 'Network', permission: 'network.read', status: 'available', phase: 3, staffOnly: true, summary: 'Routers, switches, firewalls, ports, cabling, VLANs, VRFs, circuits, topology and read-only discovery.' },
   { key: 'network-monitoring', label: 'Network Monitoring', path: '/network-monitoring', group: 'Network', permission: 'monitoring.read', status: 'available', phase: 4, summary: 'Live per-port RX/TX bandwidth, utilization, history and 95th percentile.' },
   { key: 'ipam', label: 'IP Address Management', path: '/ipam', group: 'Network', permission: 'ipam.read', status: 'available', phase: 3, summary: 'IPv4/IPv6 prefixes, pools and allocations.' },
-  { key: 'power', label: 'Power Consumption', path: '/power', group: 'Power', permission: 'power.read', status: 'planned', phase: 5, summary: 'Measured and estimated equipment power, kWh and cost.' },
+  { key: 'power', label: 'Power Consumption', path: '/power', group: 'Power', permission: 'power.read', status: 'available', phase: 5, summary: 'Measured and estimated equipment power, kWh and cost.' },
   { key: 'colocation', label: 'Colocation', path: '/colocation', group: 'Services', permission: 'services.read', status: 'planned', phase: 7, summary: 'Customer-owned equipment, rack allocations and cross-connects.' },
   { key: 'provisioning', label: 'Server Provisioning', path: '/provisioning', group: 'Services', permission: 'provisioning.read', status: 'planned', phase: 6, summary: 'Provisioning job state machine and history.' },
   { key: 'images', label: 'OS & Images', path: '/images', group: 'Services', permission: 'provisioning.read', status: 'planned', phase: 6, summary: 'ISO library, templates and checksums.' },

@@ -8,6 +8,25 @@ import { formatDateTime, relativeTime } from '../lib/format';
 import { daysUntil, STATE_TONE, useRacks, type DeviceT, type EventT } from '../lib/dcim';
 import { Button, Chip, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Textarea } from '../components/ui';
 import { DeviceForm } from './Hardware';
+import { formatWattsShort } from '@crapplet/shared';
+import type { DevicePowerT } from '../lib/power';
+import { QualityChip } from './Power';
+
+/** Current power of this device, labelled measured / estimated / unknown, with a link to its history. */
+function DevicePowerPanel({ id }: { id: string }) {
+  const q = useQuery({ queryKey: ['power', 'device', id], queryFn: () => api.get<DevicePowerT & { spec: { typicalW: number | null } | null }>(`/power/devices/${id}`), refetchInterval: 60_000, retry: false });
+  if (q.isLoading || q.error || !q.data) return null;
+  const d = q.data;
+  return (
+    <Panel title="Power" actions={<Link to={`/power?device=${id}`} className="text-[13px] text-accent hover:underline">History</Link>}>
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-[24px] font-semibold tracking-[-0.02em]">{formatWattsShort(d.watts)}</span>
+        <QualityChip d={d} />
+      </div>
+      {d.quality === 'unknown' && <p className="mt-2 text-[13px] text-ink-3">No measurement and no estimate. Set the model's typical draw, a per-device estimate, or collect from the BMC.</p>}
+    </Panel>
+  );
+}
 
 function Facts({ items }: { items: [string, ReactNode][] }) {
   return (
@@ -316,6 +335,7 @@ export function DeviceDetailPage() {
               </>
             )}
           </Panel>
+          {can('power.read') && d.lifecycleState !== 'retired' && <DevicePowerPanel id={d.id} />}
           {staff && (
             <Panel title="Purchase and warranty">
               <Facts
