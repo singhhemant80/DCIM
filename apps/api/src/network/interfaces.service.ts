@@ -84,6 +84,8 @@ export class InterfacesService {
         cabledCount: sql<number>`(select count(*)::int from interfaces i join cable_ends ce on ce.interface_id = i.id where i.device_id = "devices"."id")`,
         credentialKinds: sql<string[]>`coalesce((select array_agg(c.kind::text order by c.kind) from device_credentials c where c.device_id = "devices"."id"), '{}')`,
         lastDiscovery: sql<{ status: string; finishedAt: string | null; mode: string } | null>`(select json_build_object('status', r.status, 'finishedAt', r.finished_at, 'mode', r.mode) from discovery_runs r where r.device_id = "devices"."id" order by r.created_at desc limit 1)`,
+        /** Differences found by the latest successful discovery that hasn't been applied (null when none pending). */
+        pendingChanges: sql<{ runId: string; total: number; finishedAt: string } | null>`(select json_build_object('runId', r.id, 'total', (r.changes->>'total')::int, 'finishedAt', r.finished_at) from discovery_runs r where r.device_id = "devices"."id" and r.mode = 'discover' and r.status = 'succeeded' and r.applied_at is null and coalesce((r.changes->>'total')::int, 0) > 0 and not exists (select 1 from discovery_runs n where n.device_id = r.device_id and n.mode = 'discover' and n.status = 'succeeded' and n.finished_at > r.finished_at) order by r.finished_at desc limit 1)`,
       })
       .from(devices)
       .innerJoin(deviceModels, eq(deviceModels.id, devices.modelId))
@@ -113,6 +115,8 @@ export class InterfacesService {
           lastTestOk: deviceCredentials.lastTestOk,
           lastTestMessage: deviceCredentials.lastTestMessage,
           rotatedAt: deviceCredentials.rotatedAt,
+          scheduleHours: deviceCredentials.scheduleHours,
+          nextRunAt: deviceCredentials.nextRunAt,
         })
         .from(deviceCredentials)
         .where(eq(deviceCredentials.deviceId, deviceId))
@@ -128,6 +132,8 @@ export class InterfacesService {
           error: discoveryRuns.error,
           appliedAt: discoveryRuns.appliedAt,
           requestedLabel: discoveryRuns.requestedLabel,
+          trigger: discoveryRuns.trigger,
+          changes: discoveryRuns.changes,
         })
         .from(discoveryRuns)
         .where(eq(discoveryRuns.deviceId, deviceId))

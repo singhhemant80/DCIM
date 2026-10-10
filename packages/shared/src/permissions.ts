@@ -55,6 +55,7 @@ export const PERMISSIONS = [
   p('alerts.manage', 'Acknowledge and manage alerts', 'Monitoring'),
   p('ipam.read', 'View IP prefixes and allocations', 'IPAM', false),
   p('ipam.write', 'Allocate and release IP addresses', 'IPAM'),
+  p('dns.manage', 'Configure DNS servers and zones that IPAM updates', 'IPAM', true, true),
 
   // Power (Phase 5)
   p('power.read', 'View equipment power consumption', 'Power', false),

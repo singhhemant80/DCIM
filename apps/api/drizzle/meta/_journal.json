@@ -50,6 +50,13 @@
       "when": 1791568945017,
       "tag": "0006_network_constraints",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791574052690,
+      "tag": "0007_network_schedule_dns",
+      "breakpoints": true
     }
   ]
 }

@@ -41,7 +41,24 @@ export class CredentialsService {
       lastTestMessage: c.lastTestMessage,
       rotatedAt: c.rotatedAt,
       updatedAt: c.updatedAt,
+      scheduleHours: c.scheduleHours,
+      nextRunAt: c.nextRunAt,
     };
+  }
+
+  /** Turns automatic (scheduled) discovery on or off for one credential. Runs are still only previews. */
+  async setSchedule(p: Principal, deviceId: string, kind: CredentialKind, hours: number | null, meta: RequestMeta) {
+    await ownDevice(this.db, p, deviceId);
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(deviceCredentials)
+        .set({ scheduleHours: hours, nextRunAt: hours ? new Date() : null })
+        .where(and(eq(deviceCredentials.deviceId, deviceId), eq(deviceCredentials.kind, kind), eq(deviceCredentials.orgId, p.orgId)))
+        .returning();
+      if (!row) throw notFound('Credential');
+      await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'credential.schedule', target: { type: 'device', id: deviceId }, outcome: 'success', meta, metadata: { kind, hours } }, tx);
+      return CredentialsService.view(row);
+    });
   }
 
   async list(p: Principal, deviceId: string) {
@@ -99,7 +116,7 @@ export function split(input: CredentialInput): { secret: Record<string, string |
   const secret: Record<string, string | null> = {};
   for (const f of SECRET_FIELDS[input.kind]) secret[f] = (raw[f] as string | null | undefined) ?? null;
   const params: CredentialParams = {};
-  for (const k of ['timeoutMs', 'retries', 'scheme', 'verifyTls', 'vdom', 'securityLevel', 'authProtocol', 'privProtocol'] as const) {
+  for (const k of ['timeoutMs', 'retries', 'scheme', 'tls', 'verifyTls', 'vdom', 'securityLevel', 'authProtocol', 'privProtocol'] as const) {
     if (raw[k] !== undefined) (params as Record<string, unknown>)[k] = raw[k];
   }
   return { secret, params, username: (raw.username as string | undefined) ?? null };

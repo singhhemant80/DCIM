@@ -132,6 +132,22 @@ A separate reviewer audited the network, IPAM and discovery code. Confirmed defe
 
 Plausible items also addressed: concurrent applies are serialized per device; the worker no longer overwrites a run the API marked stale; discovery can't make a logical interface a LAG member; customer address views hide infrastructure device names and staff subnets; the 1 MB JSON limit applies everywhere except the two CSV import routes.
 
+## Phase 3 completion review
+
+A second review covered the RouterOS API client, scheduling, address import and DNS publishing. Confirmed defects, fixed with regression tests in `dns.e2e.test.ts` and `network-automation.e2e.test.ts`:
+- Two addresses sharing a DNS name (round robin) synced at the same moment could drop one value from the PowerDNS record set. The worker now takes an advisory lock per zone, name and type, in sorted order, around each read-modify-write.
+- Recording discovered addresses could silently bind an address IPAM already held for another customer (reserved, no device) to the discovered device. Existing IPAM rows are now never re-assigned from discovery; only an unbound interface on the same device is filled in, with a history entry.
+- Disabling a child zone made names fall through to the parent zone. The most specific zone now decides, and a disabled one means "don't publish".
+- Records left in a disabled zone after a rename showed as in sync. They are now reported, and any zone change re-queues affected addresses.
+
+Also addressed: DNS calls no longer run while the address row is locked (a short claim, then the provider calls, then a compare-and-set that keeps a concurrent edit's pending state); the managed-record marker includes the organization id, so two organizations sharing a provider zone never touch each other's records; Cloudflare zone ids can't change while records exist; PowerDNS URLs must be http(s) without embedded credentials; the PTR field must be a valid host name; discovered addresses are compared in canonical form.
+
+Known limitations: the DNS sweep handles pending addresses oldest first across all organizations, so an unreachable server slows publishing for everyone (each call is capped at 5 s); failed addresses are retried only when changed or when "Try again" / "Publish all again" is used.
+
+## DNS credentials
+
+PowerDNS API keys and Cloudflare tokens follow the device-credential rules: write-only, encrypted with AAD bound to the organization, server row, type and URL, decrypted only in the worker, redacted from error text. Configuring them needs `dns.manage` (dangerous, staff-only). Give Cloudflare tokens only Zone → DNS → Edit (and Zone → Read) on the zones DCIM manages.
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.

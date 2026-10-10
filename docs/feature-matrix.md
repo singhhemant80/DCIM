@@ -108,11 +108,13 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Conflict report (orphans, network/broadcast, customer mismatch, length mismatch, lapsed reservations) | Done | `ipam.e2e` |
 | CSV import (dry run, per-row results) and export | Done | `ipam.e2e` |
 | Customer IPAM view (own subnets and addresses, no infrastructure details) | Done | `ipam.e2e`, `network-regressions.e2e` |
-| DNS integration (pushing A/PTR records) | Not started | Names are recorded only; no DNS server is updated |
-| Automatic import of discovered addresses into IPAM | Not started | The preview compares device addresses with IPAM; recording them is a manual step |
-| Scheduled (periodic) discovery | Not started | Runs are started by an operator; scheduling arrives with the Phase 4 scheduler |
+| DNS publishing of A/AAAA/PTR records to PowerDNS (HTTP API) and Cloudflare; only records DCIM created are changed; per-name locking for shared (round-robin) names | Done | `dns.e2e` (PowerDNS and Cloudflare mocks) |
+| Recording discovered addresses in IPAM from the discovery preview (selected addresses, optional subnet creation; existing IPAM rows are never re-assigned) | Done | `network-automation.e2e` |
+| Scheduled discovery per access method (1–720 h), difference counts on each run, devices flagged when the latest discovery differs from inventory; never applied automatically | Done | `network-automation.e2e` |
+| MikroTik RouterOS API (`api` / `api-ssl`) collector | Done | `network-automation.e2e` (protocol simulator) |
 | SSH-based collection for platforms without an API | Not started | Not needed for the target hardware; SNMP covers Cisco IOS devices |
 | Independent review of Phase 3 (7 confirmed defects + plausible items) | Done | All fixed; `network-regressions.e2e` |
+| Independent review of the Phase 3 completion (4 confirmed defects + plausible items) | Done | All fixed; regression tests in `dns.e2e`, `network-automation.e2e` |
 
 ## Integration compatibility matrix
 
@@ -122,8 +124,11 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 |---|---|---|---|
 | SNMP v2c (any device) | GET/GETBULK: system, IF-MIB, IP-MIB, LAG-MIB, LLDP-MIB, CISCO-CDP-MIB, BGP4-MIB, ENTITY-MIB | Yes (`adapters.e2e`, `network.e2e`) | No |
 | SNMP v3 authPriv (SHA/AES tested; MD5, SHA-2, AES-256 selectable) | same | Yes (SHA + AES) | No |
-| MikroTik RouterOS 7 REST | GET `/rest/system/*`, `/interface`, `/interface/ethernet`, `/interface/bonding`, `/ip/address`, `/ipv6/address`, `/ip/neighbor`, `/routing/bgp/session` | Yes (`network.e2e`) | No (CCR2004/CCR2116 pending) |
+| MikroTik RouterOS 7 REST | GET `/rest/system/*`, `/interface`, `/interface/ethernet`, `/interface/bonding`, `/ip/address`, `/ipv6/address`, `/ip/neighbor`, `/routing/bgp/session` | Yes (`network.e2e`) | Partial: CCR2004-1G-12S+2XS on RouterOS 7.24.5 answered `/rest/system/resource` with the fields the parser reads; full discovery run pending |
+| MikroTik RouterOS API (`api`, `api-ssl`) | `/login` and the same paths as `…/print` (client refuses anything else) | Yes (`network-automation.e2e`) | No |
 | Fortinet FortiOS REST | GET `monitor/system/status`, `cmdb/system/interface`, `monitor/system/interface`, `monitor/router/bgp/neighbors`, `monitor/network/lldp/neighbors` | Yes (`adapters.e2e`) | No (FortiGate 40F pending) |
 | Cisco NX-API (`cli_show`) | `show version`, `show interface`, `show ip interface vrf all`, `show port-channel summary`, `show lldp neighbors detail`, `show cdp neighbors detail`, `show ip bgp summary vrf all` | Yes (`adapters.e2e`) | No (Nexus 9372TX pending) |
 | Cisco IOS (4500-X, 2960-X) | via SNMP adapter | Through the SNMP tests | No |
+| PowerDNS authoritative (HTTP API v1) | zone read, rrset GET/PATCH (REPLACE/DELETE) on records marked as DCIM's | Yes (`dns.e2e`) | No |
+| Cloudflare DNS API v4 | token verify, zone read, record list/create/delete (records with DCIM's comment) | Yes (`dns.e2e`) | No |
 | Redfish, IPMI, Proxmox, Virtualizor, WHMCS | — | Not started | Not started |

@@ -2,13 +2,14 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 import type { CredentialKind } from '@crapplet/shared';
 import type { Db } from '../db/db';
-import { deviceCredentials, discoveryRuns } from '../db/schema';
+import { deviceCredentials, discoveryRuns, type DiscoveryChanges } from '../db/schema';
 import type { SecretBox } from '../common/secret-box';
-import { credentialContext, type Adapter, type AdapterTarget } from '../network/discovery/types';
+import { credentialContext, type Adapter, type AdapterTarget, type DiscoveryResult } from '../network/discovery/types';
 import { snmpAdapter } from './adapters/snmp';
 import { routerOsAdapter } from './adapters/routeros';
 import { fortiOsAdapter } from './adapters/fortios';
 import { nxApiAdapter } from './adapters/nxapi';
+import { routerOsApiAdapter } from './adapters/routeros-api';
 
 export interface WorkerDeps {
   db: Db;
@@ -17,6 +18,8 @@ export interface WorkerDeps {
   adapters?: Partial<Record<CredentialKind, Adapter>>;
   /** Hard ceiling for one run, on top of the per-request timeouts. */
   runTimeoutMs?: number;
+  /** Computes how a finished discovery differs from inventory (stored on the run to flag the device). */
+  changes?: (orgId: string, deviceId: string, result: DiscoveryResult) => Promise<DiscoveryChanges>;
 }
 
 export function defaultAdapters(): Record<CredentialKind, Adapter> {
@@ -26,6 +29,7 @@ export function defaultAdapters(): Record<CredentialKind, Adapter> {
     routeros_rest: routerOsAdapter(),
     fortios_rest: fortiOsAdapter(),
     nxapi: nxApiAdapter(),
+    routeros_api: routerOsApiAdapter(),
   };
 }
 
@@ -53,11 +57,11 @@ export async function processRun(deps: WorkerDeps, runId: string): Promise<void>
     .returning();
   if (!run) return;
   let secret: Record<string, unknown> = {};
-  const finish = async (status: 'succeeded' | 'failed', patch: { result?: Record<string, unknown>; error?: string }) => {
+  const finish = async (status: 'succeeded' | 'failed', patch: { result?: Record<string, unknown>; error?: string; changes?: DiscoveryChanges | null }) => {
     // A run the API already declared stale stays failed.
     await db
       .update(discoveryRuns)
-      .set({ status, finishedAt: new Date(), result: patch.result ?? null, error: patch.error ?? null })
+      .set({ status, finishedAt: new Date(), result: patch.result ?? null, error: patch.error ?? null, changes: patch.changes ?? null })
       .where(and(eq(discoveryRuns.id, run.id), eq(discoveryRuns.status, 'running')));
   };
   try {
@@ -86,7 +90,13 @@ export async function processRun(deps: WorkerDeps, runId: string): Promise<void>
         const r = await Promise.race([adapter.discover(target), timeout]);
         r.warnings = r.warnings.map((w) => redact(w, secret));
         await db.update(deviceCredentials).set({ lastTestAt: new Date(), lastTestOk: true, lastTestMessage: `Discovery collected ${r.interfaces.length} interfaces` }).where(eq(deviceCredentials.id, cred.id));
-        await finish('succeeded', { result: r as unknown as Record<string, unknown> });
+        let changes: DiscoveryChanges | null = null;
+        try {
+          changes = deps.changes ? await deps.changes(run.orgId, run.deviceId, r) : null;
+        } catch (e) {
+          deps.logger.warn({ runId: run.id, err: (e as Error).message }, 'could not compute discovery changes');
+        }
+        await finish('succeeded', { result: r as unknown as Record<string, unknown>, changes });
       }
       deps.logger.info({ runId: run.id, deviceId: run.deviceId, kind: run.credentialKind, mode: run.mode }, 'discovery run finished');
     } finally {

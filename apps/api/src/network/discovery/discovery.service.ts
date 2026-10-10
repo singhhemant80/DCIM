@@ -1,15 +1,18 @@
-import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { z } from 'zod';
-import { parseCidr, parseIp, formatIp, type CredentialKind, type discoveryApplySchema } from '@crapplet/shared';
+import { formatCidr, parseCidr, parseIp, formatIp, type CredentialKind, type discoveryApplySchema } from '@crapplet/shared';
 import { DB, type Db, type DbOrTx } from '../../db/db';
-import { deviceCredentials, devices, discoveryRuns, interfaces, neighborObservations, type DiscoveryRun } from '../../db/schema';
+import { deviceCredentials, devices, discoveryRuns, interfaces, neighborObservations, prefixes, type DiscoveryChanges, type DiscoveryRun } from '../../db/schema';
 import { AuditService, actorFrom } from '../../audit/audit.service';
 import { rethrowDbError } from '../../common/pg-errors';
 import type { Principal, RequestMeta } from '../../auth/principal';
 import { notFound, ownDevice } from '../common';
 import { DiscoveryQueue } from './queue';
+import { IpamService } from '../ipam.service';
 import type { DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult } from './types';
+
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 /** A run still queued or running after this long is considered lost (worker down or crashed). */
 export const STALE_RUN_MS = 15 * 60_000;
@@ -28,6 +31,7 @@ export class DiscoveryService {
     @Inject(DB) private readonly db: Db,
     private readonly audit: AuditService,
     private readonly queue: DiscoveryQueue,
+    private readonly ipam: IpamService,
   ) {}
 
   async start(p: Principal, deviceId: string, kind: CredentialKind, mode: 'test' | 'discover', meta: RequestMeta) {
@@ -73,6 +77,8 @@ export class DiscoveryService {
       error: r.error,
       appliedAt: r.appliedAt,
       appliedBy: r.appliedBy,
+      trigger: r.trigger,
+      changes: r.changes,
     };
   }
 
@@ -162,6 +168,16 @@ export class DiscoveryService {
     };
   }
 
+  /** Counts used to flag a device whose (scheduled) discovery differs from inventory. */
+  async changeSummary(db: DbOrTx, orgId: string, deviceId: string, result: DiscoveryResult): Promise<DiscoveryChanges> {
+    const pv = await this.preview(db, { orgId } as Principal, deviceId, result);
+    const neighborMismatch = pv.neighbors.filter((n) => n.cable === 'mismatch' || n.cable === 'none').length;
+    const unmatchedNeighbors = pv.neighbors.filter((n) => !n.matched).length;
+    const addressesNotInIpam = pv.addresses.filter((a) => a.status !== 'documented').length;
+    const c = { create: pv.counts.create, update: pv.counts.update, missing: pv.counts.missing, neighborMismatch, unmatchedNeighbors, addressesNotInIpam };
+    return { ...c, total: c.create + c.update + c.missing + c.neighborMismatch + c.addressesNotInIpam };
+  }
+
   /**
    * Matches LLDP/CDP neighbors to known devices by system name (hostname,
    * with or without domain) or management address, then to an interface by
@@ -234,6 +250,85 @@ export class DiscoveryService {
       }
     }
     return out;
+  }
+
+  /**
+   * Records addresses seen on the device in IPAM (global table only, since a
+   * device reports no VRF context through these adapters). Only addresses the
+   * run actually collected can be imported. Each address goes through the
+   * normal IPAM assignment (same validation and history) in its own savepoint,
+   * so one conflict is reported and the rest still import.
+   */
+  private async importAddresses(
+    tx: Tx,
+    p: Principal,
+    deviceId: string,
+    result: DiscoveryResult,
+    existing: Map<string, ExistingIface>,
+    input: z.infer<typeof discoveryApplySchema>,
+    meta: RequestMeta,
+    warnings: string[],
+  ) {
+    if (!p.permissions.has('ipam.write')) throw new ForbiddenException({ error: 'forbidden', message: 'Recording addresses in IPAM needs the IPAM write permission' });
+    // Addresses are compared in canonical form (the preview shows them normalized; collectors may not).
+    const canon = (a: string) => {
+      const c = parseCidr(a, true);
+      const ip = parseIp(a.split('/')[0]!);
+      return c && ip ? `${formatIp(ip.family, ip.value)}/${c.length}` : a.toLowerCase();
+    };
+    const seen = new Map<string, string>();
+    for (const i of result.interfaces) for (const a of i.addresses ?? []) seen.set(`${i.name.toLowerCase()}|${canon(a)}`, i.name);
+    let recorded = 0;
+    let prefixesCreated = 0;
+    for (const want of input.addresses) {
+      const label = `${want.interface} ${want.address}`;
+      const ifaceName = seen.get(`${want.interface.toLowerCase()}|${canon(want.address)}`);
+      if (!ifaceName) {
+        warnings.push(`${label}: not part of this discovery`);
+        continue;
+      }
+      const iface = existing.get(ifaceName.toLowerCase());
+      const net = parseCidr(want.address, true);
+      const ip = parseIp(want.address.split('/')[0]!);
+      if (!iface || !net || !ip) {
+        warnings.push(`${label}: ${iface ? 'not a valid address' : 'apply the interface too'}`);
+        continue;
+      }
+      if (ip.family === 6 && formatIp(6, ip.value).startsWith('fe80')) continue;
+      const host = formatIp(ip.family, ip.value);
+      try {
+        await tx.transaction(async (sp) => {
+          const held = await sp.execute(sql`select id, device_id, interface_id, status from ip_addresses where org_id = ${p.orgId} and vrf_id is null and address = ${host}::inet and status <> 'released'`);
+          const h = held.rows[0] as { id: string; device_id: string | null; interface_id: string | null; status: string } | undefined;
+          if (h) {
+            // Existing IPAM records are never re-assigned from here: that needs the normal IPAM
+            // checks (customer, reservation) and is a decision for whoever owns the address.
+            if (h.device_id !== deviceId) {
+              throw new ConflictException({ error: 'address_in_use', message: h.device_id ? 'recorded in IPAM for another device; left unchanged' : `already in IPAM (${h.status}, no device); link it from IPAM if it belongs here` });
+            }
+            if (!h.interface_id) {
+              await sp.execute(sql`update ip_addresses set interface_id = ${iface.id}::uuid where id = ${h.id}`);
+              await sp.execute(sql`insert into ip_events (org_id, ip_id, action, summary, actor_id, actor_label) values (${p.orgId}, ${h.id}, 'updated', ${`Bound to interface ${ifaceName} from device discovery`}, ${p.userId}, ${p.email})`);
+              recorded++;
+            }
+            return;
+          }
+          const covered = await sp.execute(sql`select 1 from prefixes where org_id = ${p.orgId} and vrf_id is null and ${host}::inet <<= prefix limit 1`);
+          if (!covered.rows.length) {
+            if (!input.createPrefixes) throw new BadRequestException({ error: 'no_prefix', message: 'no prefix in IPAM covers it' });
+            if (net.length === net.bits) throw new BadRequestException({ error: 'no_prefix', message: 'host route with no covering prefix; add the prefix first' });
+            await sp.insert(prefixes).values({ orgId: p.orgId, prefix: formatCidr(net), status: 'active', description: `Created from discovery of ${ifaceName}` });
+            prefixesCreated++;
+          }
+          await this.ipam.assign(p, { address: host, vrfId: null, status: 'allocated', prefixLength: net.length, interfaceId: iface.id, deviceId, role: net.length === net.bits ? 'loopback' : null, notes: 'Recorded from device discovery' }, meta, sp);
+          recorded++;
+        });
+      } catch (err) {
+        const msg = (err as { response?: { message?: string } }).response?.message ?? (err as Error).message.split('\n')[0];
+        warnings.push(`${label}: ${msg}`);
+      }
+    }
+    return { recorded, prefixesCreated };
   }
 
   /** Writes the selected parts of a discovery into inventory, in one transaction. */
@@ -338,6 +433,7 @@ export class DiscoveryService {
                 and o.protocol in (${sql.join(protocols.map((x) => sql`${x}`), sql`, `)})`);
           }
         }
+        const ipamResult = input.addresses.length ? await this.importAddresses(tx, p, run.deviceId, result, existing, input, meta, warnings) : { recorded: 0, prefixesCreated: 0 };
         const facts: Record<string, string> = {};
         if (input.updateDeviceFacts) {
           const f = result.facts;
@@ -349,10 +445,10 @@ export class DiscoveryService {
         }
         await tx.update(discoveryRuns).set({ appliedAt: now, appliedBy: p.email }).where(eq(discoveryRuns.id, run.id));
         await this.audit.record(
-          { orgId: p.orgId, actor: actorFrom(p), action: 'discovery.apply', target: { type: 'device', id: run.deviceId }, outcome: 'success', meta, metadata: { runId, created, updated, neighbors, facts: Object.keys(facts) } },
+          { orgId: p.orgId, actor: actorFrom(p), action: 'discovery.apply', target: { type: 'device', id: run.deviceId }, outcome: 'success', meta, metadata: { runId, created, updated, neighbors, facts: Object.keys(facts), addressesRecorded: ipamResult.recorded, prefixesCreated: ipamResult.prefixesCreated } },
           tx,
         );
-        return { created, updated, neighbors, facts: Object.keys(facts), warnings };
+        return { created, updated, neighbors, facts: Object.keys(facts), addresses: ipamResult.recorded, prefixesCreated: ipamResult.prefixesCreated, warnings };
       });
     } catch (err) {
       rethrowDbError(err);

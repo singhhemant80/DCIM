@@ -6,6 +6,8 @@ export const DISCOVERY_QUEUE = 'cdcim-discovery';
 export interface DiscoveryJob {
   runId: string;
 }
+/** Jobs on the worker queue: discovery runs ("run") and DNS server checks ("dns-test"). */
+export type WorkerJob = { runId: string } | { serverId: string };
 
 /** BullMQ connection options from a redis:// or rediss:// URL. */
 export function redisOptionsFromUrl(url: string) {
@@ -29,16 +31,20 @@ export function redisOptionsFromUrl(url: string) {
  */
 @Injectable()
 export class DiscoveryQueue implements OnApplicationShutdown {
-  private queue?: Queue<DiscoveryJob>;
+  private queue?: Queue<WorkerJob>;
 
   constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
 
   async add(runId: string): Promise<void> {
-    this.queue ??= new Queue<DiscoveryJob>(DISCOVERY_QUEUE, { connection: { ...redisOptionsFromUrl(this.config.REDIS_URL), enableOfflineQueue: false } });
+    return this.addJob('run', { runId }, runId);
+  }
+
+  async addJob(name: 'run' | 'dns-test', data: WorkerJob, jobId?: string): Promise<void> {
+    this.queue ??= new Queue<WorkerJob>(DISCOVERY_QUEUE, { connection: { ...redisOptionsFromUrl(this.config.REDIS_URL), enableOfflineQueue: false } });
     let timer: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        this.queue.add('run', { runId }, { jobId: runId, attempts: 1, removeOnComplete: 1000, removeOnFail: 1000 }),
+        this.queue.add(name, data, { jobId, attempts: 1, removeOnComplete: 1000, removeOnFail: 1000 }),
         new Promise((_, reject) => (timer = setTimeout(() => reject(new Error('Timed out talking to Redis')), 5_000))),
       ]);
     } finally {

@@ -89,7 +89,8 @@ Error codes added: `placement_conflict`, `does_not_fit`, `units_reserved`, `rack
 | `GET /devices/:id/credentials` · `PUT /devices/:id/credentials` · `DELETE /devices/:id/credentials/:kind` | Secrets are write-only; the host is fixed when the secret is saved |
 | `GET, POST /devices/:id/discovery` | POST `{ kind, mode: 'test' \| 'discover' }` queues a run for the worker; one active run per device |
 | `GET /discovery/:runId` | Status, collected result and the preview of changes |
-| `POST /discovery/:runId/apply` | `{ interfaces: [names], importNeighbors, updateDeviceFacts }`; once per run |
+| `POST /discovery/:runId/apply` | `{ interfaces: [names], importNeighbors, updateDeviceFacts, addresses: [{ interface, address }], createPrefixes }`; once per run; recording addresses needs `ipam.write` |
+| `PUT /devices/:id/credentials/:kind/schedule` | `{ hours: 1–720 \| null }`; scheduled runs are previews only |
 
 **IPAM** — all under `/api/v1/ipam`. Reads need `ipam.read`, changes need `ipam.write` and are staff only. Customers can list and read their own prefixes and addresses.
 
@@ -106,9 +107,18 @@ Error codes added: `placement_conflict`, `does_not_fit`, `units_reserved`, `rack
 | `GET /conflicts` | Consistency report |
 | `GET /export.csv?kind=prefixes\|addresses` · `POST /import` | Import `{ kind, csv, dryRun }` |
 
-No IPAM endpoint configures a device, announces a route or touches DNS.
+**DNS** — under `/api/v1/ipam/dns`, staff only. Reads need `ipam.read`; changes need `dns.manage`.
 
-Error codes added: `invalid_relation`, `not_cableable`, `port_in_use`, `prefix_exists`, `address_in_use`, `prefix_full`, `prefix_container`, `prefix_deprecated`, `reserved_address`, `no_prefix`, `customer_mismatch`, `prefix_in_use`, `invalid_gateway`, `address_released`, `no_credential`, `no_address`, `invalid_credential`, `discovery_running`, `not_applicable`, `already_applied`, `stale_run`.
+| Method and path | Notes |
+|---|---|
+| `GET, POST /servers` · `PUT, DELETE /servers/:id` · `POST /servers/:id/test` | PowerDNS `{ kind, name, url, serverId, verifyTls, apiKey }` or Cloudflare `{ kind, name, apiToken }`; keys are write-only; the check runs in the worker |
+| `GET, POST /zones` · `PUT, DELETE /zones/:id` | `{ serverId, name, kind: forward\|reverse, providerZoneId (Cloudflare), ttl, enabled }`; a zone holding DCIM records can be disabled but not renamed, moved or deleted |
+| `POST /resync` | Queue every named address for publishing again |
+| `POST /addresses/:id/resync` | Retry one address (`ipam.write`) |
+
+IPAM endpoints never configure a device or announce a route. Address changes are published to DNS by the worker, only into enabled zones and only for allocated or deprecated addresses in the global table; staff address views carry a `dns` object with the status, error and published records.
+
+Error codes added: `invalid_relation`, `not_cableable`, `port_in_use`, `prefix_exists`, `address_in_use`, `prefix_full`, `prefix_container`, `prefix_deprecated`, `reserved_address`, `no_prefix`, `customer_mismatch`, `prefix_in_use`, `invalid_gateway`, `address_released`, `no_credential`, `no_address`, `invalid_credential`, `discovery_running`, `not_applicable`, `already_applied`, `stale_run`, `invalid_zone`, `zone_in_use`, `kind_fixed`.
 
 ## Planned resources
 

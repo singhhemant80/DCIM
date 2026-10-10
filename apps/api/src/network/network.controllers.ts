@@ -9,6 +9,10 @@ import {
   circuitSchema,
   credentialSchema,
   discoveryApplySchema,
+  discoveryScheduleSchema,
+  dnsServerSchema,
+  dnsZoneSchema,
+  type DnsServerInput,
   interfaceBulkCreateSchema,
   interfaceSchema,
   ipAllocateNextSchema,
@@ -35,6 +39,7 @@ import { NetworkInventoryService } from './inventory.service';
 import { IpamService } from './ipam.service';
 import { CredentialsService } from './credentials.service';
 import { DiscoveryService } from './discovery/discovery.service';
+import { DnsService } from './dns/dns.service';
 
 type Infer<T extends z.ZodTypeAny> = z.infer<T>;
 const UUID = new ParseUUIDPipe();
@@ -326,6 +331,14 @@ export class DiscoveryController {
     await this.creds.remove(p, id, kind, m);
   }
 
+  @Put('devices/:id/credentials/:kind/schedule')
+  @RequirePermissions('network.write')
+  @ApiOperation({ summary: 'Automatic discovery every N hours (1–720) or off (null). Results are previews; nothing is applied automatically.' })
+  @ApiZodBody(discoveryScheduleSchema)
+  setSchedule(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Param('kind', kindParam) kind: CredentialKind, @Body(new ZodPipe(discoveryScheduleSchema)) b: Infer<typeof discoveryScheduleSchema>, @ReqMeta() m: RequestMeta) {
+    return this.creds.setSchedule(p, id, kind, b.hours, m);
+  }
+
   @Get('devices/:id/discovery')
   @RequirePermissions('network.read')
   runs(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
@@ -487,5 +500,89 @@ export class IpamController {
   @ApiZodBody(ipamImportSchema)
   importCsv(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(ipamImportSchema)) b: Infer<typeof ipamImportSchema>, @ReqMeta() m: RequestMeta) {
     return this.ipam.importCsv(p, b.kind, b.csv, b.dryRun, m);
+  }
+}
+
+/* ---------------------------------------------------------------- DNS */
+
+@ApiTags('ipam: dns')
+@ApiCookieAuth()
+@StaffOnly()
+@Controller({ path: 'ipam/dns', version: '1' })
+export class DnsController {
+  constructor(private readonly dns: DnsService) {}
+
+  @Get('servers')
+  @RequirePermissions('ipam.read')
+  @ApiOperation({ summary: 'DNS servers IPAM publishes to (keys are never returned).' })
+  servers(@CurrentPrincipal() p: Principal) {
+    return this.dns.listServers(p);
+  }
+
+  @Post('servers')
+  @RequirePermissions('dns.manage')
+  createServer(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(dnsServerSchema)) b: DnsServerInput, @ReqMeta() m: RequestMeta) {
+    return this.dns.createServer(p, b, m);
+  }
+
+  @Put('servers/:id')
+  @RequirePermissions('dns.manage')
+  @ApiOperation({ summary: 'Replace settings; the API key or token must be entered again.' })
+  updateServer(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(dnsServerSchema)) b: DnsServerInput, @ReqMeta() m: RequestMeta) {
+    return this.dns.updateServer(p, id, b, m);
+  }
+
+  @Delete('servers/:id')
+  @HttpCode(204)
+  @RequirePermissions('dns.manage')
+  async deleteServer(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    await this.dns.deleteServer(p, id, m);
+  }
+
+  @Post('servers/:id/test')
+  @RequirePermissions('dns.manage')
+  @ApiOperation({ summary: 'Queue a check of the key and of every zone on this server (done by the worker).' })
+  testServer(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.dns.testServer(p, id);
+  }
+
+  @Get('zones')
+  @RequirePermissions('ipam.read')
+  zones(@CurrentPrincipal() p: Principal) {
+    return this.dns.listZones(p);
+  }
+
+  @Post('zones')
+  @RequirePermissions('dns.manage')
+  @ApiZodBody(dnsZoneSchema)
+  createZone(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(dnsZoneSchema)) b: Infer<typeof dnsZoneSchema>, @ReqMeta() m: RequestMeta) {
+    return this.dns.saveZone(p, null, b, m);
+  }
+
+  @Put('zones/:id')
+  @RequirePermissions('dns.manage')
+  @ApiZodBody(dnsZoneSchema)
+  updateZone(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(dnsZoneSchema)) b: Infer<typeof dnsZoneSchema>, @ReqMeta() m: RequestMeta) {
+    return this.dns.saveZone(p, id, b, m);
+  }
+
+  @Delete('zones/:id')
+  @HttpCode(204)
+  @RequirePermissions('dns.manage')
+  async deleteZone(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    await this.dns.deleteZone(p, id, m);
+  }
+
+  @Post('resync')
+  @RequirePermissions('dns.manage')
+  @ApiOperation({ summary: 'Mark every published address for a fresh push (after adding or enabling a zone).' })
+  resync(@CurrentPrincipal() p: Principal, @ReqMeta() m: RequestMeta) {
+    return this.dns.resyncAll(p, m);
+  }
+
+  @Post('addresses/:id/resync')
+  @RequirePermissions('ipam.write')
+  resyncAddress(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.dns.resyncAddress(p, id);
   }
 }

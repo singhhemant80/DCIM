@@ -19,7 +19,12 @@ const MAX_BODY = 32 * 1024 * 1024;
  * Error messages never include request headers, so tokens and passwords
  * can't leak into run errors or logs.
  */
-export function deviceRequest(t: AdapterTarget, method: 'GET' | 'POST', path: string, opts: { headers?: Record<string, string>; body?: unknown; defaultPort: number }): Promise<{ status: number; json: unknown }> {
+export function deviceRequest(
+  t: AdapterTarget,
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  path: string,
+  opts: { headers?: Record<string, string>; body?: unknown; defaultPort: number; /** Resolve error statuses (with the parsed body) instead of rejecting. */ rawErrors?: boolean },
+): Promise<{ status: number; json: unknown }> {
   const scheme = t.params.scheme ?? 'https';
   const lib = scheme === 'https' ? https : http;
   const payload = opts.body === undefined ? undefined : Buffer.from(JSON.stringify(opts.body));
@@ -49,6 +54,15 @@ export function deviceRequest(t: AdapterTarget, method: 'GET' | 'POST', path: st
         res.on('end', () => {
           const status = res.statusCode ?? 0;
           const raw = Buffer.concat(chunks).toString('utf8');
+          if (opts.rawErrors) {
+            let json: unknown = null;
+            try {
+              json = raw ? JSON.parse(raw) : null;
+            } catch {
+              json = null;
+            }
+            return resolve({ status, json });
+          }
           if (status === 401 || status === 403) return reject(new DeviceHttpError(`Authentication failed (HTTP ${status}); check the username, password or token and its permissions`, status));
           if (status === 404) return reject(new DeviceHttpError(`Not found (HTTP 404): ${path.split('?')[0]}`, status));
           if (status >= 400) return reject(new DeviceHttpError(`HTTP ${status} from ${path.split('?')[0]}`, status));

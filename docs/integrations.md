@@ -15,6 +15,10 @@ Account to create on each device (read-only):
 | FortiGate | REST API administrator with a read-only access profile and trusted host set to the worker; use its token |
 | Cisco Nexus (NX-OS) | `feature nxapi`; a user with the `network-operator` role. `feature lldp` (and optionally `cdp`) for neighbor data |
 
+Also implemented:
+- **MikroTik RouterOS API** (`api` / `api-ssl` services, the binary protocol on ports 8728/8729 by default): a minimal client that can send only `/login` and `…/print`, then the same parser as the REST collector. Use it on routers where the REST API (www-ssl) is not enabled. The user's group needs the `read` and `api` policies.
+- **DNS publishing** from IPAM to PowerDNS (HTTP API, `X-API-Key`) or Cloudflare (API token): A/AAAA in forward zones, PTR in reverse zones. Records DCIM creates are marked (PowerDNS comment account, Cloudflare record comment, both including the organization id); anything else at the same name and type is reported as a conflict and left alone.
+
 Known gaps: the SNMP collector reads BGP4-MIB, which covers IPv4 peers in the default VRF only; RouterOS `/routing/bgp/session` and NX-OS output cover more. Interface speeds from RouterOS come from the configured ethernet speed, not the negotiated rate. FortiOS returns no device uptime in the fields read.
 
 ## Original adapter plan

@@ -23,6 +23,8 @@ export interface NetworkDeviceT {
   cabledCount: number;
   credentialKinds: CredentialKind[];
   lastDiscovery: { status: string; finishedAt: string | null; mode: string } | null;
+  /** Latest unapplied discovery that differs from inventory. */
+  pendingChanges: { runId: string; total: number; finishedAt: string } | null;
 }
 
 export interface CredentialT {
@@ -37,6 +39,8 @@ export interface CredentialT {
   lastTestOk: boolean | null;
   lastTestMessage: string | null;
   rotatedAt: string;
+  scheduleHours: number | null;
+  nextRunAt: string | null;
 }
 
 export interface RunT {
@@ -49,6 +53,8 @@ export interface RunT {
   error: string | null;
   appliedAt: string | null;
   requestedLabel: string | null;
+  trigger: 'manual' | 'schedule';
+  changes: { create: number; update: number; missing: number; neighborMismatch: number; unmatchedNeighbors: number; addressesNotInIpam: number; total: number } | null;
 }
 
 export interface FactsT {

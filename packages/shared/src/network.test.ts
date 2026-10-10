@@ -4,6 +4,9 @@ import {
   cidrSchema,
   cidrSize,
   credentialSchema,
+  discoveryScheduleSchema,
+  dnsServerSchema,
+  dnsZoneSchema,
   expandInterfacePattern,
   formatIp,
   ipSchema,
@@ -80,5 +83,21 @@ describe('helpers', () => {
     // Secrets shorter than 3 characters are refused (they could not be redacted reliably from error text).
     expect(credentialSchema.safeParse({ kind: 'routeros_rest', username: 'dcim', password: 'x' }).success).toBe(false);
     expect(credentialSchema.safeParse({ kind: 'telnet', password: 'x' }).success).toBe(false);
+  });
+});
+
+describe('phase 3 completion schemas', () => {
+  it('accepts a RouterOS API credential and defaults to api-ssl', () => {
+    const r = credentialSchema.parse({ kind: 'routeros_api', username: 'dcim', password: 'secret-1' });
+    expect(r).toMatchObject({ kind: 'routeros_api', tls: true, verifyTls: true });
+  });
+  it('validates DNS servers and zones', () => {
+    expect(dnsServerSchema.safeParse({ kind: 'powerdns', name: 'ns1', url: 'https://ns1.example.net:8081', apiKey: 'k-123' }).success).toBe(true);
+    expect(dnsServerSchema.safeParse({ kind: 'powerdns', name: 'ns1', url: 'not a url', apiKey: 'k-123' }).success).toBe(false);
+    expect(dnsServerSchema.safeParse({ kind: 'cloudflare', name: 'cf', apiToken: 't-123' }).success).toBe(true);
+    expect(dnsZoneSchema.parse({ serverId: '00000000-0000-4000-8000-000000000000', name: 'Example.NET.', kind: 'forward' }).name).toBe('example.net');
+    expect(dnsZoneSchema.safeParse({ serverId: '00000000-0000-4000-8000-000000000000', name: 'bad zone', kind: 'forward' }).success).toBe(false);
+    expect(discoveryScheduleSchema.safeParse({ hours: 0 }).success).toBe(false);
+    expect(discoveryScheduleSchema.safeParse({ hours: null }).success).toBe(true);
   });
 });

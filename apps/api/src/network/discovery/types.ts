@@ -81,6 +81,8 @@ export interface AdapterTarget {
     timeoutMs?: number;
     retries?: number;
     scheme?: 'https' | 'http';
+    /** RouterOS API: api-ssl (true) or plain api (false). */
+    tls?: boolean;
     verifyTls?: boolean;
     vdom?: string | null;
     securityLevel?: 'noAuthNoPriv' | 'authNoPriv' | 'authPriv';
@@ -103,6 +105,7 @@ export const SECRET_FIELDS: Record<CredentialKind, string[]> = {
   routeros_rest: ['password'],
   fortios_rest: ['token'],
   nxapi: ['password'],
+  routeros_api: ['password'],
 };
 
 /**

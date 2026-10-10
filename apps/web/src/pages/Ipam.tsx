@@ -10,6 +10,7 @@ import { deviceLabel, useVlans, useVrfs, type InterfaceT, type NetworkDeviceT } 
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Stat, Table, Textarea, cx } from '../components/ui';
 import { useCustomerOptions } from './Racks';
 import { Tabs } from './Network';
+import { AddressDns, DnsTab } from './IpamDns';
 
 export interface PrefixT {
   id: string;
@@ -63,6 +64,7 @@ export interface AddressT {
   prefixId: string | null;
   prefix: string | null;
   notes?: string | null;
+  dns?: { status: string; error: string | null; syncedAt: string | null; records: { name: string; type: string; content: string }[] };
   updatedAt: string;
 }
 
@@ -81,6 +83,7 @@ const TABS = [
   { key: 'addresses', label: 'Addresses' },
   { key: 'conflicts', label: 'Conflicts' },
   { key: 'import', label: 'Import / export' },
+  { key: 'dns', label: 'DNS' },
 ] as const;
 
 export function IpamPage() {
@@ -99,6 +102,7 @@ export function IpamPage() {
       {tab === 'addresses' && <AddressesTab />}
       {tab === 'conflicts' && <ConflictsTab />}
       {tab === 'import' && <ImportTab />}
+      {tab === 'dns' && <DnsTab />}
     </>
   );
 }
@@ -563,7 +567,16 @@ function AddressList({ prefixId }: { prefixId?: string }) {
                     {a.reservationExpired && <Chip tone="warn">expired</Chip>}
                     {a.role && <span className="ml-1 text-[12px] text-ink-3">{a.role}</span>}
                   </td>
-                  <td className="text-[13px]">{a.dnsName ?? '—'}</td>
+                  <td className="text-[13px]">
+                    {a.dnsName ?? '—'}
+                    {a.dns?.status === 'failed' && (
+                      <Chip tone="crit" title={a.dns.error ?? undefined}>
+                        DNS failed
+                      </Chip>
+                    )}
+                    {a.dns?.status === 'pending' && <Chip tone="est">DNS pending</Chip>}
+                    {a.dns?.status === 'synced' && <Chip tone="ok">in DNS</Chip>}
+                  </td>
                   <td className="text-[13px]">
                     {a.deviceName ? (
                       staff ? (
@@ -883,6 +896,7 @@ function AddressModal({ address, onClose }: { address: AddressT; onClose: () => 
       ) : (
         <p className="text-ink-2">Read-only.</p>
       )}
+      <AddressDns id={address.id} dns={address.dns} canResync={writable} />
       <div className="mt-5">
         <p className="mb-1 text-[13px] font-semibold">History</p>
         {history.isLoading && <Loading />}

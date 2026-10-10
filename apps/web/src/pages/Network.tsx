@@ -141,6 +141,13 @@ function DevicesTab() {
                   ) : (
                     <span className="text-ink-3">Never</span>
                   )}
+                  {d.pendingChanges && (
+                    <div>
+                      <Link to={`/network/devices/${d.id}`} className="text-[12.5px] text-warn hover:underline" title="The latest discovery differs from inventory and hasn't been applied">
+                        {d.pendingChanges.total} difference{d.pendingChanges.total === 1 ? '' : 's'} to review
+                      </Link>
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}

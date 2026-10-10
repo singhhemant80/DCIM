@@ -700,7 +700,7 @@ function CableConnect({ from, onClose }: { from: InterfaceT; onClose: () => void
 
 /* ------------------------------------------------------------------ credentials */
 
-const SUGGESTED: Record<string, CredentialKind[]> = { routeros: ['routeros_rest', 'snmp_v3', 'snmp_v2c'], nxos: ['nxapi', 'snmp_v3', 'snmp_v2c'], fortios: ['fortios_rest', 'snmp_v3', 'snmp_v2c'] };
+const SUGGESTED: Record<string, CredentialKind[]> = { routeros: ['routeros_rest', 'routeros_api', 'snmp_v3', 'snmp_v2c'], nxos: ['nxapi', 'snmp_v3', 'snmp_v2c'], fortios: ['fortios_rest', 'snmp_v3', 'snmp_v2c'] };
 
 function CredentialsPanel({ device, creds }: { device: NetworkDeviceT; creds: CredentialT[] }) {
   const { can } = useAuth();
@@ -714,7 +714,7 @@ function CredentialsPanel({ device, creds }: { device: NetworkDeviceT; creds: Cr
       setDel(null);
     },
   });
-  const order = device.platform && SUGGESTED[device.platform] ? SUGGESTED[device.platform]! : (['snmp_v3', 'snmp_v2c', 'routeros_rest', 'fortios_rest', 'nxapi'] as CredentialKind[]);
+  const order = device.platform && SUGGESTED[device.platform] ? SUGGESTED[device.platform]! : (['snmp_v3', 'snmp_v2c', 'routeros_rest', 'routeros_api', 'fortios_rest', 'nxapi'] as CredentialKind[]);
   const missing = order.filter((k) => !creds.some((c) => c.kind === k));
   return (
     <Panel title="Read-only access">
@@ -737,6 +737,7 @@ function CredentialsPanel({ device, creds }: { device: NetworkDeviceT; creds: Cr
                   {c.lastTestOk ? 'OK' : 'Failed'} {relativeTime(c.lastTestAt)}: {c.lastTestMessage}
                 </p>
               )}
+              <ScheduleControl device={device} cred={c} />
             </div>
             {can('monitoring.configure') && (
               <div className="flex gap-1">
@@ -775,6 +776,46 @@ function CredentialsPanel({ device, creds }: { device: NetworkDeviceT; creds: Cr
   );
 }
 
+const SCHEDULES = [
+  { hours: 0, label: 'Off (only when started by hand)' },
+  { hours: 1, label: 'Every hour' },
+  { hours: 6, label: 'Every 6 hours' },
+  { hours: 12, label: 'Every 12 hours' },
+  { hours: 24, label: 'Daily' },
+  { hours: 168, label: 'Weekly' },
+];
+
+/** Automatic discovery for one access method. Runs produce previews; nothing is applied automatically. */
+function ScheduleControl({ device, cred }: { device: NetworkDeviceT; cred: CredentialT }) {
+  const { can } = useAuth();
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: (hours: number) => api.put(`/network/devices/${device.id}/credentials/${cred.kind}/schedule`, { hours: hours || null }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network'] }),
+  });
+  const current = cred.scheduleHours ?? 0;
+  const known = SCHEDULES.some((x) => x.hours === current);
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-2">
+      <span>Automatic discovery:</span>
+      {can('network.write') ? (
+        <Select aria-label={`Automatic discovery with ${CREDENTIAL_KIND_LABELS[cred.kind]}`} className="h-7 w-52 text-[12.5px]" value={current} disabled={m.isPending} onChange={(e) => m.mutate(Number(e.target.value))}>
+          {!known && <option value={current}>Every {current} hours</option>}
+          {SCHEDULES.map((x) => (
+            <option key={x.hours} value={x.hours}>
+              {x.label}
+            </option>
+          ))}
+        </Select>
+      ) : (
+        <span>{current ? `every ${current} h` : 'off'}</span>
+      )}
+      {cred.scheduleHours && cred.nextRunAt ? <span className="text-ink-3">next {formatDateTime(cred.nextRunAt)}</span> : null}
+      {m.error ? <span className="text-crit">{(m.error as Error).message}</span> : null}
+    </div>
+  );
+}
+
 function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDeviceT; kind: CredentialKind; existing?: CredentialT; onClose: () => void }) {
   const qc = useQueryClient();
   const p = (existing?.params ?? {}) as Record<string, string | number | boolean | null>;
@@ -794,6 +835,7 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
     verifyTls: p.verifyTls === undefined ? true : !!p.verifyTls,
     vdom: s(p.vdom),
     timeoutMs: s(p.timeoutMs),
+    tls: p.tls === undefined ? true : !!p.tls,
   });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((x) => ({ ...x, [k]: e.target.value }));
   const snmp = kind === 'snmp_v2c' || kind === 'snmp_v3';
@@ -805,6 +847,7 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
       if (kind === 'snmp_v3') Object.assign(base, { username: f.username, securityLevel: f.securityLevel, authProtocol: f.authProtocol, privProtocol: f.privProtocol, authKey: t(f.authKey), privKey: t(f.privKey) });
       if (kind === 'routeros_rest' || kind === 'nxapi') Object.assign(base, { username: f.username, password: f.password, scheme: f.scheme, verifyTls: f.verifyTls });
       if (kind === 'fortios_rest') Object.assign(base, { token: f.token, scheme: f.scheme, verifyTls: f.verifyTls, vdom: t(f.vdom) });
+      if (kind === 'routeros_api') Object.assign(base, { username: f.username, password: f.password, tls: f.tls, verifyTls: f.verifyTls });
       return api.put(`/network/devices/${device.id}/credentials`, base);
     },
     onSuccess: async () => {
@@ -829,7 +872,7 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
         <Field label="Host" hint={device.mgmtAddress ? `Empty: ${device.mgmtAddress}. The host is saved with the secret; later changes to the management address don't redirect it.` : 'The device has no management address; enter one here'}>
           {(id, d) => <Input id={id} aria-describedby={d} required={!device.mgmtAddress} value={f.host} onChange={set('host')} className="font-mono" />}
         </Field>
-        <Field label="Port" hint={snmp ? 'Default 161/udp' : f.scheme === 'https' ? 'Default 443' : 'Default 80'}>
+        <Field label="Port" hint={snmp ? 'Default 161/udp' : kind === 'routeros_api' ? (f.tls ? 'Default 8729 (api-ssl); use the port in IP → Services' : 'Default 8728 (api); use the port in IP → Services') : f.scheme === 'https' ? 'Default 443' : 'Default 80'}>
           {(id, d) => <Input id={id} aria-describedby={d} type="number" min={1} max={65535} value={f.port} onChange={set('port')} />}
         </Field>
         {kind === 'snmp_v2c' && secret('Community', 'community')}
@@ -875,9 +918,9 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
             )}
           </>
         )}
-        {(kind === 'routeros_rest' || kind === 'nxapi') && (
+        {(kind === 'routeros_rest' || kind === 'nxapi' || kind === 'routeros_api') && (
           <>
-            <Field label="Username" hint={kind === 'routeros_rest' ? 'A user in a group with only the read and rest-api policies' : 'A network-operator (read-only) role user'}>
+            <Field label="Username" hint={kind === 'routeros_rest' ? 'A user in a group with only the read and rest-api policies' : kind === 'routeros_api' ? 'A user in a group with only the read and api policies' : 'A network-operator (read-only) role user'}>
               {(id, d) => <Input id={id} aria-describedby={d} required value={f.username} onChange={set('username')} />}
             </Field>
             {secret('Password', 'password')}
@@ -889,7 +932,24 @@ function CredentialForm({ device, kind, existing, onClose }: { device: NetworkDe
             <Field label="VDOM">{(id) => <Input id={id} value={f.vdom} onChange={set('vdom')} placeholder="root" />}</Field>
           </>
         )}
-        {!snmp && (
+        {kind === 'routeros_api' && (
+          <>
+            <Field label="Service">
+              {(id) => (
+                <Select id={id} value={f.tls ? 'tls' : 'plain'} onChange={(e) => setF((x) => ({ ...x, tls: e.target.value === 'tls' }))}>
+                  <option value="tls">api-ssl (encrypted)</option>
+                  <option value="plain">api (lab only: password sent in clear)</option>
+                </Select>
+              )}
+            </Field>
+            {f.tls && (
+              <label className="flex items-center gap-2 self-end pb-2 text-[13.5px]">
+                <input type="checkbox" checked={f.verifyTls} onChange={(e) => setF((x) => ({ ...x, verifyTls: e.target.checked }))} /> Verify the TLS certificate
+              </label>
+            )}
+          </>
+        )}
+        {!snmp && kind !== 'routeros_api' && (
           <>
             <Field label="Protocol">
               {(id) => (
@@ -991,7 +1051,12 @@ function RunsPanel({ device, runs, creds }: { device: NetworkDeviceT; runs: RunT
             <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
               <div className="min-w-0">
                 <p>
-                  <Chip tone={r.status === 'succeeded' ? 'ok' : r.status === 'failed' ? 'crit' : 'est'}>{r.status}</Chip> {r.mode === 'test' ? 'Connection test' : 'Discovery'} via {CREDENTIAL_KIND_LABELS[r.credentialKind]}
+                  <Chip tone={r.status === 'succeeded' ? 'ok' : r.status === 'failed' ? 'crit' : 'est'}>{r.status}</Chip> {r.trigger === 'schedule' ? 'Scheduled discovery' : r.mode === 'test' ? 'Connection test' : 'Discovery'} via {CREDENTIAL_KIND_LABELS[r.credentialKind]}
+                  {r.changes && !r.appliedAt && (
+                    <Chip tone={r.changes.total ? 'warn' : 'ok'} title={r.changes.total ? `${r.changes.create} new, ${r.changes.update} changed, ${r.changes.missing} not reported, ${r.changes.neighborMismatch} neighbor/cable differences, ${r.changes.addressesNotInIpam} addresses not in IPAM` : 'Matches inventory'}>
+                      {r.changes.total ? `${r.changes.total} difference${r.changes.total === 1 ? '' : 's'}` : 'no differences'}
+                    </Chip>
+                  )}
                   {r.appliedAt && (
                     <Chip tone="accent" title={`Applied ${formatDateTime(r.appliedAt)}`}>
                       applied
@@ -1028,8 +1093,20 @@ function RunDetail({ id, device, onClose }: { id: string; device: NetworkDeviceT
   const selected = useMemo(() => sel ?? new Set((pv?.interfaces ?? []).filter((i) => i.action !== 'unchanged').map((i) => i.name)), [sel, pv]);
   const [facts, setFacts] = useState(false);
   const [nbrs, setNbrs] = useState(true);
+  const importable = useMemo(() => (pv?.addresses ?? []).filter((a) => a.status === 'not_in_ipam' || a.status === 'no_prefix'), [pv]);
+  const [addrSel, setAddrSel] = useState<Set<string> | null>(null);
+  const addrSelected = useMemo(() => addrSel ?? new Set(importable.filter((a) => a.status === 'not_in_ipam').map((a) => `${a.interface}|${a.address}`)), [addrSel, importable]);
+  const [createPrefixes, setCreatePrefixes] = useState(false);
+  const canIpam = can('ipam.write');
   const apply = useMutation({
-    mutationFn: () => api.post<{ created: number; updated: number; neighbors: number; facts: string[]; warnings: string[] }>(`/network/discovery/${id}/apply`, { interfaces: [...selected], updateDeviceFacts: facts, importNeighbors: nbrs }),
+    mutationFn: () =>
+      api.post<{ created: number; updated: number; neighbors: number; facts: string[]; addresses: number; prefixesCreated: number; warnings: string[] }>(`/network/discovery/${id}/apply`, {
+        interfaces: [...selected],
+        updateDeviceFacts: facts,
+        importNeighbors: nbrs,
+        addresses: canIpam ? [...addrSelected].map((k) => ({ interface: k.split('|')[0], address: k.split('|')[1] })) : [],
+        createPrefixes,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network'] }),
   });
   const r = q.data;
@@ -1135,16 +1212,41 @@ function RunDetail({ id, device, onClose }: { id: string; device: NetworkDeviceT
           )}
           {pv.addresses.length > 0 && (
             <div>
-              <p className="mb-1 text-[13px] font-semibold">Addresses on the device vs IPAM (informational)</p>
-              <ul className="flex flex-wrap gap-1.5">
-                {pv.addresses.map((a) => (
-                  <li key={a.interface + a.address}>
-                    <Chip tone={a.status === 'documented' ? 'ok' : a.status === 'other_device' ? 'crit' : 'warn'} title={a.detail ?? (a.status === 'no_prefix' ? 'No prefix in IPAM covers this address' : 'Not recorded in IPAM')}>
-                      {a.address} {a.status.replace(/_/g, ' ')}
-                    </Chip>
-                  </li>
-                ))}
+              <p className="mb-1 text-[13px] font-semibold">Addresses on the device vs IPAM</p>
+              <ul className="flex flex-wrap gap-x-3 gap-y-1.5">
+                {pv.addresses.map((a) => {
+                  const key = `${a.interface}|${a.address}`;
+                  const canPick = canIpam && !r.appliedAt && (a.status === 'not_in_ipam' || a.status === 'no_prefix');
+                  return (
+                    <li key={key} className="flex items-center gap-1">
+                      {canPick && (
+                        <input
+                          type="checkbox"
+                          aria-label={`Record ${a.address} in IPAM`}
+                          checked={addrSelected.has(key)}
+                          onChange={() =>
+                            setAddrSel(() => {
+                              const n = new Set(addrSelected);
+                              if (n.has(key)) n.delete(key);
+                              else n.add(key);
+                              return n;
+                            })
+                          }
+                        />
+                      )}
+                      <Chip tone={a.status === 'documented' ? 'ok' : a.status === 'other_device' ? 'crit' : 'warn'} title={a.detail ?? (a.status === 'no_prefix' ? 'No prefix in IPAM covers this address' : 'Not recorded in IPAM')}>
+                        {a.address} {a.status.replace(/_/g, ' ')}
+                      </Chip>
+                      <span className="text-[11.5px] text-ink-3">{a.interface}</span>
+                    </li>
+                  );
+                })}
               </ul>
+              {canIpam && importable.length > 0 && !r.appliedAt && (
+                <p className="mt-1 text-[12.5px] text-ink-3">
+                  Ticked addresses are recorded in IPAM (global table) on apply, bound to their interface. Addresses held by another device are never changed.
+                </p>
+              )}
             </div>
           )}
           {!!result?.bgp?.length && <BgpTable bgp={result.bgp} />}
@@ -1154,19 +1256,25 @@ function RunDetail({ id, device, onClose }: { id: string; device: NetworkDeviceT
                 <label className="flex items-center gap-2">
                   <input type="checkbox" checked={nbrs} onChange={(e) => setNbrs(e.target.checked)} /> Record neighbors
                 </label>
+                {canIpam && importable.some((a) => a.status === 'no_prefix' && addrSelected.has(`${a.interface}|${a.address}`)) && (
+                  <label className="flex items-center gap-2" title="Adds the subnet (e.g. 203.0.113.0/30) as an active prefix when IPAM has none covering the address">
+                    <input type="checkbox" checked={createPrefixes} onChange={(e) => setCreatePrefixes(e.target.checked)} /> Create missing subnets in IPAM
+                  </label>
+                )}
                 <label className="flex items-center gap-2" title="Hostname (if empty), serial and OS version">
                   <input type="checkbox" checked={facts} onChange={(e) => setFacts(e.target.checked)} /> Update serial / OS on the hardware record
                 </label>
               </div>
               <Button variant="primary" busy={apply.isPending} onClick={() => apply.mutate()} disabled={!!apply.data}>
                 Apply {selected.size} interface{selected.size === 1 ? '' : 's'}
+                {canIpam && addrSelected.size ? ` and ${addrSelected.size} address${addrSelected.size === 1 ? '' : 'es'}` : ''}
               </Button>
             </div>
           )}
           <ErrorNote error={apply.error} />
           {apply.data && (
             <p className="rounded-lg bg-ok-soft px-3 py-2 text-ok">
-              Applied: {apply.data.created} created, {apply.data.updated} updated, {apply.data.neighbors} neighbor records{apply.data.facts.length ? `, updated ${apply.data.facts.join(', ')}` : ''}.
+              Applied: {apply.data.created} created, {apply.data.updated} updated, {apply.data.neighbors} neighbor records, {apply.data.addresses} addresses recorded in IPAM{apply.data.prefixesCreated ? ` (${apply.data.prefixesCreated} new subnets)` : ''}{apply.data.facts.length ? `, updated ${apply.data.facts.join(', ')}` : ''}.
               {apply.data.warnings.map((w) => (
                 <span key={w} className="block text-warn">
                   {w}

@@ -95,6 +95,16 @@ Migrations `0005_network_ipam.sql` (tables) and `0006_network_constraints.sql` (
 
 Allocation: the API locks the prefix row (`SELECT … FOR UPDATE`), computes free addresses from the used addresses, child prefixes and gateway (BigInt arithmetic, so IPv6 works), and inserts with an `ON CONFLICT … DO UPDATE … WHERE` upsert that only takes over released or lapsed reservations. The unique index is the final guarantee: a conflicting insert can never succeed.
 
+Migration `0007_network_schedule_dns.sql` adds:
+
+| Table / column | Purpose and rules |
+|---|---|
+| `device_credentials.schedule_hours`, `next_run_at` | Automatic discovery interval (1–720 h); the worker claims due rows with `FOR UPDATE SKIP LOCKED` and moves `next_run_at` in the same transaction |
+| `discovery_runs.trigger`, `changes` | `manual` or `schedule`; counts of differences from inventory computed when the run finishes |
+| `dns_servers` | PowerDNS or Cloudflare; `secret_enc` bound to org, server row, kind and URL |
+| `dns_zones` | Forward or reverse zone on a server; unique per organization; a trigger keeps the server in the same organization |
+| `ip_addresses.dns_status`, `dns_error`, `dns_synced_at`, `dns_records` | `none / pending / syncing / synced / failed`, and the records DCIM created (so it only ever removes its own). Trigger `ip_addresses_dns_pending` marks an address pending when its name, PTR, status, address or VRF changes |
+
 #### Original plan
 
 ```

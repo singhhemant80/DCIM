@@ -365,7 +365,13 @@ export class IpamService {
       prefix: r.prefix as string | null,
       updatedAt: r.updated_at as string,
     };
-    if (p.userType === 'staff') return { ...base, notes: r.notes as string | null };
+    if (p.userType === 'staff') {
+      return {
+        ...base,
+        notes: r.notes as string | null,
+        dns: { status: r.dns_status as string, error: r.dns_error as string | null, syncedAt: r.dns_synced_at as string | null, records: (r.dns_records as { name: string; type: string; content: string }[]).map(({ name, type, content }) => ({ name, type, content })) },
+      };
+    }
     // Customers see infrastructure details only when they own them (their device, their subnet).
     const ownDevice = r.device_customer_id === p.customerId;
     const ownPrefix = r.prefix_customer_id === p.customerId;

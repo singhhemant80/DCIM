@@ -101,7 +101,7 @@ export const IP_ROLES = ['primary', 'secondary', 'gateway', 'vip', 'anycast', 'l
 
 export const VLAN_STATUSES = ['active', 'reserved', 'deprecated'] as const;
 
-export const CREDENTIAL_KINDS = ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'fortios_rest', 'nxapi'] as const;
+export const CREDENTIAL_KINDS = ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'routeros_api', 'fortios_rest', 'nxapi'] as const;
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
 export const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
   snmp_v2c: 'SNMP v2c',
@@ -109,6 +109,7 @@ export const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
   routeros_rest: 'MikroTik RouterOS REST API',
   fortios_rest: 'FortiGate REST API',
   nxapi: 'Cisco NX-API',
+  routeros_api: 'MikroTik RouterOS API (api / api-ssl)',
 };
 
 export const SNMP_AUTH_PROTOCOLS = ['md5', 'sha', 'sha224', 'sha256', 'sha384', 'sha512'] as const;
@@ -433,7 +434,14 @@ const assignment = {
     .regex(/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?)*\.?$/, 'Not a valid DNS name')
     .nullable()
     .optional(),
-  reverseDns: z.string().trim().max(253).nullable().optional(),
+  /** PTR target when it differs from the DNS name (published in reverse zones). */
+  reverseDns: z
+    .string()
+    .trim()
+    .max(253)
+    .regex(/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?)*\.?$/, 'Not a valid host name')
+    .nullable()
+    .optional(),
   customerId: uuid.nullable().optional(),
   deviceId: uuid.nullable().optional(),
   interfaceId: uuid.nullable().optional(),
@@ -511,6 +519,17 @@ export const credentialSchema = z.discriminatedUnion('kind', [
     timeoutMs: z.number().int().min(500).max(30_000).default(5000),
   }),
   z.object({
+    kind: z.literal('routeros_api'),
+    host: z.string().trim().max(255).nullable().optional(),
+    port: z.number().int().min(1).max(65535).nullable().optional(),
+    username: z.string().trim().min(1).max(64),
+    password: secretText,
+    /** true = api-ssl (TLS, default port 8729); false = plain api (8728, credentials sent in clear). */
+    tls: z.boolean().default(true),
+    verifyTls: z.boolean().default(true),
+    timeoutMs: z.number().int().min(500).max(30_000).default(5000),
+  }),
+  z.object({
     kind: z.literal('fortios_rest'),
     host: z.string().trim().max(255).nullable().optional(),
     port: z.number().int().min(1).max(65535).nullable().optional(),
@@ -538,6 +557,61 @@ export const discoveryApplySchema = z.object({
   interfaces: z.array(z.string().max(64)).max(5000).default([]),
   updateDeviceFacts: z.boolean().default(false),
   importNeighbors: z.boolean().default(true),
+  /** Addresses seen on the device to record in IPAM (global table), as interface + CIDR pairs. Needs ipam.write. */
+  addresses: z
+    .array(z.object({ interface: z.string().max(64), address: z.string().max(64) }))
+    .max(2000)
+    .default([]),
+  /** Create the subnet in IPAM when no prefix covers an imported address. */
+  createPrefixes: z.boolean().default(false),
+});
+
+/** Automatic discovery interval: null turns it off. */
+export const discoveryScheduleSchema = z.object({ hours: z.number().int().min(1).max(720).nullable() });
+
+/* ------------------------------------------------------------------ DNS */
+
+export const DNS_SERVER_KINDS = ['powerdns', 'cloudflare'] as const;
+export const DNS_SERVER_KIND_LABELS: Record<(typeof DNS_SERVER_KINDS)[number], string> = { powerdns: 'PowerDNS (HTTP API)', cloudflare: 'Cloudflare' };
+
+const dnsName = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .max(253)
+  .regex(/^([a-z0-9_]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.?$/, 'Not a valid zone name')
+  .transform((v) => v.replace(/\.$/, ''));
+
+export const dnsServerSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('powerdns'),
+    name: z.string().trim().min(1).max(80),
+    url: z
+      .string()
+      .trim()
+      .url()
+      .max(300)
+      .refine((u) => /^https?:\/\//i.test(u), 'Use an http:// or https:// URL')
+      .refine((u) => !/^https?:\/\/[^/]*@/i.test(u), 'Put the API key in its own field, not in the URL'),
+    serverId: z.string().trim().min(1).max(64).default('localhost'),
+    verifyTls: z.boolean().default(true),
+    apiKey: secretText,
+  }),
+  z.object({
+    kind: z.literal('cloudflare'),
+    name: z.string().trim().min(1).max(80),
+    apiToken: secretText,
+  }),
+]);
+export type DnsServerInput = z.infer<typeof dnsServerSchema>;
+
+export const dnsZoneSchema = z.object({
+  serverId: uuid,
+  name: dnsName,
+  kind: z.enum(['forward', 'reverse']),
+  providerZoneId: z.string().trim().max(64).nullable().optional(),
+  ttl: z.number().int().min(60).max(604800).default(3600),
+  enabled: z.boolean().default(true),
 });
 
 /** Expands "ether[1-4]" → ether1..ether4, "Ethernet1/[1-3]" → Ethernet1/1..3. At most 512 names. */

@@ -646,7 +646,11 @@ export const circuitStatusEnum = pgEnum('circuit_status', ['planned', 'provision
 export const prefixStatusEnum = pgEnum('prefix_status', ['container', 'active', 'reserved', 'deprecated']);
 export const ipStatusEnum = pgEnum('ip_status', ['reserved', 'allocated', 'deprecated', 'released']);
 export const ipRoleEnum = pgEnum('ip_role', ['primary', 'secondary', 'gateway', 'vip', 'anycast', 'loopback', 'management']);
-export const credentialKindEnum = pgEnum('credential_kind', ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'fortios_rest', 'nxapi']);
+export const credentialKindEnum = pgEnum('credential_kind', ['snmp_v2c', 'snmp_v3', 'routeros_rest', 'fortios_rest', 'nxapi', 'routeros_api']);
+export const discoveryTriggerEnum = pgEnum('discovery_trigger', ['manual', 'schedule']);
+export const dnsServerKindEnum = pgEnum('dns_server_kind', ['powerdns', 'cloudflare']);
+export const dnsZoneKindEnum = pgEnum('dns_zone_kind', ['forward', 'reverse']);
+export const dnsSyncStatusEnum = pgEnum('dns_sync_status', ['none', 'pending', 'syncing', 'synced', 'failed']);
 export const discoveryStatusEnum = pgEnum('discovery_status', ['queued', 'running', 'succeeded', 'failed']);
 export const discoveryModeEnum = pgEnum('discovery_mode', ['test', 'discover']);
 
@@ -903,6 +907,12 @@ export const ipAddresses = pgTable(
     serviceRef: text('service_ref'),
     reservedUntil: ts('reserved_until'),
     notes: text('notes'),
+    /** DNS records this address should have in managed zones, and whether they were pushed. */
+    dnsStatus: dnsSyncStatusEnum('dns_status').notNull().default('none'),
+    dnsError: text('dns_error'),
+    dnsSyncedAt: ts('dns_synced_at'),
+    /** Records DCIM created for this address (so it only ever changes or deletes its own records). */
+    dnsRecords: jsonb('dns_records').$type<ManagedDnsRecord[]>().notNull().default(sql`'[]'::jsonb`),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -939,6 +949,7 @@ export interface CredentialParams {
   timeoutMs?: number;
   retries?: number;
   scheme?: 'https' | 'http';
+  tls?: boolean;
   verifyTls?: boolean;
   vdom?: string | null;
   securityLevel?: 'noAuthNoPriv' | 'authNoPriv' | 'authPriv';
@@ -965,12 +976,19 @@ export const deviceCredentials = pgTable(
     lastTestAt: ts('last_test_at'),
     lastTestOk: boolean('last_test_ok'),
     lastTestMessage: text('last_test_message'),
+    /** Automatic discovery interval in hours; null = only when started by hand. */
+    scheduleHours: integer('schedule_hours'),
+    nextRunAt: ts('next_run_at'),
     rotatedAt: ts('rotated_at').notNull().defaultNow(),
     createdBy: uuid('created_by'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('device_credentials_device_kind_uq').on(t.deviceId, t.kind)],
+  (t) => [
+    uniqueIndex('device_credentials_device_kind_uq').on(t.deviceId, t.kind),
+    index('device_credentials_next_run_idx').on(t.nextRunAt),
+    check('device_credentials_schedule_ck', sql`${t.scheduleHours} is null or ${t.scheduleHours} between 1 and 720`),
+  ],
 );
 
 export const discoveryRuns = pgTable(
@@ -983,6 +1001,7 @@ export const discoveryRuns = pgTable(
       .references(() => devices.id, { onDelete: 'cascade' }),
     credentialKind: credentialKindEnum('credential_kind').notNull(),
     mode: discoveryModeEnum('mode').notNull(),
+    trigger: discoveryTriggerEnum('trigger').notNull().default('manual'),
     status: discoveryStatusEnum('status').notNull().default('queued'),
     requestedBy: uuid('requested_by'),
     requestedLabel: text('requested_label'),
@@ -990,6 +1009,8 @@ export const discoveryRuns = pgTable(
     finishedAt: ts('finished_at'),
     error: text('error'),
     result: jsonb('result').$type<Record<string, unknown>>(),
+    /** Differences from inventory found by this run (counts), computed when it finishes. */
+    changes: jsonb('changes').$type<DiscoveryChanges>(),
     appliedAt: ts('applied_at'),
     appliedBy: text('applied_by'),
     createdAt: createdAt(),
@@ -1007,5 +1028,71 @@ export type Cable = typeof cables.$inferSelect;
 export type Circuit = typeof circuits.$inferSelect;
 export type Prefix = typeof prefixes.$inferSelect;
 export type IpAddress = typeof ipAddresses.$inferSelect;
+export interface ManagedDnsRecord {
+  zoneId: string;
+  name: string;
+  type: 'A' | 'AAAA' | 'PTR';
+  content: string;
+  /** Provider record id (Cloudflare); PowerDNS addresses records by name and type. */
+  providerId?: string | null;
+}
+
+export interface DiscoveryChanges {
+  create: number;
+  update: number;
+  missing: number;
+  neighborMismatch: number;
+  unmatchedNeighbors: number;
+  addressesNotInIpam: number;
+  total: number;
+}
+
+export const dnsServers = pgTable(
+  'dns_servers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    kind: dnsServerKindEnum('kind').notNull(),
+    /** PowerDNS API base URL (e.g. https://ns1.example.net:8081); Cloudflare uses its fixed API. */
+    url: text('url'),
+    /** PowerDNS server id (normally "localhost"). */
+    serverId: text('server_id'),
+    verifyTls: boolean('verify_tls').notNull().default(true),
+    /** SecretBox ciphertext of the API key or token, bound to org, server id and URL. Never returned. */
+    secretEnc: text('secret_enc').notNull(),
+    lastTestAt: ts('last_test_at'),
+    lastTestOk: boolean('last_test_ok'),
+    lastTestMessage: text('last_test_message'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('dns_servers_org_name_uq').on(t.orgId, sql`lower(${t.name})`)],
+);
+
+export const dnsZones = pgTable(
+  'dns_zones',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    serverId: uuid('server_id')
+      .notNull()
+      .references(() => dnsServers.id, { onDelete: 'restrict' }),
+    /** Zone name without the trailing dot, lower case (e.g. example.net, 113.0.203.in-addr.arpa). */
+    name: text('name').notNull(),
+    kind: dnsZoneKindEnum('kind').notNull(),
+    /** Cloudflare zone id. */
+    providerZoneId: text('provider_zone_id'),
+    ttl: integer('ttl').notNull().default(3600),
+    /** Only enabled zones receive changes. */
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('dns_zones_org_name_uq').on(t.orgId, t.name), check('dns_zones_ttl_ck', sql`${t.ttl} between 60 and 604800`)],
+);
+
+export type DnsServer = typeof dnsServers.$inferSelect;
+export type DnsZone = typeof dnsZones.$inferSelect;
 export type DeviceCredential = typeof deviceCredentials.$inferSelect;
 export type DiscoveryRun = typeof discoveryRuns.$inferSelect;

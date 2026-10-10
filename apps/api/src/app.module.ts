@@ -29,7 +29,8 @@ import { ModelsService } from './dcim/models.service';
 import { DevicesService } from './dcim/devices.service';
 import { SparesService } from './dcim/spares.service';
 import { DcimSummaryService } from './dcim/summary.service';
-import { DiscoveryController, IpamController, NetworkController } from './network/network.controllers';
+import { DiscoveryController, DnsController, IpamController, NetworkController } from './network/network.controllers';
+import { DnsService } from './network/dns/dns.service';
 import { InterfacesService } from './network/interfaces.service';
 import { NetworkInventoryService } from './network/inventory.service';
 import { IpamService } from './network/ipam.service';
@@ -80,6 +81,7 @@ export class AppModule {
         NetworkController,
         DiscoveryController,
         IpamController,
+        DnsController,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
@@ -109,6 +111,7 @@ export class AppModule {
         CredentialsService,
         DiscoveryQueue,
         DiscoveryService,
+        DnsService,
         // Order matters: rate limit → authenticate → authorize.
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthGuard },
