@@ -30,6 +30,11 @@ import { ProxmoxPage, VirtualizorPage } from './pages/Virtualization';
 import { ColocationPage } from './pages/Colocation';
 import { ServicesPage } from './pages/Services';
 import { TicketDetailPage, TicketsPage } from './pages/Tickets';
+import { ApiIntegrationsPage } from './pages/ApiIntegrations';
+import { WorkflowsPage } from './pages/Workflows';
+import { ReportsPage } from './pages/Reports';
+import { BillingPage } from './pages/Billing';
+import { MaintenancePage } from './pages/Maintenance';
 
 /** Implemented sections. Every key here must be `available` in NAV_SECTIONS (checked by a test). */
 export const IMPLEMENTED: Record<string, ComponentType> = {
@@ -55,6 +60,11 @@ export const IMPLEMENTED: Record<string, ComponentType> = {
   colocation: ColocationPage,
   orders: ServicesPage,
   tickets: TicketsPage,
+  maintenance: MaintenancePage,
+  workflows: WorkflowsPage,
+  reports: ReportsPage,
+  billing: BillingPage,
+  api: ApiIntegrationsPage,
 };
 
 function AppRoutes() {

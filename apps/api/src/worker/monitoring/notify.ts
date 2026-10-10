@@ -1,5 +1,7 @@
 import { createHmac } from 'node:crypto';
+import dns, { type LookupAddress } from 'node:dns';
 import { lookup } from 'node:dns/promises';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { isIP } from 'node:net';
 import { eq, sql } from 'drizzle-orm';
 import nodemailer from 'nodemailer';
@@ -48,7 +50,7 @@ export function isPrivateAddress(ip: string): boolean {
   return true;
 }
 
-async function checkDestination(host: string, allowPrivate: boolean | undefined): Promise<void> {
+export async function checkDestination(host: string, allowPrivate: boolean | undefined): Promise<void> {
   if (allowPrivate) return;
   const h = host.replace(/^\[|\]$/g, '');
   const addrs = isIP(h) ? [h] : (await lookup(h, { all: true })).map((a) => a.address);
@@ -57,8 +59,34 @@ async function checkDestination(host: string, allowPrivate: boolean | undefined)
   }
 }
 
+/**
+ * An HTTP agent that checks the address at connect time, so a name that
+ * passes `checkDestination` and then re-resolves to an internal address (DNS
+ * rebinding) is still refused.
+ */
+const guardedAgent = new Agent({
+  connect: {
+    lookup: ((hostname: string, options: dns.LookupOptions, cb: (err: Error | null, address?: string | LookupAddress[], family?: number) => void) => {
+      dns.lookup(hostname, { ...options, all: true }, (err, list) => {
+        if (err) return cb(err);
+        const addrs = list as LookupAddress[];
+        if (!addrs.length || addrs.some((a) => isPrivateAddress(a.address))) return cb(new Error(`Destination ${hostname} resolves to a private or local address`));
+        if (options.all) return cb(null, addrs);
+        return cb(null, addrs[0]!.address, addrs[0]!.family);
+      });
+    }) as never,
+  },
+});
+
+/** fetch for outbound notifications and webhooks: the destination is re-checked when connecting unless private receivers are allowed. */
+export async function safeFetch(url: string, init: RequestInit, allowPrivate: boolean | undefined): Promise<Response> {
+  await checkDestination(new URL(url).hostname, allowPrivate);
+  if (allowPrivate) return fetch(url, init);
+  return (await undiciFetch(url, { ...(init as object), dispatcher: guardedAgent } as never)) as unknown as Response;
+}
+
 export interface NotificationPayload {
-  event: 'firing' | 'resolved' | 'test';
+  event: 'firing' | 'resolved' | 'test' | 'workflow';
   title: string;
   text: string;
   alert: null | {
@@ -82,11 +110,13 @@ type Claimed = {
   org_id: string;
   channel_id: string;
   alert_id: string | null;
-  event: 'firing' | 'resolved' | 'test';
+  event: 'firing' | 'resolved' | 'test' | 'workflow';
   attempts: number;
+  payload: { title: string; text: string } | null;
 };
 
 async function payloadFor(db: Db, n: Claimed): Promise<NotificationPayload> {
+  if (n.event === 'workflow' && n.payload) return { event: 'workflow', title: n.payload.title, text: n.payload.text, alert: null };
   if (n.event === 'test' || !n.alert_id) {
     return { event: 'test', title: 'NexoraDC test notification', text: 'This is a test notification from NexoraDC. If you can read it, the channel works.', alert: null };
   }
@@ -121,8 +151,7 @@ async function payloadFor(db: Db, n: Claimed): Promise<NotificationPayload> {
 }
 
 async function post(url: string, body: string, headers: Record<string, string>, timeoutMs: number, allowPrivate?: boolean): Promise<void> {
-  await checkDestination(new URL(url).hostname, allowPrivate);
-  const res = await fetch(url, { method: 'POST', body, headers: { 'content-type': 'application/json', ...headers }, signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
+  const res = await safeFetch(url, { method: 'POST', body, headers: { 'content-type': 'application/json', ...headers }, signal: AbortSignal.timeout(timeoutMs), redirect: 'error' }, allowPrivate);
   // The response body is not kept: only the status code is recorded.
   await res.body?.cancel().catch(() => undefined);
   if (!res.ok) throw new Error(`HTTP ${res.status} from the receiver`);
@@ -145,27 +174,38 @@ export async function send(kind: ChannelKind, config: Record<string, unknown>, s
       const base = (deps.telegramApiUrl ?? 'https://api.telegram.org').replace(/\/$/, '');
       return post(`${base}/bot${String(secret.botToken)}/sendMessage`, JSON.stringify({ chat_id: config.chatId, text: p.text, disable_web_page_preview: true }), {}, timeoutMs, ap || !!deps.telegramApiUrl);
     }
-    case 'email': {
-      const security = String(config.smtpSecurity ?? 'starttls');
-      await checkDestination(String(config.smtpHost), ap);
-      const transport = nodemailer.createTransport({
-        host: String(config.smtpHost),
-        port: Number(config.smtpPort ?? 587),
-        secure: security === 'tls',
-        requireTLS: security === 'starttls',
-        ignoreTLS: security === 'none',
-        auth: config.smtpUser ? { user: String(config.smtpUser), pass: String(secret.smtpPassword ?? '') } : undefined,
-        connectionTimeout: timeoutMs,
-        greetingTimeout: timeoutMs,
-        socketTimeout: timeoutMs,
-      });
-      try {
-        await transport.sendMail({ from: String(config.from), to: (config.to as string[]).join(', '), subject: p.title, text: p.text });
-      } finally {
-        transport.close();
-      }
-      return;
-    }
+    case 'email':
+      return sendEmail(config, secret, { to: config.to as string[], subject: p.title, text: p.text }, deps);
+  }
+}
+
+export interface EmailMessage {
+  to: string[];
+  subject: string;
+  text: string;
+  attachments?: { filename: string; content: Buffer; contentType: string }[];
+}
+
+/** Sends one email through an email channel's SMTP settings (used for alerts and scheduled reports). */
+export async function sendEmail(config: Record<string, unknown>, secret: Record<string, unknown>, m: EmailMessage, deps: Pick<NotifyDeps, 'timeoutMs' | 'allowPrivate'>): Promise<void> {
+  const timeoutMs = deps.timeoutMs ?? 15_000;
+  const security = String(config.smtpSecurity ?? 'starttls');
+  await checkDestination(String(config.smtpHost), deps.allowPrivate);
+  const transport = nodemailer.createTransport({
+    host: String(config.smtpHost),
+    port: Number(config.smtpPort ?? 587),
+    secure: security === 'tls',
+    requireTLS: security === 'starttls',
+    ignoreTLS: security === 'none',
+    auth: config.smtpUser ? { user: String(config.smtpUser), pass: String(secret.smtpPassword ?? '') } : undefined,
+    connectionTimeout: timeoutMs,
+    greetingTimeout: timeoutMs,
+    socketTimeout: timeoutMs,
+  });
+  try {
+    await transport.sendMail({ from: String(config.from), to: m.to.join(', '), subject: m.subject, text: m.text, attachments: m.attachments });
+  } finally {
+    transport.close();
   }
 }
 
@@ -183,7 +223,7 @@ export async function deliverDue(deps: NotifyDeps, limit = 20): Promise<{ sent: 
       update notifications set attempts = attempts + 1, next_attempt_at = now() + interval '2 minutes'
        where id = (select id from notifications where status = 'pending' and next_attempt_at <= now()
                     order by next_attempt_at limit 1 for update skip locked)
-      returning id, org_id, channel_id, alert_id, event, attempts`);
+      returning id, org_id, channel_id, alert_id, event, attempts, payload`);
     const n = claimed.rows[0];
     if (!n) break;
     let secret: Record<string, unknown> = {};

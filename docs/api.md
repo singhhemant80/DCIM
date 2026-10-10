@@ -4,7 +4,7 @@ Base path `/api/v1`. Interactive documentation is at `/api/docs` and the OpenAPI
 
 ## Conventions
 
-- **Auth:** session cookie from `POST /auth/login`. Machine API keys arrive in Phase 8.
+- **Auth:** session cookie from `POST /auth/login`, or an API key: `Authorization: Bearer ndc_…` (no CSRF token needed). A key acts with its scopes, limited to its owner's current permissions; routes marked *session only* refuse keys with `session_required`.
 - **CSRF:** every `POST`, `PATCH`, `PUT` and `DELETE` must send `X-CSRF-Token` equal to the `cdcim_csrf` cookie.
 - **Validation:** request bodies and queries are validated with the shared Zod schemas. Unknown keys are stripped.
 - **Errors:** `{ "error": "<code>", "message": "<human text>", "requestId": "<id>", "issues"?: [{ "path", "message" }] }`. Codes in use: `validation_failed`, `unauthenticated`, `invalid_credentials`, `csrf_failed`, `forbidden`, `mfa_enrollment_required`, `mfa_invalid_code`, `mfa_challenge_invalid`, `privilege_escalation`, `not_found`, `conflict`, `last_super_admin`, `rate_limited`, `internal_error`.
@@ -216,8 +216,20 @@ Error codes added: `no_credential`, `duplicate_name`, `too_many_streams`.
 
 **Tickets** — `/api/v1/tickets` (`tickets.read` / `tickets.write`): `GET /?status=open|all|…&kind=&customerId=&q=&mine=`, `GET /:id` (customers: public messages and billable time only), `POST /` `{ customerId?, kind, priority, subject, body, deviceId, authorizedMinutes }`, `POST /:id/messages` `{ body, internal }` (internal: staff only), `PATCH /:id` `{ status, priority, assigneeUserId, authorizedMinutes }` (customers: resolve, close, reopen a resolved ticket), `POST /:id/time` `{ minutes, note, billable }` (staff), `GET /assignees` (staff).
 
-## Planned resources
+## Phase 8 endpoints (implemented)
 
-| Phase | Resources |
-|---|---|
-| 8 | `/billing/whmcs/webhook` (HMAC-signed, idempotent), `/billing/mappings`, `/reports/*` (CSV/PDF), `/workflows`, `/api-keys`, `/webhook-subscriptions` |
+**API keys** — `/api/v1/api-keys`, `apikeys.manage`, staff, *session only*: `GET /`, `POST /` `{ name, scopes[], expiresInDays }` → token once, `DELETE /:id` (revoke). Users, roles and settings routes are also session only.
+
+**Events and webhooks** — `/api/v1/automation` (`workflows.manage`, staff): `GET /event-types`, `GET /events?type=&limit=`, `GET, POST /webhooks` (create is session only; returns `signingSecret` once), `PUT, DELETE /webhooks/:id`, `POST /webhooks/:id/rotate-secret` (session only), `GET /webhooks/:id/deliveries`, `POST /deliveries/:id/redeliver`.
+
+Deliveries are `POST` JSON `{ id, type, occurredAt, customerId, subject, data }` with headers `X-NexoraDC-Event`, `X-NexoraDC-Event-Id` (stable across retries), `X-NexoraDC-Delivery`, `X-NexoraDC-Timestamp`, `X-NexoraDC-Signature: sha256=<hex HMAC-SHA256(secret, "<timestamp>.<body>")>`.
+
+**Workflows** — `/api/v1/workflows` (`workflows.manage`, staff): `GET, POST /`, `PUT, DELETE /:id`, `POST /dry-run` `{ workflow, eventId? | sample? }`, `GET /runs?workflowId=&status=`, `POST /runs/:id/approve` · `/reject` `{ note }` (session only; the last editor can't approve).
+
+**Billing** — `/api/v1/billing` (`billing.manage`, staff): `GET, POST /integrations` (create is session only; returns the module secret once), `PUT /integrations/:id`, `POST /integrations/:id/rotate-secret` (session only), `GET, PUT /integrations/:id/mappings`, `DELETE /integrations/:id/mappings/:mappingId`, `GET /integrations/:id/events?status=`, `GET /integrations/:id/reconciliations`, `POST /integrations/:id/reconcile` `{ services[] }`, `GET /usage?billingReference=&from=&to=` (up to 92 days).
+
+**WHMCS module endpoints** — `/api/v1/billing/whmcs/:integrationId/{events,reconcile,usage,ping}`: no session; each request is signed with `X-NexoraDC-Timestamp` and `X-NexoraDC-Signature` over the raw body (5-minute window). Events: `{ id, type, occurredAt?, data }`; a repeated id returns `{ duplicate: true, status, message }` and changes nothing. Outcomes: `applied`, `ignored` (already in that state), `review` (held for staff), `rejected` (invalid transition).
+
+**Reports** — `/api/v1/reports` (`reports.read`): `GET /types`, `GET /?type=energy|bandwidth|capacity|remote_hands|services&period=last_7d|last_30d|this_month|last_month&format=json|csv|pdf` (capacity: staff only; customers get their own account), `GET, POST /schedules`, `PUT, DELETE /schedules/:id`, `POST /schedules/:id/run` (staff; writes also need `alerts.manage`).
+
+**Incidents and maintenance notices** — `/api/v1/status` (`tickets.read`; writes: staff with `alerts.manage`): `GET /incidents?status=open|resolved|all`, `GET /incidents/:id`, `POST /incidents` `{ title, severity, datacenterId?, customerIds[], public, message }`, `POST /incidents/:id/updates` `{ status, message, public }`, `GET /maintenance`, `PUT /maintenance/:id/notice` `{ customerVisible, description }`, `GET /customers` (staff picker).

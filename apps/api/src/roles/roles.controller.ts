@@ -3,13 +3,15 @@ import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
 import type { z } from 'zod';
 import { PERMISSIONS, createRoleSchema } from '@crapplet/shared';
 import { ApiZodBody, ZodPipe } from '../common/zod';
-import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly } from '../auth/decorators';
+import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly, SessionOnly } from '../auth/decorators';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { RolesService } from './roles.service';
 
 @ApiTags('roles')
 @ApiCookieAuth()
 @StaffOnly()
+// Accounts, roles and security settings need a signed-in person: an API key can't change them.
+@SessionOnly()
 @Controller({ path: 'roles', version: '1' })
 export class RolesController {
   constructor(private readonly rolesSvc: RolesService) {}

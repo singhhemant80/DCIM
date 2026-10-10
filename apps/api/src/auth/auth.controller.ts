@@ -10,7 +10,7 @@ import { ApiZodBody, ZodPipe } from '../common/zod';
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from './auth.service';
 import { SessionService } from './session.service';
-import { AllowDuringMfaEnrollment, CurrentPrincipal, Public, ReqMeta } from './decorators';
+import { AllowDuringMfaEnrollment, CurrentPrincipal, Public, ReqMeta, SessionOnly } from './decorators';
 import { clearSessionCookies, setSessionCookies } from './cookies';
 import type { Principal, RequestMeta } from './principal';
 
@@ -20,6 +20,7 @@ import type { Principal, RequestMeta } from './principal';
 const LOGIN_THROTTLE = { default: { limit: Number(process.env.LOGIN_RATE_LIMIT_PER_MINUTE ?? 10), ttl: 60_000 } };
 
 @ApiTags('auth')
+@SessionOnly()
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
   constructor(

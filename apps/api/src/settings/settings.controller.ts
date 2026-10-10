@@ -6,13 +6,15 @@ import { DB, type Db } from '../db/db';
 import { organizations } from '../db/schema';
 import { ApiZodBody, ZodPipe } from '../common/zod';
 import { AuditService, actorFrom } from '../audit/audit.service';
-import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly } from '../auth/decorators';
+import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly, SessionOnly } from '../auth/decorators';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { DEFAULT_SESSION_IDLE_MINUTES, DEFAULT_SESSION_MAX_HOURS } from '../auth/session.service';
 
 @ApiTags('settings')
 @ApiCookieAuth()
 @StaffOnly()
+// Accounts, roles and security settings need a signed-in person: an API key can't change them.
+@SessionOnly()
 @Controller({ path: 'settings', version: '1' })
 export class SettingsController {
   constructor(

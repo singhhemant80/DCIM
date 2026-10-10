@@ -2,7 +2,7 @@
 
 Updated at the end of every phase. **Done** means it has frontend, backend logic, persistence, access control, error handling and automated tests. Anything less is listed as Partial or Not started, with the reason.
 
-Last updated: Phase 7, 10 October 2026.
+Last updated: Phase 8, 10 October 2026.
 
 ## Navigation sections
 
@@ -24,14 +24,14 @@ Last updated: Phase 7, 10 October 2026.
 | 14 | Proxmox Integration | **Done** | 6 | Read-only token sync of nodes and VMs (missing ones kept and marked), operator-mapped node → server links, VM assignment to customers, VM actions only with a second token, verified by the hypervisor's state (reboot by uptime). Simulator-tested only |
 | 15 | Virtualizor Integration | **Done** | 6 | Server and VPS sync, customer assignment, start / shut down / power off / reboot only after an explicit opt-in; suspend/resume not offered (administrative in Virtualizor). Simulator-tested only; response shapes from the API documentation |
 | 16 | Customers and Tenants | **Done** | 1 | List, search, filter, create and edit; closing a customer revokes its sessions |
-| 17 | Orders and Services | **Done** | 7 | Services per customer (colocation, dedicated server, VPS, transit, cross-connect, remote-hands plan) with billing reference, linked rack space/server/VM/cross-connects, lifecycle pending → active ⇄ suspended → terminated (or cancelled) with history. Status is a record only; billing sync is Phase 8 |
+| 17 | Orders and Services | **Done** | 7 | Services per customer (colocation, dedicated server, VPS, transit, cross-connect, remote-hands plan) with billing reference, linked rack space/server/VM/cross-connects, lifecycle pending → active ⇄ suspended → terminated (or cancelled) with history. Status is a record only. Kept in step with WHMCS since Phase 8 |
 | 18 | Monitoring and Alerts | **Done** | 4 | Alert rules (utilization, traffic, errors, discards, port down, device unreachable) with duration and consecutive-sample logic, acknowledgement, maintenance windows with suppression, notifications by email, signed webhook, Slack and Telegram with retries, polling configuration and health, retention settings. Staff only |
-| 19 | Maintenance and Incidents | Not started | 8 | |
+| 19 | Maintenance and Incidents | **Done** | 8 | Incidents with severity, status timeline (investigating → identified → monitoring → resolved), public and internal updates, affected site and/or named customers; customer-facing notice per maintenance window (published windows are shown to customers with equipment or space in scope, internal name and notes withheld). Customers see only what affects them. No email to customers yet (see below) |
 | 20 | Remote Hands and Support Tickets | **Done** | 7 | Tickets per customer or internal, sequential numbers, priorities, assignment, conversation with staff-only internal notes, customer resolve/close/reopen, remote-hands authorized minutes and logged time (billable shown to the customer; over-authorization flagged). No email notifications or attachments yet |
-| 21 | Automation and Workflows | Not started | 8 | |
-| 22 | Reports and Analytics | Not started | 8 | |
-| 23 | Billing Integrations | Not started | 8 | |
-| 24 | API and Integration Management | Not started | 8 | |
+| 21 | Automation and Workflows | **Done** | 8 | Event-triggered workflows: 30 event types, conditions on event fields, steps limited to ticket actions and notifications (no power, network or route actions), per-step approval by a second person, dry-run against a sample or stored event, run history with a log per step, loop guard. Scheduled (time-based) workflows are not offered; scheduled reports cover the time-based need |
+| 22 | Reports and Analytics | **Done** | 8 | Energy by customer (measured and estimated apart, cost for staff), bandwidth 95th percentile by customer with sample coverage, capacity by datacenter (staff), remote-hands time, services inventory; JSON/CSV/PDF; scheduled email delivery through an email channel. Customers get their own account |
+| 23 | Billing Integrations | **Done** | 8 | WHMCS: signed (HMAC) idempotent event intake, customer and service lifecycle sync (records only), product → service kind mapping, review queue, daily reconciliation report, usage (energy, 95th percentile) for the module and API. PHP server module and hooks in `integrations/whmcs`. Tested against the API with PHP 8.3; not yet run inside a WHMCS installation |
+| 24 | API and Integration Management | **Done** | 8 | API keys (scoped, expiring, revocable, limited to the owner's permissions, last use shown), signed outbound webhooks with delivery log, retries and redelivery, event log |
 | 25 | Users and Permissions | **Done** | 1 | Users, custom roles, sessions, MFA reset |
 | 26 | Audit Logs | **Done** | 1 | Filter, details, integrity verification |
 | 27 | System Settings | **Done** | 1 | Organization, timezone, currency, session and MFA policy |
@@ -59,7 +59,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Web app shell: responsive, light/dark/auto, keyboard focus, skip link | Done | manual screenshot review; `app.test` |
 | Seed and admin bootstrap CLIs | Done | run manually during verification |
 | Production install script and systemd units | **Partial** | Units and nginx config written; full installer and tested procedure are Phase 9 |
-| API keys for machine clients | Not started | Phase 8 |
+| API keys for machine clients | Done (Phase 8) | `automation.e2e` |
 | Distributed rate limiting (Redis store) | Not started | Moved to Phase 9 (the supported install runs a single API process) |
 
 ## Phase 2 capabilities
@@ -198,10 +198,30 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Tickets and remote hands: numbering, internal notes, assignment to staff, customer resolve/close/reopen rules, authorized vs. logged billable time, staff shown to customers as "Datacenter team" | Done | `colocation.e2e` |
 | Customer portal: overview (space, contracted vs. measured power, bandwidth, open requests), allocations with their equipment, requests, services, tickets; read-only portal users (customer viewer) can see but not request | Done | `colocation.e2e`; screenshots at desktop and phone width |
 | Tenant isolation on every new resource (lists, details, status changes; foreign ids → 404; staff-only fields never returned) | Done | `colocation.e2e` (every describe block) |
-| Email notifications to customers and staff for ticket replies and request changes | Not started | Phase 8 (workflows and notifications) |
+| Email notifications to customers and staff for ticket replies and request changes | Partial (Phase 8) | Workflows can notify staff channels (email, webhook, Slack, Telegram) on ticket and request events. Emails to the customer's own contacts are not sent yet (Phase 9) |
 | Attachments on tickets and shipments (photos, LOAs) | Not started | Needs object storage (deferred with device attachments) |
-| Cage and suite layouts, per-outlet contracted power, power billing from contract | Not started | Phase 8 billing |
+| Cage and suite layouts, per-outlet contracted power, power billing from contract | Partial (Phase 8) | Usage (measured and estimated kWh, contracted W) is available to WHMCS through the usage endpoint; pricing stays in WHMCS. Cage/suite layouts and per-outlet contracts not started |
 | Independent review of Phase 7 (4 medium, 8 low) | Done | All fixed or documented; regression tests in `colocation.e2e` |
+
+## Phase 8 capabilities
+
+| Capability | Status | Tests |
+|---|---|---|
+| API keys: `ndc_` bearer tokens stored as SHA-256 hashes, scopes limited to the creator's permissions and, at every request, to the owner's current permissions; expiry, revocation, last use; owner disabled or MFA not enrolled → key refused | Done | `automation.e2e` |
+| Keys refused (session required) for key management, sign-in flows, users, roles, settings, workflow approvals, webhook and billing secrets | Done | `automation.e2e` |
+| Event bus: events written in the same transaction as the change (tickets, services, allocations, cross-connects, shipments, visits, provisioning, alerts, incidents, billing); fan-out exactly once per subscriber and workflow | Done | `automation.e2e` (concurrent dispatch, re-dispatch) |
+| Outbound webhooks: HMAC-SHA256 signature over `timestamp.body`, stable event id across retries and redelivery, 8 attempts with backoff (up to 6 h apart), SSRF guard re-checked at connect time, delivery log | Done | `automation.e2e` (signature, retries, give-up, private address refused) |
+| Workflows: conditions, ticket/notify steps, templates, approvals with four eyes, edit stops waiting and approved runs, version pinning, dry-run, loop guard, crash retries with a limit | Done | `automation.e2e` |
+| WHMCS inbound: signature and 5-minute timestamp window, constant-time compare, idempotent per event id (duplicates and concurrent duplicates applied once), per-client/service serialization | Done | `automation.e2e` |
+| WHMCS lifecycle: create / activate / suspend / unsuspend / terminate / cancel mapped through the service state machine; repeats ignored, invalid transitions rejected, unknown or mismatched records held for review; never touches equipment | Done | `automation.e2e`; PHP module run against the live API |
+| Reconciliation: WHMCS snapshot vs. NexoraDC (missing either side, status and customer differences), stored history, report only | Done | `automation.e2e` |
+| Usage for billing: measured and estimated kWh apart for the service's equipment, 95th percentile on the customer's uplinks (or uncabled customer ports when no uplink is recorded) with sample coverage | Done | `automation.e2e` |
+| Reports: JSON, CSV (formula-injection safe), PDF; schedules (daily/weekly/monthly in the organization's time zone) emailed as attachments with a 30-minute lease | Done | `automation.e2e` |
+| Incidents and maintenance notices with tenant isolation | Done | `automation.e2e` |
+| WHMCS module inside a WHMCS installation (admin UI, cron hooks) | Not verified | Module code linted and exercised with PHP 8.3 against the API; WHMCS itself not available here |
+| Usage pushed to WHMCS invoices automatically | Not started | The module shows usage in the client area; turning it into invoice lines is left to WHMCS configuration |
+| Email to customers' contacts (incident and maintenance notices, ticket replies) | Not started | Phase 9 |
+| Independent review of Phase 8 (2 high, 7 medium, 4 low) | Done | All fixed; regression tests in `automation.e2e` |
 
 ## Integration compatibility matrix
 
@@ -230,4 +250,4 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | iPXE / PXE | DHCP chainload to `/api/v1/boot/ipxe` (configured on your DHCP server) | Requests simulated in `provisioning.e2e` | No |
 | Proxmox VE API | GET `/version`, `/nodes`, `/cluster/resources?type=vm`, `/nodes/*/qemu|lxc/*/status/current`; POST `…/status/{start,stop,shutdown,reboot,suspend,resume}` (action token only) | Yes (`provisioning.e2e`) | No |
 | Virtualizor admin API | `act=servers`, `act=vs` (list, filter by `vpsid`, `action=start|stop|poweroff|restart`) | Yes (`provisioning.e2e`) | No |
-| WHMCS | — | Not started | Not started |
+| WHMCS (NexoraDC server module + hooks, PHP) | Signed events: `client.upsert`, `service.created/activated/suspended/unsuspended/terminated/cancelled`; `reconcile`; `usage`; `ping` | Yes: module functions run with PHP 8.3 against the live API; API side in `automation.e2e` | No (not yet installed in a WHMCS instance) |

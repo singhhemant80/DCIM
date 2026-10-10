@@ -14,6 +14,8 @@ export interface Principal {
   sessionId: string;
   /** Staff must enroll in MFA before doing anything else when the org requires it. */
   mfaEnrollmentRequired: boolean;
+  /** Set when the request authenticated with an API key instead of a session. */
+  apiKey?: { id: string; name: string } | null;
 }
 
 export interface RequestMeta {

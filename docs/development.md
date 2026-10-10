@@ -64,6 +64,7 @@ npm test
 API end-to-end tests need PostgreSQL and Redis (they wipe and recreate the `crapplet_dcim_test` database). Device adapters are exercised against simulators in `apps/api/test/simulators`: a real SNMP agent (net-snmp) on a random local UDP port and HTTP mocks of the RouterOS, FortiOS and NX-API endpoints.
 
 - Unit tests need no services.
+- The WHMCS module's offline checks: `php integrations/whmcs/tests/client_test.php` (PHP 8.1+ with curl).
 - API end-to-end tests boot the real application against PostgreSQL and Redis. They use `TEST_DATABASE_URL` (default `postgres://cdcim:cdcim_dev@127.0.0.1:5432/crapplet_dcim_test`) and **wipe that database** at the start of each file. The helper refuses to run unless the database name contains `test`.
 
 ## One-command install (Ubuntu, Debian, WSL)

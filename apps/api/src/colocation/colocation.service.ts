@@ -23,6 +23,7 @@ import {
 } from '@crapplet/shared';
 import { DB, type Db, type DbOrTx } from '../db/db';
 import { cables, coloAllocations, crossConnects, datacenters, devices, interfaces, rackEvents, rackReservations, racks, services, shipments, visits } from '../db/schema';
+import { emitEvent } from '../events/events';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { rethrowDbError } from '../common/pg-errors';
 import type { Principal, RequestMeta } from '../auth/principal';
@@ -226,6 +227,7 @@ export class ColocationService {
         await tx.insert(rackReservations).values({ orgId: p.orgId, rackId: rack.id, startU: range.startU, endU: range.endU, customerId, reason: `Colocation: ${ALLOCATION_KIND_LABELS[input.kind]}`, allocationId: a!.id, createdBy: p.userId });
         await tx.insert(rackEvents).values({ orgId: p.orgId, rackId: rack.id, kind: 'allocation', summary: `Allocated U${range.startU}–U${range.endU} (${ALLOCATION_KIND_LABELS[input.kind].toLowerCase()}, ${input.contractedPowerW} W contracted)`, data: { allocationId: a!.id, customerId }, actorId: p.userId, actorLabel: p.email });
         await this.record(p, meta, 'colo.allocation_create', { type: 'colo_allocation', id: a!.id }, customerId, { rackId: rack.id, startU: range.startU, endU: range.endU, kind: input.kind, contractedPowerW: input.contractedPowerW }, tx);
+        await emitEvent(tx, { orgId: p.orgId, type: 'allocation.created', customerId, subject: { type: 'colo_allocation', id: a!.id }, payload: { allocationId: a!.id, rackId: rack.id, rack: rack.name, kind: input.kind, startU: range.startU, endU: range.endU, contractedPowerW: input.contractedPowerW } });
         return a!;
       });
     } catch (e) {
@@ -285,6 +287,7 @@ export class ColocationService {
       await tx.delete(rackReservations).where(eq(rackReservations.allocationId, id));
       await tx.insert(rackEvents).values({ orgId: p.orgId, rackId: a.rackId, kind: 'allocation', summary: `Allocation U${a.startU}–U${a.endU} ended${n ? `; ${n} of the customer's device(s) are still in that space` : ''}`, data: { allocationId: id }, actorId: p.userId, actorLabel: p.email });
       await this.record(p, meta, 'colo.allocation_end', { type: 'colo_allocation', id }, a.customerId, { endDate: input.endDate, reason: input.reason ?? null, devicesRemaining: n }, tx);
+      await emitEvent(tx, { orgId: p.orgId, type: 'allocation.ended', customerId: a.customerId, subject: { type: 'colo_allocation', id }, payload: { allocationId: id, rackId: a.rackId, startU: a.startU, endU: a.endU, endDate: input.endDate, devicesRemaining: n } });
       return { id, devicesRemaining: n };
     });
   }
@@ -367,6 +370,7 @@ export class ColocationService {
           })
           .returning();
         await this.record(p, meta, 'colo.cross_connect_request', { type: 'cross_connect', id: x!.id }, customerId, { aLabel: input.aLabel, zLabel: input.zLabel, media: input.media }, tx);
+        await emitEvent(tx, { orgId: p.orgId, type: 'cross_connect.requested', customerId, subject: { type: 'cross_connect', id: x!.id }, payload: { crossConnectId: x!.id, aLabel: input.aLabel, zLabel: input.zLabel, media: input.media, speed: input.speed ?? null, by: p.userType } });
         return x!;
       });
     } catch (e) {
@@ -413,6 +417,7 @@ export class ColocationService {
         .where(eq(crossConnects.id, id))
         .returning();
       await this.record(p, meta, 'colo.cross_connect_status', { type: 'cross_connect', id }, x!.customerId, { from, to: input.status, circuitId: u!.circuitId, reason: input.reason ?? null }, tx);
+      await emitEvent(tx, { orgId: p.orgId, type: 'cross_connect.status_changed', customerId: x!.customerId, subject: { type: 'cross_connect', id }, payload: { crossConnectId: id, from, to: input.status, circuitId: u!.circuitId, aLabel: x!.aLabel, zLabel: x!.zLabel, by: p.userType } });
       return u!;
     });
   }
@@ -471,6 +476,7 @@ export class ColocationService {
         .values({ orgId: p.orgId, customerId, datacenterId: input.datacenterId, direction: input.direction, carrier: input.carrier, trackingNumber: input.trackingNumber ?? null, expectedOn: input.expectedOn ?? null, packages: input.packages, description: input.description, instructions: input.instructions ?? null, createdBy: p.email })
         .returning();
       await this.record(p, meta, 'colo.shipment_create', { type: 'shipment', id: s!.id }, customerId, { carrier: input.carrier, trackingNumber: input.trackingNumber ?? null, direction: input.direction }, tx);
+      await emitEvent(tx, { orgId: p.orgId, type: 'shipment.created', customerId, subject: { type: 'shipment', id: s!.id }, payload: { shipmentId: s!.id, direction: input.direction, carrier: input.carrier, trackingNumber: input.trackingNumber ?? null, expectedOn: input.expectedOn ?? null, packages: input.packages } });
       return s!;
     });
   }
@@ -501,6 +507,7 @@ export class ColocationService {
         .where(eq(shipments.id, id))
         .returning();
       await this.record(p, meta, 'colo.shipment_status', { type: 'shipment', id }, s!.customerId, { from, to: input.status, storageLocation: u!.storageLocation, packagesReceived: u!.packagesReceived }, tx);
+      await emitEvent(tx, { orgId: p.orgId, type: 'shipment.status_changed', customerId: s!.customerId, subject: { type: 'shipment', id }, payload: { shipmentId: id, from, to: input.status, carrier: s!.carrier, trackingNumber: s!.trackingNumber, packages: s!.packages, packagesReceived: u!.packagesReceived } });
       return u!;
     });
   }
@@ -565,6 +572,8 @@ export class ColocationService {
           .returning();
         // Names are personal data: the audit trail keeps the count, not the names.
         await this.record(p, meta, 'colo.visit_request', { type: 'visit', id: v!.id }, customerId, { visitors: input.visitors.length, startsAt: input.startsAt, endsAt: input.endsAt }, tx);
+        // No visitor names in events (they leave the system through webhooks).
+        await emitEvent(tx, { orgId: p.orgId, type: 'visit.requested', customerId, subject: { type: 'visit', id: v!.id }, payload: { visitId: v!.id, datacenterId: input.datacenterId, visitors: input.visitors.length, startsAt: input.startsAt, endsAt: input.endsAt } });
         return v!;
       });
     } catch (e) {
@@ -601,6 +610,7 @@ export class ColocationService {
         .where(eq(visits.id, id))
         .returning();
       await this.record(p, meta, 'colo.visit_status', { type: 'visit', id }, v!.customerId, { from, to: input.status, note: input.note ?? null }, tx);
+      await emitEvent(tx, { orgId: p.orgId, type: 'visit.status_changed', customerId: v!.customerId, subject: { type: 'visit', id }, payload: { visitId: id, datacenterId: v!.datacenterId, from, to: input.status, visitors: v!.visitors.length, startsAt: v!.startsAt.toISOString() } });
       return u!;
     });
   }

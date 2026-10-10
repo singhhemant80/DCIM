@@ -4,6 +4,7 @@ import type { z } from 'zod';
 import { TICKET_STATUS_LABELS, type TicketInput, type TicketStatus, ticketListQuerySchema, ticketMessageSchema, ticketTimeSchema, ticketUpdateSchema } from '@crapplet/shared';
 import { DB, type Db, type DbOrTx } from '../db/db';
 import { devices, ticketMessages, ticketTimeEntries, tickets, users } from '../db/schema';
+import { emitEvent } from '../events/events';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { rethrowDbError } from '../common/pg-errors';
 import type { Principal, RequestMeta } from '../auth/principal';
@@ -11,6 +12,58 @@ import { customerFor } from './common';
 
 const staff = (p: Principal) => p.userType === 'staff';
 const OPEN = ['open', 'in_progress', 'waiting_customer'];
+
+/**
+ * Creates a ticket with its first message and the `ticket.created` event, in
+ * the caller's transaction. Used by the API and by workflows (which pass the
+ * run id so their own tickets don't trigger workflows again).
+ */
+export async function insertTicket(
+  tx: DbOrTx,
+  t: {
+    orgId: string;
+    customerId: string | null;
+    kind: string;
+    priority: string;
+    subject: string;
+    body: string;
+    deviceId?: string | null;
+    authorizedMinutes?: number | null;
+    author: { userId: string | null; label: string; type: 'staff' | 'customer' | 'system' };
+    causedByRunId?: string | null;
+  },
+) {
+  const n = await tx.execute<{ n: number }>(sql`
+    insert into ticket_counters (org_id, next) values (${t.orgId}, 2)
+    on conflict (org_id) do update set next = ticket_counters.next + 1
+    returning next - 1 as n`);
+  const [row] = await tx
+    .insert(tickets)
+    .values({
+      orgId: t.orgId,
+      number: n.rows[0]!.n,
+      customerId: t.customerId,
+      kind: t.kind as typeof tickets.$inferInsert.kind,
+      priority: t.priority as typeof tickets.$inferInsert.priority,
+      subject: t.subject,
+      deviceId: t.deviceId ?? null,
+      authorizedMinutes: t.authorizedMinutes ?? null,
+      createdByUserId: t.author.userId,
+      createdBy: t.author.label,
+      lastPublicReplyBy: t.author.type === 'customer' ? 'customer' : 'staff',
+    })
+    .returning();
+  await tx.insert(ticketMessages).values({ ticketId: row!.id, authorUserId: t.author.userId, authorLabel: t.author.label, authorType: t.author.type === 'system' ? 'staff' : t.author.type, internal: false, body: t.body });
+  await emitEvent(tx, {
+    orgId: t.orgId,
+    type: 'ticket.created',
+    customerId: t.customerId,
+    subject: { type: 'ticket', id: row!.id },
+    payload: { ticketId: row!.id, number: row!.number, kind: t.kind, priority: t.priority, subject: t.subject, deviceId: t.deviceId ?? null, openedBy: t.author.type },
+    causedByRunId: t.causedByRunId ?? null,
+  });
+  return row!;
+}
 
 /**
  * Support tickets and remote-hands requests. Customers see their own tickets
@@ -130,27 +183,17 @@ export class TicketsService {
     }
     try {
       return await this.db.transaction(async (tx) => {
-        const n = await tx.execute<{ n: number }>(sql`
-          insert into ticket_counters (org_id, next) values (${p.orgId}, 2)
-          on conflict (org_id) do update set next = ticket_counters.next + 1
-          returning next - 1 as n`);
-        const [t] = await tx
-          .insert(tickets)
-          .values({
-            orgId: p.orgId,
-            number: n.rows[0]!.n,
-            customerId,
-            kind: input.kind,
-            priority: input.priority,
-            subject: input.subject,
-            deviceId: input.deviceId ?? null,
-            authorizedMinutes: input.kind === 'remote_hands' ? (input.authorizedMinutes ?? null) : null,
-            createdByUserId: p.userId,
-            createdBy: p.email,
-            lastPublicReplyBy: staff(p) ? 'staff' : 'customer',
-          })
-          .returning();
-        await tx.insert(ticketMessages).values({ ticketId: t!.id, authorUserId: p.userId, authorLabel: p.email, authorType: p.userType, internal: false, body: input.body });
+        const t = await insertTicket(tx, {
+          orgId: p.orgId,
+          customerId,
+          kind: input.kind,
+          priority: input.priority,
+          subject: input.subject,
+          body: input.body,
+          deviceId: input.deviceId ?? null,
+          authorizedMinutes: input.kind === 'remote_hands' ? (input.authorizedMinutes ?? null) : null,
+          author: { userId: p.userId, label: p.email, type: p.userType },
+        });
         await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId, action: 'ticket.create', target: { type: 'ticket', id: t!.id }, outcome: 'success', meta, metadata: { number: t!.number, kind: input.kind, priority: input.priority } }, tx);
         return t!;
       });
@@ -178,6 +221,7 @@ export class TicketsService {
       }
       await tx.update(tickets).set({ ...patch, updatedAt: new Date() }).where(eq(tickets.id, id));
       await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: t.customerId, action: input.internal ? 'ticket.note' : 'ticket.reply', target: { type: 'ticket', id }, outcome: 'success', meta, metadata: { number: t.number } }, tx);
+      if (!input.internal) await emitEvent(tx, { orgId: p.orgId, type: 'ticket.replied', customerId: t.customerId, subject: { type: 'ticket', id }, payload: { ticketId: id, number: t.number, kind: t.kind, priority: t.priority, status: patch.status ?? t.status, by: p.userType } });
       return { id: m!.id };
     });
   }
@@ -231,6 +275,7 @@ export class TicketsService {
         await tx.update(tickets).set(patch).where(eq(tickets.id, id));
         for (const l of lines) await this.system(tx, id, l.text, l.internal);
         await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: t.customerId, action: 'ticket.update', target: { type: 'ticket', id }, outcome: 'success', meta, metadata: { number: t.number, ...input } }, tx);
+        if (patch.status) await emitEvent(tx, { orgId: p.orgId, type: 'ticket.status_changed', customerId: t.customerId, subject: { type: 'ticket', id }, payload: { ticketId: id, number: t.number, kind: t.kind, priority: patch.priority ?? t.priority, from: t.status, to: patch.status, by: p.userType } });
         return { id, changes: lines.length };
       });
     } catch (e) {

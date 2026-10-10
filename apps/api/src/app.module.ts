@@ -50,6 +50,15 @@ import { ColocationController, ServicesController, TicketsController } from './c
 import { ColocationService } from './colocation/colocation.service';
 import { ServicesService } from './colocation/services.service';
 import { TicketsService } from './colocation/tickets.service';
+import { ApiKeysController, WebhooksController, WorkflowsController } from './automation/automation.controllers';
+import { ApiKeysService } from './automation/api-keys.service';
+import { AutomationService } from './automation/automation.service';
+import { BillingController, WhmcsModuleController } from './billing/billing.controller';
+import { BillingService } from './billing/billing.service';
+import { ReportsController } from './reports/reports.controller';
+import { ReportsService } from './reports/reports.service';
+import { IncidentsController } from './incidents/incidents.controller';
+import { IncidentsService } from './incidents/incidents.service';
 import { RolesController } from './roles/roles.controller';
 import { RolesService } from './roles/roles.service';
 import { SettingsController } from './settings/settings.controller';
@@ -104,6 +113,13 @@ export class AppModule {
         ColocationController,
         ServicesController,
         TicketsController,
+        ApiKeysController,
+        WebhooksController,
+        WorkflowsController,
+        BillingController,
+        WhmcsModuleController,
+        ReportsController,
+        IncidentsController,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
@@ -143,6 +159,11 @@ export class AppModule {
         ColocationService,
         ServicesService,
         TicketsService,
+        ApiKeysService,
+        AutomationService,
+        BillingService,
+        ReportsService,
+        IncidentsService,
         // Order matters: rate limit → authenticate → authorize.
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthGuard },

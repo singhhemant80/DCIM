@@ -17,6 +17,10 @@ export const RequirePermissions = (...perms: Permission[]) => SetMetadata(REQUIR
 /** Route stays reachable for staff who must still enroll in MFA (profile, MFA setup, logout). */
 export const AllowDuringMfaEnrollment = () => SetMetadata(ALLOW_DURING_MFA_ENROLLMENT, true);
 
+/** Route needs an interactive session: API keys are refused (account, MFA and key management). */
+export const SESSION_ONLY = 'cdcim:session-only';
+export const SessionOnly = () => SetMetadata(SESSION_ONLY, true);
+
 /** Route is never available to customer-portal users, regardless of role. */
 export const StaffOnly = () => SetMetadata(STAFF_ONLY, true);
 

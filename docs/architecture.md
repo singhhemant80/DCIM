@@ -149,6 +149,12 @@ Jobs live in PostgreSQL. The worker claims due jobs (`status in (queued, waiting
 
 The boot endpoints never write the job's state; they write a separate `signals` column (script served, config served, callback, conflicts) and wake the job, so they cannot race the worker's state saves.
 
+## Automation design (Phase 8, implemented)
+
+Services write a row to `domain_events` in the same transaction as the change they describe, so an event exists if and only if the change was committed. Every 2 seconds the worker claims unprocessed events (`FOR UPDATE SKIP LOCKED`), inserts one `webhook_deliveries` row per matching subscription and one `workflow_runs` row per matching workflow (both unique per event, so a re-run inserts nothing), and marks the events processed — all in one transaction. Runs then advance step by step: each step runs in a savepoint and its progress is committed with it, so a crash never repeats a finished step; approval steps park the run until a second person decides. Deliveries are claimed one at a time with a lease and retried with backoff.
+
+WHMCS calls arrive on public, signed endpoints. The raw body is kept for the signature check; the event id is inserted first (unique), so concurrent copies of the same event wait and then answer as duplicates, and a per-client/service advisory lock serializes different events about the same record. Reports are built from the stored hourly energy and 5-minute interface rates and rendered as CSV or PDF (pdfkit); scheduled ones are sent by the worker through an email channel.
+
 ## Configuration
 
 All configuration comes from environment variables, validated at startup ([`config.ts`](../apps/api/src/config/config.ts)). The process refuses to start when a value is missing or insecure, for example `COOKIE_SECURE=false` in production. See [`deploy/env.example`](../deploy/env.example).

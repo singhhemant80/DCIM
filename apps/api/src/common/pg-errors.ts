@@ -51,6 +51,7 @@ const CONSTRAINT_MESSAGES: Record<string, { status: 400 | 409; error: string; me
   devices_no_overlap_front: { status: 409, error: 'placement_conflict', message: 'Those rack units are already occupied on the front face' },
   devices_no_overlap_rear: { status: 409, error: 'placement_conflict', message: 'Those rack units are already occupied on the rear face' },
   rack_reservations_no_overlap: { status: 409, error: 'reservation_conflict', message: 'That range overlaps an existing reservation' },
+  automation_org: { status: 400, error: 'invalid_reference', message: 'A referenced record does not exist in this organization or is of the wrong kind' },
   colo_org: { status: 400, error: 'invalid_reference', message: 'A referenced record does not exist in this organization or does not belong to this customer' },
   visits_time_ck: { status: 400, error: 'invalid_time', message: 'A visit must end after it starts' },
   devices_org_asset_tag_uq: { status: 409, error: 'conflict', message: 'Another device already uses this asset tag' },

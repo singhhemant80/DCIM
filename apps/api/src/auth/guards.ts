@@ -2,7 +2,8 @@ import { type CanActivate, type ExecutionContext, ForbiddenException, Injectable
 import { Reflector } from '@nestjs/core';
 import type { Permission } from '@crapplet/shared';
 import { AuditService } from '../audit/audit.service';
-import { ALLOW_DURING_MFA_ENROLLMENT, IS_PUBLIC, REQUIRED_PERMISSIONS, STAFF_ONLY } from './decorators';
+import { ALLOW_DURING_MFA_ENROLLMENT, IS_PUBLIC, REQUIRED_PERMISSIONS, SESSION_ONLY, STAFF_ONLY } from './decorators';
+import { ApiKeysService } from '../automation/api-keys.service';
 import { CSRF_HEADER, SESSION_COOKIE } from './cookies';
 import { requestMeta, type AppRequest } from './principal';
 import { SessionService } from './session.service';
@@ -18,6 +19,7 @@ export class AuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly sessions: SessionService,
+    private readonly apiKeys: ApiKeysService,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -25,6 +27,15 @@ export class AuthGuard implements CanActivate {
     if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, targets)) return true;
 
     const req = ctx.switchToHttp().getRequest<AppRequest>();
+    // Machine clients: `Authorization: Bearer ndc_…`. No cookies, so no CSRF; never for session-only routes.
+    const auth = req.headers.authorization;
+    if (typeof auth === 'string' && /^Bearer\s+ndc_/i.test(auth)) {
+      if (this.reflector.getAllAndOverride<boolean>(SESSION_ONLY, targets)) throw new ForbiddenException({ error: 'session_required', message: 'This action needs a signed-in user, not an API key' });
+      const principal = await this.apiKeys.resolve(auth.replace(/^Bearer\s+/i, '').trim(), requestMeta(req).ip);
+      if (!principal) throw new UnauthorizedException({ error: 'invalid_api_key', message: 'The API key is invalid, expired or revoked' });
+      req.principal = principal;
+      return true;
+    }
     const token = (req.cookies as Record<string, string> | undefined)?.[SESSION_COOKIE];
     const resolved = token ? await this.sessions.resolve(token) : null;
     if (!resolved) throw new UnauthorizedException({ error: 'unauthenticated', message: 'Sign in required' });

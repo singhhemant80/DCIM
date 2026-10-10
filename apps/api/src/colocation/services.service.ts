@@ -4,6 +4,7 @@ import type { z } from 'zod';
 import { SERVICE_TRANSITIONS, type ServiceInput, type ServiceStatus, serviceListQuerySchema, serviceStatusSchema } from '@crapplet/shared';
 import { DB, type Db, type DbOrTx } from '../db/db';
 import { devices, serviceEvents, services, virtGuests } from '../db/schema';
+import { emitEvent } from '../events/events';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { rethrowDbError } from '../common/pg-errors';
 import type { Principal, RequestMeta } from '../auth/principal';
@@ -118,6 +119,7 @@ export class ServicesService {
         const [s] = await tx.insert(services).values({ orgId: p.orgId, customerId, ...this.values(input) }).returning();
         await tx.insert(serviceEvents).values({ serviceId: s!.id, actorLabel: p.email, toStatus: 'pending', summary: 'Created' });
         await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId, action: 'service.create', target: { type: 'service', id: s!.id }, outcome: 'success', meta, metadata: { kind: input.kind, name: input.name } }, tx);
+        await emitEvent(tx, { orgId: p.orgId, type: 'service.created', customerId, subject: { type: 'service', id: s!.id }, payload: { serviceId: s!.id, kind: input.kind, name: input.name, status: 'pending', billingReference: input.billingReference ?? null } });
         return s!;
       });
     } catch (e) {
@@ -164,6 +166,7 @@ export class ServicesService {
         .returning();
       await tx.insert(serviceEvents).values({ serviceId: id, actorLabel: p.email, fromStatus: from, toStatus: input.status, summary: input.reason ? `${from} → ${input.status}: ${input.reason}` : `${from} → ${input.status}` });
       await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: cur!.customerId, action: 'service.status', target: { type: 'service', id }, outcome: 'success', meta, metadata: { from, to: input.status, reason: input.reason ?? null } }, tx);
+      await emitEvent(tx, { orgId: p.orgId, type: 'service.status_changed', customerId: cur!.customerId, subject: { type: 'service', id }, payload: { serviceId: id, kind: cur!.kind, name: cur!.name, from, to: input.status, reason: input.reason ?? null, billingReference: cur!.billingReference } });
       return s!;
     });
   }

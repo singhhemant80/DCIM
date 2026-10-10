@@ -19,6 +19,7 @@ export interface AuditInput {
 }
 
 export function actorFrom(p: Principal): AuditInput['actor'] {
+  if (p.apiKey) return { type: 'api_key', id: p.apiKey.id, label: `${p.apiKey.name} (key of ${p.email})` };
   return { type: 'user', id: p.userId, label: p.email };
 }
 

@@ -201,3 +201,21 @@ Migration `0011_colocation.sql`.
 | `ticket_time_entries` | Remote-hands work: minutes, note, billable flag |
 
 A trigger (`colo_check_org`) keeps every row in the organization of the customer, rack, device, datacenter, service or user it references, and requires a linked service to belong to the same customer.
+
+### Phase 8: billing, automation, reports and incidents (implemented)
+
+Migration `0012_automation.sql`.
+
+| Table | Purpose and rules |
+|---|---|
+| `domain_events` | Event bus: type, customer, subject, payload, `caused_by_run_id` (loop guard), `processed_at` (fan-out done). Written in the same transaction as the change |
+| `api_keys` | Name, prefix (unique, for lookup), SHA-256 of the token, owner (staff, enforced by trigger), scopes, expiry, last use, revocation |
+| `webhook_subscriptions`, `webhook_deliveries` | URL, event types, encrypted signing secret; one delivery per (subscription, event) (unique), with attempts, next attempt, response status and last error |
+| `workflows`, `workflow_runs` | Trigger, conditions, actions, version and last editor; one run per (workflow, event) (unique), with the version it runs, next action, status, per-step log, approval decision and crash attempts |
+| `billing_integrations`, `billing_product_mappings` | WHMCS integration with its encrypted shared secret and auto-create settings; product id → service kind |
+| `billing_events` | Every received event once per (integration, event id) (unique), with outcome (`applied`, `ignored`, `review`, `rejected`) and message |
+| `billing_reconciliations` | Snapshot comparisons: summary and differences |
+| `report_schedules` | Report type, period, format, frequency, hour/weekday/day, email channel (must be an email channel of the organization, enforced by trigger), recipients, next and last run |
+| `incidents`, `incident_updates` | Severity, status, affected site and customers, public flag; timeline of updates (public or internal) |
+
+Also added: `maintenance_windows.customer_visible` and `description` (customer notice), `notifications.payload` (workflow notifications). A trigger (`automation_check_org`) keeps key owners, report channels, incident sites and workflow runs inside the organization.

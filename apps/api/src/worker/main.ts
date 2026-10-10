@@ -20,6 +20,8 @@ import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
 import { createJobLoop } from './provisioning/engine';
+import { deliverWebhooks, dispatchEvents, runWorkflows, type AutomationDeps } from './automation/dispatch';
+import { runReportSchedules } from './automation/reports';
 import { PROVISIONING_KINDS, syncDueIntegrations, type ProvisioningDeps } from './provisioning/kinds';
 
 /**
@@ -100,6 +102,7 @@ async function main() {
     }
   };
   const provisioning: ProvisioningDeps = { db, secrets, logger, kinds: PROVISIONING_KINDS, publicUrl: config.CDCIM_PUBLIC_URL, imageAllowLocal: process.env.CDCIM_IMAGE_ALLOW_LOCAL === 'true' };
+  const automation: AutomationDeps = { db, secrets, logger, allowPrivate: process.env.CDCIM_WEBHOOK_ALLOW_PRIVATE === 'true' };
   const pollConcurrency = Math.max(1, Math.min(64, Number(process.env.POLL_CONCURRENCY ?? 16) || 16));
 
   const timers = [
@@ -132,8 +135,15 @@ async function main() {
     every('provisioning', 2_000, createJobLoop(provisioning, Math.max(1, Math.min(32, Number(process.env.PROVISIONING_CONCURRENCY ?? 4) || 4)))),
     every('virt-sync', 30_000, () => syncDueIntegrations(provisioning)),
     every('notify', 10_000, () => deliverDue({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
+    every('events', 2_000, async () => {
+      // Fan out, then run the workflows and webhooks that fan-out produced.
+      while ((await dispatchEvents(automation)) === 200);
+      await runWorkflows(automation);
+    }),
+    every('webhooks', 5_000, () => deliverWebhooks(automation)),
+    every('report-schedules', 60_000, () => runReportSchedules({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
   ];
-  logger.info({ concurrency }, 'NexoraDC worker started (discovery, schedules, DNS, monitoring, power, provisioning)');
+  logger.info({ concurrency }, 'NexoraDC worker started (discovery, schedules, DNS, monitoring, power, provisioning, automation, reports)');
 
   const stop = async (signal: string) => {
     logger.info({ signal }, 'stopping worker');

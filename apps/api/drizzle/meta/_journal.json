@@ -85,6 +85,13 @@
       "when": 1791639405867,
       "tag": "0011_colocation",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791643462140,
+      "tag": "0012_automation",
+      "breakpoints": true
     }
   ]
 }

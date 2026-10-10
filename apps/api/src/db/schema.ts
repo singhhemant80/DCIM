@@ -1325,6 +1325,9 @@ export const maintenanceWindows = pgTable(
     datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'cascade' }),
     deviceIds: uuid('device_ids').array().notNull().default(sql`'{}'::uuid[]`),
     notes: text('notes'),
+    /** Shown to affected customers (those with equipment or space at the site or on the devices). */
+    customerVisible: boolean('customer_visible').notNull().default(false),
+    description: text('description'),
     createdBy: text('created_by'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1363,6 +1366,8 @@ export const notifications = pgTable(
       .references(() => notificationChannels.id, { onDelete: 'cascade' }),
     alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'cascade' }),
     event: text('event').notNull(),
+    /** Title and text for notifications not about an alert (workflows). */
+    payload: jsonb('payload').$type<{ title: string; text: string }>(),
     status: notificationStatusEnum('status').notNull().default('pending'),
     attempts: integer('attempts').notNull().default(0),
     nextAttemptAt: ts('next_attempt_at').notNull().defaultNow(),
@@ -2025,3 +2030,268 @@ export type CrossConnect = typeof crossConnects.$inferSelect;
 export type Shipment = typeof shipments.$inferSelect;
 export type Visit = typeof visits.$inferSelect;
 export type Ticket = typeof tickets.$inferSelect;
+
+/* ============================================================== Phase 8: automation, billing, reports */
+
+/** Event bus: every notable change is written here in the same transaction; the worker fans it out. */
+export const domainEvents = pgTable(
+  'domain_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    orgId: orgRef(),
+    type: text('type').notNull(),
+    /** The customer the event concerns, if any. */
+    customerId: uuid('customer_id'),
+    subjectType: text('subject_type'),
+    subjectId: text('subject_id'),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    /** Set when a workflow run caused the event (workflows don't trigger on such events). */
+    causedByRunId: uuid('caused_by_run_id'),
+    at: ts('at').notNull().defaultNow(),
+    processedAt: ts('processed_at'),
+  },
+  (t) => [index('domain_events_pending_idx').on(t.id).where(sql`${t.processedAt} is null`), index('domain_events_org_idx').on(t.orgId, t.id)],
+);
+
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    /** Public part of the token, for lookup and display. */
+    prefix: text('prefix').notNull(),
+    secretHash: text('secret_hash').notNull(),
+    ownerUserId: uuid('owner_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    scopes: text('scopes').array().notNull(),
+    expiresAt: ts('expires_at'),
+    lastUsedAt: ts('last_used_at'),
+    lastUsedIp: text('last_used_ip'),
+    revokedAt: ts('revoked_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('api_keys_prefix_uq').on(t.prefix), index('api_keys_org_idx').on(t.orgId)],
+);
+
+export const webhookSubscriptions = pgTable(
+  'webhook_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    url: text('url').notNull(),
+    events: text('events').array().notNull(),
+    secretEnc: text('secret_enc').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    lastSuccessAt: ts('last_success_at'),
+    lastFailureAt: ts('last_failure_at'),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('webhook_subscriptions_org_name_uq').on(t.orgId, sql`lower(${t.name})`)],
+);
+
+export const webhookDeliveries = pgTable(
+  'webhook_deliveries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    subscriptionId: uuid('subscription_id')
+      .notNull()
+      .references(() => webhookSubscriptions.id, { onDelete: 'cascade' }),
+    eventId: bigint('event_id', { mode: 'number' })
+      .notNull()
+      .references(() => domainEvents.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: ts('next_attempt_at').notNull().defaultNow(),
+    responseStatus: integer('response_status'),
+    lastError: text('last_error'),
+    sentAt: ts('sent_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('webhook_deliveries_sub_event_uq').on(t.subscriptionId, t.eventId), index('webhook_deliveries_due_idx').on(t.status, t.nextAttemptAt)],
+);
+
+export const billingIntegrations = pgTable(
+  'billing_integrations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    kind: text('kind').notNull().default('whmcs'),
+    name: text('name').notNull(),
+    url: text('url'),
+    secretEnc: text('secret_enc').notNull(),
+    autoCreateCustomers: boolean('auto_create_customers').notNull().default(true),
+    autoCreateServices: boolean('auto_create_services').notNull().default(true),
+    enabled: boolean('enabled').notNull().default(true),
+    lastEventAt: ts('last_event_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('billing_integrations_org_name_uq').on(t.orgId, sql`lower(${t.name})`)],
+);
+
+export const billingProductMappings = pgTable(
+  'billing_product_mappings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    integrationId: uuid('integration_id')
+      .notNull()
+      .references(() => billingIntegrations.id, { onDelete: 'cascade' }),
+    productId: text('product_id').notNull(),
+    kind: serviceKindEnum('kind').notNull(),
+    label: text('label'),
+  },
+  (t) => [uniqueIndex('billing_product_mappings_uq').on(t.integrationId, t.productId)],
+);
+
+export const billingEvents = pgTable(
+  'billing_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    integrationId: uuid('integration_id')
+      .notNull()
+      .references(() => billingIntegrations.id, { onDelete: 'cascade' }),
+    eventId: text('event_id').notNull(),
+    type: text('type').notNull(),
+    receivedAt: ts('received_at').notNull().defaultNow(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    /** applied, ignored (already in that state), rejected (not allowed), review (needs a person) */
+    status: text('status').notNull(),
+    message: text('message'),
+    customerId: uuid('customer_id'),
+    serviceId: uuid('service_id'),
+  },
+  (t) => [uniqueIndex('billing_events_event_uq').on(t.integrationId, t.eventId), index('billing_events_integration_idx').on(t.integrationId, t.id)],
+);
+
+export const billingReconciliations = pgTable('billing_reconciliations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  integrationId: uuid('integration_id')
+    .notNull()
+    .references(() => billingIntegrations.id, { onDelete: 'cascade' }),
+  at: ts('at').notNull().defaultNow(),
+  source: text('source').notNull(),
+  summary: jsonb('summary').$type<Record<string, number>>().notNull(),
+  items: jsonb('items').$type<Record<string, unknown>[]>().notNull(),
+});
+
+export const workflows = pgTable(
+  'workflows',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    description: text('description'),
+    enabled: boolean('enabled').notNull().default(true),
+    trigger: text('trigger').notNull(),
+    conditions: jsonb('conditions').$type<Record<string, unknown>[]>().notNull(),
+    actions: jsonb('actions').$type<Record<string, unknown>[]>().notNull(),
+    version: integer('version').notNull().default(1),
+    updatedByUserId: uuid('updated_by_user_id'),
+    updatedBy: text('updated_by'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('workflows_org_name_uq').on(t.orgId, sql`lower(${t.name})`), index('workflows_trigger_idx').on(t.orgId, t.trigger)],
+);
+
+export const workflowRuns = pgTable(
+  'workflow_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    workflowId: uuid('workflow_id')
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    workflowVersion: integer('workflow_version').notNull(),
+    eventId: bigint('event_id', { mode: 'number' })
+      .notNull()
+      .references(() => domainEvents.id, { onDelete: 'cascade' }),
+    /** completed, skipped (conditions not met), waiting_approval, rejected, failed */
+    status: text('status').notNull(),
+    nextAction: integer('next_action').notNull().default(0),
+    log: jsonb('log').$type<{ at: string; message: string; level?: string }[]>().notNull().default(sql`'[]'::jsonb`),
+    decidedBy: text('decided_by'),
+    decidedAt: ts('decided_at'),
+    /** Times the worker crashed while advancing the run; the run fails after a few. */
+    attempts: integer('attempts').notNull().default(0),
+    createdAt: createdAt(),
+    finishedAt: ts('finished_at'),
+  },
+  (t) => [
+    uniqueIndex('workflow_runs_event_uq').on(t.workflowId, t.eventId),
+    index('workflow_runs_org_idx').on(t.orgId, t.createdAt),
+    index('workflow_runs_due_idx').on(t.createdAt).where(sql`${t.status} in ('pending', 'approved')`),
+  ],
+);
+
+export const reportSchedules = pgTable('report_schedules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: orgRef(),
+  name: text('name').notNull(),
+  type: text('type').notNull(),
+  period: text('period').notNull(),
+  format: text('format').notNull(),
+  frequency: text('frequency').notNull(),
+  hour: integer('hour').notNull(),
+  weekday: integer('weekday'),
+  dayOfMonth: integer('day_of_month'),
+  channelId: uuid('channel_id')
+    .notNull()
+    .references(() => notificationChannels.id, { onDelete: 'restrict' }),
+  recipients: text('recipients').array().notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  nextRunAt: ts('next_run_at').notNull(),
+  lastRunAt: ts('last_run_at'),
+  lastStatus: text('last_status'),
+  lastError: text('last_error'),
+  createdBy: text('created_by'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const incidents = pgTable(
+  'incidents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    title: text('title').notNull(),
+    severity: text('severity').notNull(),
+    status: text('status').notNull().default('investigating'),
+    datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'set null' }),
+    customerIds: uuid('customer_ids').array().notNull().default(sql`'{}'::uuid[]`),
+    public: boolean('public').notNull().default(true),
+    startedAt: ts('started_at').notNull().defaultNow(),
+    resolvedAt: ts('resolved_at'),
+    createdBy: text('created_by'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('incidents_org_idx').on(t.orgId, t.startedAt)],
+);
+
+export const incidentUpdates = pgTable(
+  'incident_updates',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    incidentId: uuid('incident_id')
+      .notNull()
+      .references(() => incidents.id, { onDelete: 'cascade' }),
+    at: ts('at').notNull().defaultNow(),
+    status: text('status').notNull(),
+    message: text('message').notNull(),
+    public: boolean('public').notNull().default(true),
+    author: text('author'),
+  },
+  (t) => [index('incident_updates_incident_idx').on(t.incidentId, t.id)],
+);
+
+export type DomainEvent = typeof domainEvents.$inferSelect;
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type Workflow = typeof workflows.$inferSelect;
+export type WorkflowRun = typeof workflowRuns.$inferSelect;
+export type BillingIntegration = typeof billingIntegrations.$inferSelect;

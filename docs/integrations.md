@@ -61,6 +61,14 @@ A PDU's own total is stored (source `snmp`) and shown beside the rack's equipmen
 | Proxmox VE | API token (`PVEAuditor`) + optional action token (`PVEVMUser` or `VM.PowerMgmt`) | Nodes, VMs and containers, status; start, stop, shutdown, reboot, suspend, resume | Templates are skipped. Reboots verified by uptime |
 | Virtualizor | Admin API key and password | Servers and VPSes; start, stop (graceful), power off, restart when enabled | Admin keys can't be limited, so actions are off until enabled; suspend/unsuspend (billing) not offered. Mapping from the API docs, not yet run against a live panel |
 
+## Billing and automation (Phase 8)
+
+| Integration | How | Notes |
+|---|---|---|
+| WHMCS | Server module `integrations/whmcs/modules/servers/nexoradc` and hooks `integrations/whmcs/includes/hooks/nexoradc.php` (copy into the WHMCS root). Server settings: hostname = NexoraDC address, username = integration id, password = shared secret shown once | Create/suspend/unsuspend/terminate send signed events; client add/edit/close send `client.upsert`; the daily cron sends a reconciliation snapshot; the client area shows usage. Test Connection uses a signed ping. Run with PHP 8.3 against the API (`integrations/whmcs/tests/client_test.php` checks the signature against the API's test vector); not yet installed in a WHMCS instance |
+| Outbound webhooks | Signed JSON POSTs to your HTTPS receivers | See [API](api.md#phase-8-endpoints-implemented) for headers and verification |
+| Scheduled reports | SMTP of an email notification channel | CSV or PDF attachment |
+
 ## Original adapter plan
 
 This plan fixed the adapter shape so that each phase adds adapters without changing the core.

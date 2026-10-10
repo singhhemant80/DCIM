@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { emitEvent } from '../../events/events';
 import { ALERT_METRIC_LABELS, formatBitRate, type AlertMetric } from '@crapplet/shared';
 import type { Db } from '../../db/db';
 import { alertRules, alertState, alerts, interfaces, notificationChannels, notifications, type AlertRule } from '../../db/schema';
@@ -203,6 +204,13 @@ async function step(db: Db, rule: AlertRule, dev: DeviceCtx, port: PortCtx | nul
       message: a.message,
       suppressed: a.suppressed,
     });
+    const publishEvent = (a: typeof alerts.$inferSelect, ev: 'firing' | 'resolved') =>
+      emitEvent(tx, {
+        orgId: dev.orgId,
+        type: ev === 'firing' ? 'alert.firing' : 'alert.resolved',
+        subject: { type: 'alert', id: a.id },
+        payload: { alertId: a.id, rule: a.ruleName, metric: a.metric, severity: a.severity, message: a.message, deviceId: a.deviceId, interfaceId: a.interfaceId, startedAt: a.startedAt.toISOString(), resolvedAt: a.resolvedAt?.toISOString() ?? null },
+      });
     const enqueue = async (alertId: string, ev: 'firing' | 'resolved') => {
       if (!rule.channelIds.length) return;
       const chans = await tx
@@ -236,7 +244,10 @@ async function step(db: Db, rule: AlertRule, dev: DeviceCtx, port: PortCtx | nul
         .onConflictDoNothing()
         .returning();
       if (!a) return null;
-      if (!a.suppressed) await enqueue(a.id, 'firing');
+      if (!a.suppressed) {
+        await enqueue(a.id, 'firing');
+        await publishEvent(a, 'firing');
+      }
       return event(a, 'firing');
     }
 
@@ -244,6 +255,7 @@ async function step(db: Db, rule: AlertRule, dev: DeviceCtx, port: PortCtx | nul
     if (!bad && st && st.clearCount >= rule.clearSamples) {
       const [a] = await tx.update(alerts).set({ status: 'resolved', resolvedAt: now, lastValue: value, peakValue: peak }).where(eq(alerts.id, firing.id)).returning();
       if (rule.notifyOnResolve && !firing.suppressed) await enqueue(firing.id, 'resolved');
+      if (!firing.suppressed) await publishEvent(a!, 'resolved');
       return event(a!, 'resolved');
     }
     const patch: Partial<typeof alerts.$inferInsert> = { lastValue: value, peakValue: peak };
@@ -254,6 +266,7 @@ async function step(db: Db, rule: AlertRule, dev: DeviceCtx, port: PortCtx | nul
     const [a] = await tx.update(alerts).set(patch).where(eq(alerts.id, firing.id)).returning();
     if (unsuppress) {
       await enqueue(firing.id, 'firing');
+      await publishEvent(a!, 'firing');
       return event(a!, 'firing');
     }
     return null;

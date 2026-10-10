@@ -30,6 +30,12 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
   // body limit; every other route, including the unauthenticated ones, keeps 1 MB.
   // The JSON parser skips bodies that were already parsed.
   app.use(['/api/v1/dcim/devices/import', '/api/v1/ipam/import'], express.json({ limit: '16mb' }));
+  // Billing module calls are signed over the exact bytes sent, so keep the raw body.
+  // (Reconciliation snapshots can be large: 8 MB.)
+  app.use(
+    '/api/v1/billing/whmcs',
+    express.json({ limit: '8mb', verify: (req, _res, buf) => ((req as unknown as { rawBody: Buffer }).rawBody = Buffer.from(buf)) }),
+  );
   app.useBodyParser('json', { limit: '1mb' });
   app.use(
     helmet({

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { emitEvent } from '../../events/events';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
-import type { Db } from '../../db/db';
+import type { Db, DbOrTx } from '../../db/db';
 import { provisioningEvents, provisioningJobs, provisioningSteps, type ProvisioningJob } from '../../db/schema';
 import type { SecretBox } from '../../common/secret-box';
 
@@ -146,8 +147,8 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
   };
   class LostLease extends Error {}
   /** Every write is fenced by the worker id: a worker that lost the job can't change it. */
-  const save = async (patch: Partial<typeof provisioningJobs.$inferInsert>) => {
-    const r = await db
+  const save = async (patch: Partial<typeof provisioningJobs.$inferInsert>, conn: DbOrTx = db) => {
+    const r = await conn
       .update(provisioningJobs)
       .set({ ...patch, state })
       .where(and(eq(provisioningJobs.id, job.id), eq(provisioningJobs.workerId, workerId)))
@@ -163,7 +164,20 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
         await ctx.log(`Cleanup did not finish: ${(e as Error).message}`, 'warn');
       }
     }
-    await save({ status, error: error?.slice(0, 1000) ?? null, result: result ?? null, finishedAt: now(), leaseUntil: null, bootTokenHash: null, bootMac: null, secretEnc: null });
+    // The final status and the event telling subscribers and workflows about it (facts only; no secrets
+    // live in jobs' params) are written together.
+    await db.transaction(async (tx) => {
+      await save({ status, error: error?.slice(0, 1000) ?? null, result: result ?? null, finishedAt: now(), leaseUntil: null, bootTokenHash: null, bootMac: null, secretEnc: null }, tx);
+      const owner = await tx.execute<{ customer_id: string | null }>(sql`
+        select coalesce((select customer_id from devices where id = ${job.deviceId}), (select customer_id from virt_guests where id = ${job.guestId})) as customer_id`);
+      await emitEvent(tx, {
+      orgId: job.orgId,
+      type: 'provisioning.job_finished',
+      customerId: owner.rows[0]?.customer_id ?? null,
+      subject: { type: 'provisioning_job', id: job.id },
+        payload: { jobId: job.id, kind: job.kind, status, verified: status === 'completed' ? result?.verified !== false : null, deviceId: job.deviceId, guestId: job.guestId, imageId: job.imageId, action: (job.params as Record<string, unknown>).action ?? null, error: error ?? null },
+      });
+    });
     const unverified = status === 'completed' && result?.verified === false;
     await ctx.log(
       unverified ? `Completed, but not independently verified: ${String(result?.note ?? '')}` : status === 'completed' ? 'Completed and verified' : status === 'cancelled' ? 'Cancelled' : `Failed: ${error}`,
