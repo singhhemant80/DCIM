@@ -93,9 +93,38 @@ export interface AdapterTarget {
   secret: Record<string, string | null | undefined>;
 }
 
+/** One interface's raw counters at one poll (measured). */
+export interface CounterReading {
+  name: string;
+  ifIndex?: number | null;
+  inOctets: bigint | null;
+  outOctets: bigint | null;
+  inPkts?: bigint | null;
+  outPkts?: bigint | null;
+  inErrors?: bigint | null;
+  outErrors?: bigint | null;
+  inDiscards?: bigint | null;
+  outDiscards?: bigint | null;
+  /** Width of octet/packet counters. */
+  bits: 32 | 64;
+  /** Width of error/discard counters. */
+  errorBits: 32 | 64;
+  /** Link speed reported by the device, when it reports one. */
+  speedBps?: number | null;
+  operUp?: boolean | null;
+}
+
+export interface CounterSnapshot {
+  /** Device uptime in seconds (for restart detection), when available. */
+  uptimeSeconds: number | null;
+  interfaces: CounterReading[];
+}
+
 export interface Adapter {
   test(t: AdapterTarget): Promise<TestResult>;
   discover(t: AdapterTarget): Promise<DiscoveryResult>;
+  /** Read-only counter collection for monitoring. */
+  counters?(t: AdapterTarget): Promise<CounterSnapshot>;
 }
 
 /** The secret fields of each credential kind (everything else is stored in plain params). */

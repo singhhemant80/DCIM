@@ -1,6 +1,6 @@
 import type { InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
-import { DeviceHttpError, bool, deviceRequest, int, normalizeMac, str } from './http';
+import type { Adapter, AdapterTarget, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import { DeviceHttpError, bool, counter, deviceRequest, int, normalizeMac, str } from './http';
 
 /**
  * Fortinet FortiOS REST API (read-only: GET only) using a REST API admin
@@ -109,6 +109,28 @@ export function parseFortiOs(data: { status: Row | null; cmdb: Row[]; monitor: R
   };
 }
 
+/** Counters from monitor/system/interface (FortiOS reports no device uptime there; resets show as counters going down). */
+export function parseFortiOsCounters(results: Record<string, Row>): CounterSnapshot {
+  return {
+    uptimeSeconds: null,
+    interfaces: Object.entries(results).map(([key, r]) => ({
+      name: str(r.name) ?? key,
+      inOctets: counter(r.rx_bytes),
+      outOctets: counter(r.tx_bytes),
+      inPkts: counter(r.rx_packets),
+      outPkts: counter(r.tx_packets),
+      inErrors: counter(r.rx_errors),
+      outErrors: counter(r.tx_errors),
+      inDiscards: null,
+      outDiscards: null,
+      bits: 64 as const,
+      errorBits: 64 as const,
+      speedBps: int(r.speed) && int(r.speed)! > 0 ? int(r.speed)! * 1_000_000 : null,
+      operUp: bool(r.link),
+    })),
+  };
+}
+
 export function fortiOsAdapter(): Adapter {
   const get = async (t: AdapterTarget, path: string): Promise<Row> => {
     const vdom = t.params.vdom ? `${path.includes('?') ? '&' : '?'}vdom=${encodeURIComponent(t.params.vdom)}` : '';
@@ -121,6 +143,12 @@ export function fortiOsAdapter(): Adapter {
       const s = await get(t, '/monitor/system/status');
       const r = (s.results as Row | undefined) ?? {};
       return { ok: true, message: `Connected: ${str(r.hostname) ?? 'FortiGate'} — ${str(r.model_name) ?? ''} ${str(s.version) ?? ''}`.replace(/\s+/g, ' ').trim(), latencyMs: Date.now() - started, facts: { sysName: str(r.hostname), serial: str(s.serial), osVersion: str(s.version), vendor: 'Fortinet' } };
+    },
+    async counters(t): Promise<CounterSnapshot> {
+      const r = await get(t, '/monitor/system/interface?include_vlan=true&include_aggregate=true');
+      const results = r.results && typeof r.results === 'object' && !Array.isArray(r.results) ? (r.results as Record<string, Row>) : null;
+      if (!results) throw new Error('FortiOS returned no interface statistics');
+      return parseFortiOsCounters(results);
     },
     async discover(t): Promise<DiscoveryResult> {
       const warnings: string[] = [];

@@ -5,3 +5,4 @@ export * from './schemas';
 export * from './units';
 export * from './dcim';
 export * from './network';
+export * from './monitoring';

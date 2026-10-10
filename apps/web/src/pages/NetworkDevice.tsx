@@ -24,6 +24,8 @@ import { formatDateTime, relativeTime } from '../lib/format';
 import { deviceLabel, formatBps, formatUptime, useVlans, type BgpT, type CredentialT, type DeviceSummaryT, type FactsT, type InterfaceT, type NetworkDeviceT, type RunT } from '../lib/network';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Table, cx } from '../components/ui';
 import { CableFields, Kv, Tabs } from './Network';
+import { bps, useMonitoringStream, withLive, type PortRateT } from '../lib/monitoring';
+import type { Paginated } from '../lib/api';
 
 const s = (v: unknown) => (v === null || v === undefined ? '' : String(v));
 const t = (v: string) => (v.trim() === '' ? null : v.trim());
@@ -62,7 +64,7 @@ export function NetworkDevicePage() {
           </>
         }
       />
-      <div className="grid gap-5">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
         <dl className="glass grid grid-cols-2 gap-4 rounded-2xl p-4 sm:grid-cols-4 lg:grid-cols-6">
           <Kv k="Management address">{d.mgmtAddress ? <span className="font-mono">{d.mgmtAddress}</span> : <span className="text-ink-3" title="Set it on the hardware record">Not set</span>}</Kv>
           <Kv k="Asset tag">
@@ -208,6 +210,12 @@ function PortsPanel({ device, list }: { device: NetworkDeviceT; list: ReturnType
   const [cable, setCable] = useState<InterfaceT | null>(null);
   const rows = (list.data ?? []).filter((i) => (tab === 'logical' ? LOGICAL_KINDS.includes(i.kind) : !LOGICAL_KINDS.includes(i.kind)));
   const counts = { physical: (list.data ?? []).filter((i) => !LOGICAL_KINDS.includes(i.kind)).length, logical: (list.data ?? []).filter((i) => LOGICAL_KINDS.includes(i.kind)).length };
+  // Live traffic, when this device is polled (measured; nothing is shown without a recent reading).
+  const canMon = can('monitoring.read');
+  const rates = useQuery({ queryKey: ['monitoring', 'ports', 'device', device.id], queryFn: () => api.get<Paginated<PortRateT>>(`/monitoring/ports?deviceId=${device.id}&pageSize=200&sort=name`), enabled: canMon, refetchInterval: 30_000 });
+  const polled = !!rates.data?.items.length;
+  const stream = useMonitoringStream(canMon && polled);
+  const rateOf = useMemo(() => new Map((rates.data?.items ?? []).map((r) => [r.interfaceId, withLive(r, stream.live)])), [rates.data, stream.live]);
   return (
     <Panel
       flush
@@ -250,6 +258,7 @@ function PortsPanel({ device, list }: { device: NetworkDeviceT; list: ReturnType
               <th>Name</th>
               <th>Type</th>
               <th>Speed</th>
+              {polled && <th>Traffic</th>}
               <th>VLANs</th>
               <th>{tab === 'physical' ? 'Connected to' : 'Members / parent'}</th>
               <th>Neighbor (LLDP/CDP)</th>
@@ -259,7 +268,7 @@ function PortsPanel({ device, list }: { device: NetworkDeviceT; list: ReturnType
           </thead>
           <tbody>
             {rows.map((i) => (
-              <PortRow key={i.id} i={i} canEdit={can('network.write')} onEdit={() => setEdit(i)} onCable={() => setCable(i)} />
+              <PortRow key={i.id} i={i} rate={polled ? (rateOf.get(i.id) ?? null) : undefined} canEdit={can('network.write')} onEdit={() => setEdit(i)} onCable={() => setCable(i)} />
             ))}
           </tbody>
         </Table>
@@ -271,7 +280,7 @@ function PortsPanel({ device, list }: { device: NetworkDeviceT; list: ReturnType
   );
 }
 
-function PortRow({ i, canEdit, onEdit, onCable }: { i: InterfaceT; canEdit: boolean; onEdit: () => void; onCable: () => void }) {
+function PortRow({ i, rate, canEdit, onEdit, onCable }: { i: InterfaceT; rate?: PortRateT | null; canEdit: boolean; onEdit: () => void; onCable: () => void }) {
   const nbr = i.neighbors[0];
   const verified = nbr?.matched && i.cable?.peer && nbr.matched.interfaceId === i.cable.peer.interfaceId;
   const mismatch = nbr?.matched && i.cable?.peer && nbr.matched.interfaceId !== i.cable.peer.interfaceId;
@@ -292,6 +301,22 @@ function PortRow({ i, canEdit, onEdit, onCable }: { i: InterfaceT; canEdit: bool
         {i.media && <div className="text-[12px] text-ink-3">{INTERFACE_MEDIA_LABELS[i.media as keyof typeof INTERFACE_MEDIA_LABELS]}</div>}
       </td>
       <td className="whitespace-nowrap">{formatBps(i.speedBps)}</td>
+      {rate !== undefined && (
+        <td className="text-[12.5px] whitespace-nowrap tabular-nums">
+          {rate?.fresh ? (
+            <Link to={`/network-monitoring?port=${i.id}`} className="block leading-tight hover:underline" title="Measured; open the traffic chart">
+              <span className="block">
+                <span className="text-rx">in</span> {bps(rate.inBps)}
+              </span>
+              <span className="block">
+                <span className="text-tx">out</span> {bps(rate.outBps)}
+              </span>
+            </Link>
+          ) : (
+            <span className="text-ink-3">{rate ? 'no recent reading' : 'not monitored'}</span>
+          )}
+        </td>
+      )}
       <td className="text-[13px]">
         {i.mode === 'access' && i.untaggedVlan && <Chip>{i.untaggedVlan.vid} untagged</Chip>}
         {i.mode === 'tagged_all' && <Chip>all tagged</Chip>}

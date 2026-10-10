@@ -120,11 +120,37 @@ IPAM endpoints never configure a device or announce a route. Address changes are
 
 Error codes added: `invalid_relation`, `not_cableable`, `port_in_use`, `prefix_exists`, `address_in_use`, `prefix_full`, `prefix_container`, `prefix_deprecated`, `reserved_address`, `no_prefix`, `customer_mismatch`, `prefix_in_use`, `invalid_gateway`, `address_released`, `no_credential`, `no_address`, `invalid_credential`, `discovery_running`, `not_applicable`, `already_applied`, `stale_run`, `invalid_zone`, `zone_in_use`, `kind_fixed`.
 
+## Phase 4 endpoints (implemented)
+
+**Monitoring** — under `/api/v1/monitoring`. Reads need `monitoring.read`; customers with it see only their ports (own devices and ports cabled to them). Rates are measured; values older than three intervals are returned as `null` with `fresh: false`.
+
+| Method and path | Notes |
+|---|---|
+| `GET /ports` | Paginated; `?q=&deviceId=&datacenterId=&sort=traffic\|utilization\|errors\|name&totalsOnly=true`; each row has the latest in/out bit/s, utilization, errors/discards per second, link state, `sampledAt`, `fresh` and `lastSkip` (why the last poll gave no rate) |
+| `GET /ports/:id` · `GET /ports/:id/history?range=1h\|6h\|24h\|7d\|30d` | History uses raw samples up to 6 h, 5-minute averages up to 7 d and hourly averages for 30 d; `p95` is the nearest-rank 95th percentile of complete 5-minute averages |
+| `GET /totals` · `GET /totals/history?range=&datacenterId=` | Staff. Sum over ports marked count-in-totals, LAG counted once; stale ports reported separately |
+| `GET /devices` · `PUT /devices/:id` · `DELETE /devices/:id` | Staff. Polling health; PUT `{ enabled, credentialKind, intervalSeconds (30–3600) }` needs `monitoring.configure` and a stored credential of that kind |
+| `GET /settings` · `PUT /settings` | Staff. Retention `{ rawDays, fiveMinuteDays, hourlyDays }` |
+| `GET /stream` | `text/event-stream`: events `hello`, `ping` (both with `live`), `rates`, `alert` (staff only) |
+
+**Alerts** — under `/api/v1/alerts`, staff only. Reads need `monitoring.read`; rules, maintenance and acknowledgement need `alerts.manage`; channels need `monitoring.configure`.
+
+| Method and path | Notes |
+|---|---|
+| `GET /` · `GET /summary` · `POST /:id/ack` | `?status=firing\|resolved\|all&severity=&deviceId=`; ack `{ note? }` |
+| `GET, POST /rules` · `PUT, DELETE /rules/:id` | Changing or deleting a rule closes its open alerts and restarts evaluation |
+| `GET, POST /maintenance` · `PUT, DELETE /maintenance/:id` | |
+| `GET, POST /channels` · `PUT, DELETE /channels/:id` · `POST /channels/:id/test` | Secrets write-only; test queues a message for the worker |
+| `GET /notifications` | `?channelId=`; recent deliveries with status and error |
+
+`GET /api/v1/overview/bandwidth` returns current totals, the last 24 h and the alert summary for the dashboard.
+
+Error codes added: `no_credential`, `duplicate_name`, `too_many_streams`.
+
 ## Planned resources
 
 | Phase | Resources |
 |---|---|
-| 4 | `/monitoring/summary`, `/interfaces/:id/rates?range=`, `/interfaces/:id/history`, `/stream` (SSE), `/alert-rules`, `/alerts` (+ `/ack`), `/maintenance-windows`, `/polling/health`, `/monitoring/settings` |
 | 5 | `/power/summary`, `/power/devices`, `/power/racks/:id`, `/devices/:id/power-profile`, `/power/readings`, `/tariffs` |
 | 6 | `/provisioning/jobs` (idempotency-key header), `/os-images`, `/integrations/proxmox/*`, `/integrations/virtualizor/*`, `/devices/:id/power-actions` (`hardware.control`, confirmation token) |
 | 7 | `/services`, `/colocation/allocations`, `/cross-connects`, `/tickets`, `/remote-hands`, `/visitors` |

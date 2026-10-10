@@ -6,6 +6,8 @@ import { auditEvents, customers, roles, sessions, users } from '../db/schema';
 import { CurrentPrincipal, StaffOnly } from '../auth/decorators';
 import type { Principal } from '../auth/principal';
 import { AuditService } from '../audit/audit.service';
+import { MonitoringService } from '../monitoring/monitoring.service';
+import { AlertsService } from '../monitoring/alerts.service';
 
 /**
  * Phase 1 overview: real counts from the identity/tenancy/audit tables.
@@ -20,6 +22,8 @@ export class OverviewController {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly audit: AuditService,
+    private readonly monitoring: MonitoringService,
+    private readonly alerts: AlertsService,
   ) {}
 
   @Get()
@@ -79,6 +83,14 @@ export class OverviewController {
       activeSessions,
       audit: can('audit.read') ? { events24h, failedLogins24h, denied24h } : null,
     };
+  }
+
+  @Get('bandwidth')
+  @ApiOperation({ summary: 'Dashboard bandwidth panel: measured totals now, the last 24 h (5-minute averages) and firing alerts. Null without monitoring.read.' })
+  async bandwidth(@CurrentPrincipal() p: Principal) {
+    if (!p.permissions.has('monitoring.read')) return null;
+    const [now, history, alerts] = await Promise.all([this.monitoring.totals(p), this.monitoring.totalsHistory(p, '24h'), this.alerts.summary(p)]);
+    return { now, history, alerts };
   }
 
   @Get('audit-integrity')

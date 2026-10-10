@@ -1,6 +1,6 @@
 import * as snmp from 'net-snmp';
 import { formatIp, type InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, DeviceFacts, TestResult } from '../../network/discovery/types';
+import type { Adapter, AdapterTarget, CounterReading, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, DeviceFacts, TestResult } from '../../network/discovery/types';
 
 /**
  * Read-only SNMP collector (v2c and v3). Only GET and GETBULK are issued.
@@ -352,6 +352,68 @@ export function parseBgp(t: Table | null): DiscoveredBgpPeer[] {
 }
 
 // ---------------------------------------------------------------------------
+// Counters (monitoring)
+// ---------------------------------------------------------------------------
+
+/** Walks individual columns of a table (cheaper than whole rows when only a few columns are needed). */
+export async function walkColumns(tr: SnmpTransport, entry: string, cols: number[]): Promise<Table> {
+  const out: Table = new Map();
+  for (const col of cols) {
+    const t = await tr.walk(`${entry}.${col}`);
+    const m = new Map<string, Value>();
+    // walk() splits the first sub-identifier off as "column"; here that is the first index component.
+    for (const [first, rest] of t) for (const [r, v] of rest) m.set(r ? `${first}.${r}` : String(first), v);
+    if (m.size) out.set(col, m);
+  }
+  return out;
+}
+
+export function big(v: Value | undefined): bigint | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? BigInt(Math.trunc(v)) : null;
+  if (Buffer.isBuffer(v)) return v.length && v.length <= 8 ? BigInt(`0x${v.toString('hex')}`) : null;
+  return /^\d+$/.test(String(v)) ? BigInt(String(v)) : null;
+}
+
+export function parseCounters(sys: Map<string, Value>, ifT: Table, ifX: Table): CounterSnapshot {
+  const ticks = num(sys.get(OID.sysUpTime));
+  const names = ifX.get(1) ?? new Map<string, Value>();
+  const descr = ifT.get(2) ?? new Map<string, Value>();
+  const idxs = new Set([...names.keys(), ...descr.keys()]);
+  const hc = !!ifX.get(6)?.size;
+  const sum = (...vals: (bigint | null)[]) => (vals.every((x) => x === null) ? null : vals.reduce<bigint>((a, b) => a + (b ?? 0n), 0n));
+  const interfaces: CounterReading[] = [];
+  for (const idx of idxs) {
+    const name = text(names.get(idx)) || text(descr.get(idx));
+    if (!name) continue;
+    const high = num(ifX.get(15)?.get(idx));
+    const low = num(ifT.get(5)?.get(idx));
+    const oper = num(ifT.get(8)?.get(idx));
+    const portHc = hc && ifX.get(6)?.get(idx) !== undefined && ifX.get(10)?.get(idx) !== undefined;
+    interfaces.push({
+      name,
+      ifIndex: Number(idx),
+      // 64-bit (ifHC*) per port when the device has them for this port; some ports
+      // (e.g. 10 Mbit/s or virtual ones) only have the 32-bit ifTable counters.
+      inOctets: portHc ? big(ifX.get(6)?.get(idx)) : big(ifT.get(10)?.get(idx)),
+      outOctets: portHc ? big(ifX.get(10)?.get(idx)) : big(ifT.get(16)?.get(idx)),
+      inPkts: portHc ? sum(big(ifX.get(7)?.get(idx)), big(ifX.get(8)?.get(idx)), big(ifX.get(9)?.get(idx))) : big(ifT.get(11)?.get(idx)),
+      outPkts: portHc ? sum(big(ifX.get(11)?.get(idx)), big(ifX.get(12)?.get(idx)), big(ifX.get(13)?.get(idx))) : big(ifT.get(17)?.get(idx)),
+      inErrors: big(ifT.get(14)?.get(idx)),
+      outErrors: big(ifT.get(20)?.get(idx)),
+      inDiscards: big(ifT.get(13)?.get(idx)),
+      outDiscards: big(ifT.get(19)?.get(idx)),
+      bits: portHc ? 64 : 32,
+      errorBits: 32,
+      speedBps: high && high > 0 ? high * 1_000_000 : low && low > 0 && low < 4_294_967_295 ? low : null,
+      operUp: oper === null ? null : oper === 1,
+    });
+  }
+  return { uptimeSeconds: ticks === null ? null : Math.floor(ticks / 100), interfaces };
+}
+
+// ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
 
@@ -366,6 +428,20 @@ export function snmpAdapter(kind: 'snmp_v2c' | 'snmp_v3', makeTransport = create
         if (!sys.size) return { ok: false, message: 'The device answered but returned no system information', latencyMs: Date.now() - started };
         const facts = parseFacts(sys, null);
         return { ok: true, message: `Connected: ${facts.sysName ?? 'unnamed'}${facts.sysDescr ? ` — ${facts.sysDescr.split('\n')[0]!.slice(0, 120)}` : ''}`, latencyMs: Date.now() - started, facts };
+      } finally {
+        tr.close();
+      }
+    },
+    async counters(t: AdapterTarget): Promise<CounterSnapshot> {
+      const tr = makeTransport(t, kind);
+      try {
+        const sys = await tr.get([OID.sysUpTime]);
+        const ifX = await walkColumns(tr, OID.ifXEntry, [1, 6, 7, 8, 9, 10, 11, 12, 13, 15]);
+        const hc = !!ifX.get(6)?.size;
+        // The 32-bit octet columns are read too, for ports without 64-bit counters.
+        const ifT = await walkColumns(tr, OID.ifEntry, [2, 5, 8, 10, 11, 13, 14, 16, 17, 19, 20]);
+        if (!ifT.size && !ifX.size) throw new Error('IF-MIB returned nothing; check the credential and the device ACL');
+        return parseCounters(sys, ifT, ifX);
       } finally {
         tr.close();
       }

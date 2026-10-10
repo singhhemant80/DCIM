@@ -11,6 +11,12 @@ import type { IpamService } from '../network/ipam.service';
 import { failOrphanedRuns, processRun } from './processor';
 import { runDueSchedules } from './scheduler';
 import { sweepDns, testDnsServer } from './dns/sync';
+import Redis from 'ioredis';
+import { createPollLoop, type PollOutcome } from './monitoring/poller';
+import { applyRetention, rollup } from './monitoring/rollup';
+import { closeUnmonitoredAlerts, evaluateAlerts } from './monitoring/alerts';
+import { deliverDue } from './monitoring/notify';
+import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 
 /**
  * Background worker, a separate process from the API so that device and DNS
@@ -18,14 +24,17 @@ import { sweepDns, testDnsServer } from './dns/sync';
  * requests. It
  *  - runs queued discovery runs (read-only collection) and DNS server checks,
  *  - starts scheduled discoveries that are due (every minute),
- *  - pushes pending IPAM DNS changes to the configured DNS servers.
+ *  - pushes pending IPAM DNS changes to the configured DNS servers,
+ *  - polls interface counters of monitored devices (read-only), stores rates,
+ *    downsamples and expires them, evaluates alert rules and delivers
+ *    notifications. Polling runs whether or not anyone has the UI open.
  * Run one instance (systemd unit crapplet-dcim-worker); schedules and DNS rows
  * are claimed with row locks, so a second instance would not duplicate work.
  */
 async function main() {
   const config = loadConfig();
   const logger = createLogger(config.LOG_LEVEL, config.NODE_ENV === 'development', 'crapplet-dcim-worker');
-  const pool = createPool(config.DATABASE_URL, 6);
+  const pool = createPool(config.DATABASE_URL, 12);
   const db = createDb(pool);
   const secrets = new SecretBox(config.CDCIM_ENCRYPTION_KEYS);
   const concurrency = Math.max(1, Math.min(16, Number(process.env.DISCOVERY_CONCURRENCY ?? 4) || 4));
@@ -71,6 +80,19 @@ async function main() {
     void tick();
     return setInterval(() => void tick(), ms);
   };
+  // Live updates for browsers (best effort: the data is already in PostgreSQL).
+  const pub = new Redis(config.REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 1, enableOfflineQueue: false, retryStrategy: (n) => Math.min(n * 1000, 10_000) });
+  pub.on('error', () => undefined);
+  const publish = (orgId: string, ev: MonitoringEvent) => pub.publish(monitoringChannel(orgId), JSON.stringify(ev)).catch(() => undefined);
+  const onPolled = async (o: PollOutcome) => {
+    void publish(o.orgId, { type: 'rates', deviceId: o.deviceId, at: o.at.toISOString(), ok: o.ok, error: o.error, ports: o.ports.map(({ name: _n, ...p }) => p) });
+    for (const ev of await evaluateAlerts(db, o)) {
+      const { orgId, type: _t, ...rest } = ev;
+      void publish(orgId, { type: 'alert', ...rest });
+    }
+  };
+  const pollConcurrency = Math.max(1, Math.min(64, Number(process.env.POLL_CONCURRENCY ?? 16) || 16));
+
   const timers = [
     every('schedules', 60_000, async () => {
       const ids = await runDueSchedules(db, async (runId) => {
@@ -82,17 +104,31 @@ async function main() {
       const n = await sweepDns({ db, secrets });
       if (n) logger.info({ addresses: n }, 'dns changes pushed');
     }),
+    every('poll', 2_000, createPollLoop({ db, secrets, logger, onPolled }, pollConcurrency)),
+    every('rollup', 60_000, async () => {
+      await rollup(db);
+      const closed = await closeUnmonitoredAlerts(db);
+      if (closed) logger.info({ closed }, 'closed alerts of targets that are no longer polled');
+    }),
+    every('retention', 3_600_000, async () => {
+      const r = await applyRetention(db);
+      if (r.raw + r.fiveMinute + r.hourly) logger.info(r, 'old monitoring data removed');
+    }),
+    every('notify', 10_000, () => deliverDue({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
   ];
-  logger.info({ concurrency }, 'Crapplet DCIM worker started (discovery, schedules, DNS)');
+  logger.info({ concurrency }, 'Crapplet DCIM worker started (discovery, schedules, DNS, monitoring)');
 
   const stop = async (signal: string) => {
     logger.info({ signal }, 'stopping worker');
     timers.forEach(clearInterval);
     await worker.close().catch(() => undefined);
     await producer.close().catch(() => undefined);
+    pub.disconnect();
     await pool.end().catch(() => undefined);
     process.exit(0);
   };
+  // A stray rejection must not take down polling for every device.
+  process.on('unhandledRejection', (err) => logger.error({ err: (err as Error)?.message ?? String(err) }, 'unhandled rejection'));
   process.on('SIGTERM', () => void stop('SIGTERM'));
   process.on('SIGINT', () => void stop('SIGINT'));
 }

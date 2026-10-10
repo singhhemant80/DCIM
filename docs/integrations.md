@@ -21,6 +21,21 @@ Also implemented:
 
 Known gaps: the SNMP collector reads BGP4-MIB, which covers IPv4 peers in the default VRF only; RouterOS `/routing/bgp/session` and NX-OS output cover more. Interface speeds from RouterOS come from the configured ethernet speed, not the negotiated rate. FortiOS returns no device uptime in the fields read.
 
+## Counter collection for monitoring (Phase 4)
+
+Each adapter also implements `counters()`, a lighter read used by the poller every interval:
+
+| Adapter | Reads | Counter width | Uptime (reset detection) |
+|---|---|---|---|
+| SNMP v2c / v3 | `sysUpTime`; ifXTable `ifName`, `ifHCIn/OutOctets`, HC packet counters, `ifHighSpeed`; ifTable `ifDescr`, `ifSpeed`, `ifOperStatus`, errors, discards, and the 32-bit octet columns for ports without HC counters | 64-bit per port when present, else 32-bit (wraps handled) | `sysUpTime` (wraps after 497 days, which costs one sample) |
+| MikroTik RouterOS REST / API | `/interface` (`rx-byte`, `tx-byte`, packets, errors, drops, `running`), `/system/resource` | 64-bit | `uptime` |
+| FortiOS REST | `monitor/system/interface` (`rx_bytes`, `tx_bytes`, packets, errors, `link`, `speed`) | 64-bit | none reported; a counter going down is treated as a reset. Values above 2⁵³ lose precision in JSON |
+| Cisco NX-API | `show version`, `show interface` (`eth_inbytes`, `eth_outbytes`, packets, errors, discards, `eth_bw`, `state`); SVIs without byte counters are skipped | 64-bit | `kern_uptm_*` |
+
+Counters are matched to inventory ports by name (case-insensitive), with SNMP `ifIndex` as a fallback; ports the device reports that aren't in inventory are counted but not stored. RouterOS reports no negotiated speed in `/interface`, so utilization uses the inventory port speed.
+
+Notification channels: SMTP (STARTTLS, implicit TLS or none, via nodemailer), signed JSON webhooks, Slack incoming webhooks and the Telegram Bot API `sendMessage`.
+
 ## Original adapter plan
 
 This plan fixed the adapter shape so that each phase adds adapters without changing the core.

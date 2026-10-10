@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import tls from 'node:tls';
-import type { Adapter, AdapterTarget, DiscoveryResult, TestResult } from '../../network/discovery/types';
-import { parseRouterOs, routerosUptime } from './routeros';
+import type { Adapter, AdapterTarget, CounterSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import { parseRouterOs, parseRouterOsCounters, routerosUptime } from './routeros';
 import { str } from './http';
 
 /**
@@ -220,6 +220,17 @@ export function routerOsApiAdapter(): Adapter {
           latencyMs: Date.now() - started,
           facts: { sysName: str(id?.name), osVersion: str(res?.version)?.split(' ')[0] ?? null, uptimeSeconds: routerosUptime(res?.uptime), vendor: 'MikroTik' },
         };
+      } finally {
+        c.close();
+      }
+    },
+    async counters(t): Promise<CounterSnapshot> {
+      const c = await open(t);
+      try {
+        const [resource] = await c.print('/system/resource');
+        const rows = await c.print('/interface');
+        if (!rows.length) throw new Error('RouterOS returned no interfaces');
+        return parseRouterOsCounters(resource ?? null, rows);
       } finally {
         c.close();
       }

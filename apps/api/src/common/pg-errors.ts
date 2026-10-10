@@ -52,6 +52,7 @@ const CONSTRAINT_MESSAGES: Record<string, { status: 400 | 409; error: string; me
   devices_no_overlap_rear: { status: 409, error: 'placement_conflict', message: 'Those rack units are already occupied on the rear face' },
   rack_reservations_no_overlap: { status: 409, error: 'reservation_conflict', message: 'That range overlaps an existing reservation' },
   devices_org_asset_tag_uq: { status: 409, error: 'conflict', message: 'Another device already uses this asset tag' },
+  notification_channels_org_name_uq: { status: 409, error: 'duplicate_name', message: 'A notification channel with this name already exists' },
   devices_org_serial_uq: { status: 409, error: 'conflict', message: 'Another device already has this serial number' },
   datacenters_org_code_uq: { status: 409, error: 'conflict', message: 'A datacenter with this code already exists' },
   buildings_dc_name_uq: { status: 409, error: 'conflict', message: 'This datacenter already has a building with that name' },

@@ -148,6 +148,15 @@ Known limitations: the DNS sweep handles pending addresses oldest first across a
 
 PowerDNS API keys and Cloudflare tokens follow the device-credential rules: write-only, encrypted with AAD bound to the organization, server row, type and URL, decrypted only in the worker, redacted from error text. Configuring them needs `dns.manage` (dangerous, staff-only). Give Cloudflare tokens only Zone → DNS → Edit (and Zone → Read) on the zones DCIM manages.
 
+## Phase 4: monitoring, alerts and notifications
+
+- **Read-only polling.** Polling reuses the device credentials above and the same read-only adapters (SNMP GET/GETBULK, HTTP GET, RouterOS API `…/print`, NX-API `show`). Nothing in monitoring or alerting can shut a port, change a route or otherwise write to a device; alerts only record and notify.
+- **Notification secrets.** SMTP passwords, webhook signing secrets, Slack webhook URLs (the URL is the secret) and Telegram bot tokens are encrypted with AAD bound to organization, channel id and kind, never returned (the API reports only non-secret settings), never written to audit metadata, and decrypted only by the worker. Editing a channel requires entering the secret again. Configuring channels needs `monitoring.configure`.
+- **Outbound destinations.** Webhook and SMTP destinations that resolve to loopback, private, CGNAT, link-local (including cloud metadata 169.254.169.254) or multicast addresses are refused unless the worker runs with `CDCIM_NOTIFY_ALLOW_PRIVATE=true` (for internal receivers). Slack URLs must be `https://hooks.slack.com/…`. Redirects are not followed and the receiver's response body is not stored (only the HTTP status). The check resolves the name before connecting, so DNS rebinding between check and connect is not prevented; run the worker with egress limited to what it needs.
+- **Signed webhooks.** Each request carries `X-CDCIM-Timestamp` and `X-CDCIM-Signature: sha256=<hex HMAC-SHA256(secret, timestamp + "." + body)>`. Receivers should reject old timestamps.
+- **Live stream tenancy.** Customers receive only rates for ports on their devices or cabled directly to them, without device error text, and no alert events. Organization totals, polling health, alerts, rules, channels and settings are staff-only. Streams end after 15 minutes so revoked sessions and changed permissions take effect on reconnect; a user can hold at most 10 streams.
+- **Independent review.** A reviewer audited Phase 4 before release. Fixed: a database outage during a failed poll could crash the worker; link state was shown from stale readings; alerts on devices or ports no longer polled could never resolve; notification destinations could reach internal hosts and echo their responses; rollups didn't catch up after worker downtime; a slow notification batch could be re-claimed by a second worker; alert streaks continued across long gaps; a rule edited during evaluation could still raise an alert under the old definition; streams had no per-user limit or lifetime. Regression tests are in `monitoring.e2e.test.ts`.
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.
@@ -157,6 +166,6 @@ PowerDNS API keys and Cloudflare tokens follow the device-credential rules: writ
 - The audit hash chain detects edits and deletions in the middle of the log, but not removal of the newest records, because the verifier has no external anchor. Phase 9 adds periodic export of the chain head (to object storage or email) as that anchor.
 
 - API keys for machine clients are not implemented yet (Phase 8). Today, only interactive sessions authenticate.
-- Rate limiting is per API process (in memory). With multiple API processes, move the throttler storage to Redis (planned with Phase 4's worker split).
+- Rate limiting is per API process (in memory). With multiple API processes, move the throttler storage to Redis (not done in Phase 4; the supported install runs one API process; moved to Phase 9).
 - `@nestjs/swagger` 11 pulls in a `js-yaml` version with a moderate CPU-exhaustion advisory. It is reachable only through the Swagger UI, which is **disabled in production by default** (`ENABLE_SWAGGER`). The fix requires `@nestjs/swagger` 12 (breaking change) and is scheduled for the next dependency update.
 - Backup encryption, credential rotation tooling and management-network isolation checks are Phase 9 items.

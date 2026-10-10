@@ -1,6 +1,6 @@
 import type { InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
-import { DeviceHttpError, basicAuth, bool, deviceRequest, int, normalizeMac, speed, str } from './http';
+import type { Adapter, AdapterTarget, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import { DeviceHttpError, basicAuth, bool, counter, deviceRequest, int, normalizeMac, speed, str } from './http';
 
 /**
  * MikroTik RouterOS v7 REST API (read-only: GET only).
@@ -118,6 +118,32 @@ export function parseRouterOs(data: { resource: Row | null; identity: Row | null
   };
 }
 
+/** Interface counters from /interface (RouterOS counters are 64-bit). Speed comes from inventory. */
+export function parseRouterOsCounters(resource: Row | null, rows: Row[]): CounterSnapshot {
+  return {
+    uptimeSeconds: routerosUptime(resource?.uptime),
+    interfaces: rows
+      .filter((r) => str(r.name))
+      .map((r) => ({
+        name: String(r.name),
+        inOctets: counter(r['rx-byte']),
+        outOctets: counter(r['tx-byte']),
+        inPkts: counter(r['rx-packet']),
+        outPkts: counter(r['tx-packet']),
+        inErrors: counter(r['rx-error']),
+        outErrors: counter(r['tx-error']),
+        inDiscards: counter(r['rx-drop']),
+        outDiscards: counter(r['tx-drop']),
+        bits: 64 as const,
+        errorBits: 64 as const,
+        speedBps: null,
+        operUp: bool(r.running),
+      })),
+  };
+}
+
+export const ROUTEROS_COUNTER_PROPS = 'name,rx-byte,tx-byte,rx-packet,tx-packet,rx-error,tx-error,rx-drop,tx-drop,running';
+
 export function routerOsAdapter(): Adapter {
   const get = async (t: AdapterTarget, path: string) => {
     const r = await deviceRequest(t, 'GET', `/rest${path}`, { headers: { Authorization: basicAuth(t.username, t.secret.password) }, defaultPort: (t.params.scheme ?? 'https') === 'https' ? 443 : 80 });
@@ -129,6 +155,12 @@ export function routerOsAdapter(): Adapter {
       const res = (await get(t, '/system/resource')) as Row;
       const id = (await get(t, '/system/identity').catch(() => null)) as Row | null;
       return { ok: true, message: `Connected: ${str(id?.name) ?? 'RouterOS'} — ${str(res['board-name']) ?? ''} RouterOS ${str(res.version) ?? '?'}`.trim(), latencyMs: Date.now() - started, facts: { sysName: str(id?.name), osVersion: str(res.version)?.split(' ')[0] ?? null, uptimeSeconds: routerosUptime(res.uptime), vendor: 'MikroTik' } };
+    },
+    async counters(t): Promise<CounterSnapshot> {
+      const resource = (await get(t, '/system/resource')) as Row;
+      const rows = await get(t, `/interface?.proplist=${ROUTEROS_COUNTER_PROPS}`);
+      if (!Array.isArray(rows)) throw new Error('RouterOS returned no interfaces');
+      return parseRouterOsCounters(resource, rows as Row[]);
     },
     async discover(t): Promise<DiscoveryResult> {
       const warnings: string[] = [];

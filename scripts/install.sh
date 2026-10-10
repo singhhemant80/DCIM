@@ -235,10 +235,10 @@ RestrictSUIDSGID=true
 [Install]
 WantedBy=multi-user.target
 EOF
-  # Discovery worker: the only process that decrypts device credentials and talks to devices (read-only).
+  # Background worker: the only process that decrypts credentials and talks to devices (read-only): discovery, polling, alerts, notifications, DNS.
   cat >/etc/systemd/system/$SERVICE-worker.service <<EOF
 [Unit]
-Description=Crapplet DCIM discovery worker
+Description=Crapplet DCIM worker (discovery, monitoring, alerts, DNS)
 After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
 

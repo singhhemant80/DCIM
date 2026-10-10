@@ -1,6 +1,6 @@
 # Database design
 
-PostgreSQL 16. The schema is defined in [`apps/api/src/db/schema.ts`](../apps/api/src/db/schema.ts) (Drizzle ORM), and SQL migrations are checked in under [`apps/api/drizzle/`](../apps/api/drizzle). High-frequency telemetry (Phase 4+) goes into TimescaleDB hypertables in the same database, so one backup covers everything and joins to inventory stay simple.
+PostgreSQL 16. The schema is defined in [`apps/api/src/db/schema.ts`](../apps/api/src/db/schema.ts) (Drizzle ORM), and SQL migrations are checked in under [`apps/api/drizzle/`](../apps/api/drizzle). High-frequency telemetry (Phase 4+) is stored in the same database (plain tables with worker-built rollups; TimescaleDB was planned but is not required, see Phase 4 below), so one backup covers everything and joins to inventory stay simple.
 
 ## Conventions
 
@@ -131,3 +131,23 @@ device_credentials(id, device_id, kind ('snmp_v2c'|'snmp_v3'|'redfish'|'ipmi'|'r
 
 IP allocation runs in a serializable transaction with `SELECT … FOR UPDATE SKIP LOCKED` on candidate addresses, so concurrent reservations cannot hand out the same IP.
 
+
+### Phase 4: network monitoring (implemented)
+
+Migration `0008_monitoring.sql`.
+
+**Deviation from the plan:** the plan named TimescaleDB hypertables and continuous aggregates. The target servers run stock PostgreSQL (Ubuntu 22.04 packages) and TimescaleDB is not installed, so Phase 4 uses plain tables: a raw table plus two rollup tables built by the worker, with retention by `DELETE`. Volumes this covers comfortably: 2,000 ports at 60 s is about 2.9 M raw rows a day (7-day default retention ≈ 20 M rows, indexed by `(interface_id, at)` and `at`). Moving to TimescaleDB later is a storage change only (same columns); the rollup and retention jobs would be replaced by continuous aggregates and retention policies.
+
+| Table | Purpose and rules |
+|---|---|
+| `device_monitoring` | One row per polled device: credential kind, interval (30–3600 s, check constraint), `next_poll_at` (claimed with `FOR UPDATE SKIP LOCKED` and moved forward in the same statement), health (`last_ok_at`, `last_error`, `consecutive_failures`, duration, ports matched/reported). Trigger keeps it in the device's organization |
+| `interface_counters` | Last raw reading per interface (`numeric(20)` counters, uptime, counter width, speed, oper state): the baseline for the next rate. Also the latest rate (or the reason there is none: `first`, `reset`, `gap`, `implausible`, …) for fast "now" views |
+| `interface_rates` | One row per interface per successful poll: in/out bit/s, packets/s, errors/s, discards/s, utilization, speed, the seconds it covers, and flags (`wrap`, `speed_unknown`, `speed_changed`). PK `(interface_id, at)`. Default retention 7 days |
+| `interface_rates_5m`, `interface_rates_1h` | Time-weighted averages (weighted by seconds covered), maxima, error rates, sample count and `covered_seconds` (so a partial bucket is visible as partial). Built by the worker every minute with idempotent upserts over recent buckets, catching up from the newest existing bucket after downtime. Defaults 90 days and 730 days |
+| `monitoring_settings` | Retention per organization (raw 1–90 d, 5-minute 7–730 d, hourly 30–1825 d) |
+| `alert_rules` | Metric, comparator, threshold, `for_seconds`, `min_samples`, `clear_samples`, severity, scope (all, totals, datacenter, devices, interfaces), notification channels |
+| `alert_state` | Per (rule, target) streak: `breach_since`, `breach_count`, `clear_count`, last value and time |
+| `alerts` | Firing and resolved alerts; partial unique index `(rule_id, target_key) WHERE status = 'firing'` so a target can't have two open alerts for one rule; `suppressed` when raised in maintenance; acknowledgement fields |
+| `maintenance_windows` | Start/end (end after start, at most 31 days), scope all, datacenter or devices |
+| `notification_channels` | Email (SMTP), signed webhook, Slack, Telegram. `config` holds non-secret settings; `secret_enc` is SecretBox ciphertext bound to organization, channel id and kind |
+| `notifications` | Outbox: pending/sent/failed, attempts, `next_attempt_at` (exponential backoff, 6 attempts), last error. Sent and failed rows are deleted after 30 days |

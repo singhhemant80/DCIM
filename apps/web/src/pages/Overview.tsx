@@ -11,6 +11,8 @@ import { STATE_TONE, daysUntil } from '../lib/dcim';
 import { CustomerEquipment } from './Hardware';
 import { OccupancyBar } from './Racks';
 import { formatBps } from '../lib/network';
+import { bps, type AlertSummaryT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
+import { RateChart } from '../components/RateChart';
 
 interface DcimSummary {
   counts: { datacenters: number; rooms: number; racks: number; devices: number; unracked: number };
@@ -100,6 +102,46 @@ function PhysicalPanel() {
           )}
         </div>
       </div>
+    </Panel>
+  );
+}
+
+function BandwidthPanel() {
+  const q = useQuery({ queryKey: ['overview', 'bandwidth'], queryFn: () => api.get<{ now: TotalsT; history: TotalsHistoryT; alerts: AlertSummaryT } | null>('/overview/bandwidth'), refetchInterval: 30_000 });
+  if (q.isLoading) return <Loading />;
+  if (q.error) return <ErrorNote error={q.error} />;
+  const d = q.data;
+  if (!d) return null;
+  const now = Date.now();
+  return (
+    <Panel
+      title="Bandwidth (measured)"
+      actions={
+        <span className="flex gap-3 text-[13px]">
+          <Link to="/network-monitoring" className="text-accent hover:underline">
+            Ports
+          </Link>
+          <Link to="/alerts" className="text-accent hover:underline">
+            Alerts
+          </Link>
+        </span>
+      }
+    >
+      {d.now.ports === 0 ? (
+        <p className="text-[13px] text-ink-2">
+          No uplink or transit ports are counted yet. Enable polling in <Link to="/alerts?tab=polling" className="text-accent hover:underline">Monitoring &amp; Alerts</Link> and mark uplink ports with <em>Count in totals</em>.
+        </p>
+      ) : (
+        <>
+          <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+            <Stat label="Inbound now" value={bps(d.now.inBps)} note={`${d.now.freshPorts} of ${d.now.ports} uplink ports reporting`} tone={d.now.stalePorts ? 'warn' : undefined} />
+            <Stat label="Outbound now" value={bps(d.now.outBps)} />
+            <Stat label="95th pct in, 24 h" value={bps(d.history.p95.inBps)} note={`${d.history.p95.samples} 5-minute samples`} />
+            <Stat label="Alerts firing" value={d.alerts.firing} tone={d.alerts.critical ? 'crit' : d.alerts.firing ? 'warn' : 'ok'} note={d.alerts.firing ? `${d.alerts.critical} critical` : 'All clear'} />
+          </dl>
+          {d.history.points.length > 1 && <RateChart label="Total traffic, last 24 hours" points={d.history.points.map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps }))} stepSeconds={d.history.stepSeconds} from={now - 86400_000} to={now} p95={d.history.p95} />}
+        </>
+      )}
     </Panel>
   );
 }
@@ -197,13 +239,14 @@ function StaffOverview() {
     <>
       <PageHeader
         title="Overview"
-        description={`${me!.organization.name}. Bandwidth and power figures appear here as those modules go live; nothing on this page is sample data.`}
+        description={`${me!.organization.name}. Bandwidth is measured from interface counters; power figures appear when that module goes live. Nothing on this page is sample data.`}
       />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
       {o && (
         <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
           <div className="flex flex-col gap-5">
+            {can('monitoring.read') && <BandwidthPanel />}
             {can('dcim.read') && <PhysicalPanel />}
             <NetworkPanel />
             <Panel title="Customers and access">
@@ -266,7 +309,7 @@ function CustomerOverview() {
   const c = q.data;
   return (
     <>
-      <PageHeader title="Your account" description="Power and bandwidth for your account will be added here as those modules go live." />
+      <PageHeader title="Your account" description="Power for your account will be added here when that module goes live. Bandwidth is on the Network Monitoring page." />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
       {c && (
@@ -293,6 +336,10 @@ function CustomerOverview() {
       <p className="mt-5 text-[13px]">
         <Link to="/ipam" className="text-accent hover:underline">
           View your IP addresses
+        </Link>
+        {' · '}
+        <Link to="/network-monitoring" className="text-accent hover:underline">
+          View your bandwidth
         </Link>
       </p>
     </>

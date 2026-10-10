@@ -65,9 +65,22 @@ const macBuf = (m: string) => Buffer.from(m.replace(/:/g, ''), 'hex');
 export interface RunningAgent {
   port: number;
   close: () => void;
+  /** Sets an interface counter (only with `counters` enabled). */
+  setCounter: (ifIndex: number, counter: CounterName, value: bigint) => void;
+  setOper: (ifIndex: number, up: boolean) => void;
+  /** sysUpTime in hundredths of a second. */
+  setUptime: (ticks: number) => void;
 }
+export type CounterName = 'inOctets' | 'outOctets' | 'inPkts' | 'outPkts' | 'inErrors' | 'outErrors' | 'inDiscards' | 'outDiscards';
 
-export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM, opts: { community?: string; v3User?: { name: string; authKey: string; privKey: string } } = {}): Promise<RunningAgent> {
+const c64 = (v: bigint) => {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64BE(BigInt.asUintN(64, v));
+  return b;
+};
+const c32 = (v: bigint) => Number(BigInt.asUintN(32, v));
+
+export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM, opts: { community?: string; v3User?: { name: string; authKey: string; privKey: string }; counters?: 'hc' | '32' } = {}): Promise<RunningAgent> {
   const agent = snmp.createAgent({ port, address: '127.0.0.1', disableAuthorization: false }, () => undefined);
   const auth = agent.getAuthorizer();
   if (opts.community) auth.addCommunity(opts.community);
@@ -115,21 +128,41 @@ export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM,
       { number: 6, name: 'ifPhysAddress', type: T.OctetString },
       { number: 7, name: 'ifAdminStatus', type: T.Integer },
       { number: 8, name: 'ifOperStatus', type: T.Integer },
+      ...(opts.counters
+        ? [
+            { number: 10, name: 'ifInOctets', type: T.Counter32 },
+            { number: 11, name: 'ifInUcastPkts', type: T.Counter32 },
+            { number: 13, name: 'ifInDiscards', type: T.Counter32 },
+            { number: 14, name: 'ifInErrors', type: T.Counter32 },
+            { number: 16, name: 'ifOutOctets', type: T.Counter32 },
+            { number: 17, name: 'ifOutUcastPkts', type: T.Counter32 },
+            { number: 19, name: 'ifOutDiscards', type: T.Counter32 },
+            { number: 20, name: 'ifOutErrors', type: T.Counter32 },
+          ]
+        : []),
     ],
     ['ifIndex'],
-    sim.ifaces.map((i) => [i.ifIndex, i.name, i.type, i.mtu, Math.min(i.speedMbps * 1_000_000, 4_294_967_295), macBuf(i.mac), i.admin, i.oper]),
+    sim.ifaces.map((i) => [i.ifIndex, i.name, i.type, i.mtu, Math.min(i.speedMbps * 1_000_000, 4_294_967_295), macBuf(i.mac), i.admin, i.oper, ...(opts.counters ? [0, 0, 0, 0, 0, 0, 0, 0] : [])]),
   );
   table(
     'ifXTable',
     '1.3.6.1.2.1.31.1.1.1',
     [
       { number: 1, name: 'ifName', type: T.OctetString },
+      ...(opts.counters === 'hc'
+        ? [
+            { number: 6, name: 'ifHCInOctets', type: T.Counter64 },
+            { number: 7, name: 'ifHCInUcastPkts', type: T.Counter64 },
+            { number: 10, name: 'ifHCOutOctets', type: T.Counter64 },
+            { number: 11, name: 'ifHCOutUcastPkts', type: T.Counter64 },
+          ]
+        : []),
       { number: 15, name: 'ifHighSpeed', type: T.Gauge },
       { number: 18, name: 'ifAlias', type: T.OctetString },
       { number: 100, name: 'ifXIndex', type: T.Integer, access: NA },
     ],
     ['ifXIndex'],
-    sim.ifaces.map((i) => [i.name, i.speedMbps, i.alias ?? '', i.ifIndex]),
+    sim.ifaces.map((i) => [i.name, ...(opts.counters === 'hc' ? [c64(0n), c64(0n), c64(0n), c64(0n)] : []), i.speedMbps, i.alias ?? '', i.ifIndex]),
   );
   table(
     'ipAddrTable',
@@ -200,5 +233,23 @@ export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM,
   );
   // Give the socket a moment to bind.
   await new Promise((r) => setTimeout(r, 50));
-  return { port, close: () => agent.close() };
+  const hcCol: Partial<Record<CounterName, number>> = { inOctets: 6, inPkts: 7, outOctets: 10, outPkts: 11 };
+  const col32: Record<CounterName, number> = { inOctets: 10, inPkts: 11, inDiscards: 13, inErrors: 14, outOctets: 16, outPkts: 17, outDiscards: 19, outErrors: 20 };
+  return {
+    port,
+    close: () => {
+      try {
+        agent.close();
+      } catch {
+        // already closed
+      }
+    },
+    setCounter: (ifIndex, counter, value) => {
+      if (!opts.counters) throw new Error('Counters are not enabled on this simulator');
+      if (opts.counters === 'hc' && hcCol[counter]) mib.setTableSingleCell('ifXTable', hcCol[counter]!, [ifIndex], c64(value));
+      mib.setTableSingleCell('ifTable', col32[counter], [ifIndex], c32(value));
+    },
+    setOper: (ifIndex, up) => mib.setTableSingleCell('ifTable', 8, [ifIndex], up ? 1 : 2),
+    setUptime: (ticks) => mib.setScalarValue('sysUpTime', ticks),
+  };
 }

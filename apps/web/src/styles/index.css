@@ -34,6 +34,8 @@
   --color-crit-soft: var(--crit-soft);
   --color-est: var(--est);
   --color-est-soft: var(--est-soft);
+  --color-rx: var(--rx);
+  --color-tx: var(--tx);
   --color-rack: var(--rack);
   --color-rack-ink: var(--rack-ink);
   --color-led-off: var(--led-off);
@@ -60,6 +62,9 @@
   --crit: #b3301f;
   --crit-soft: rgb(192 57 43 / 0.13);
   --est: #5d4fa0;
+  /* Traffic charts: inbound (RX) and outbound (TX). */
+  --rx: #1d7fb8;
+  --tx: #c2571a;
   --est-soft: rgb(106 92 168 / 0.14);
   --rack: rgb(22 32 72 / 0.8);
   --rack-ink: #d3dbe6;
@@ -101,6 +106,8 @@
     --crit: #ff8a78;
     --crit-soft: rgb(240 119 102 / 0.16);
     --est: #b9adf5;
+    --rx: #5cc0f5;
+    --tx: #f39a5c;
     --est-soft: rgb(171 158 240 / 0.16);
     --rack: rgb(6 10 20 / 0.55);
     --rack-ink: #c3cedb;
@@ -142,6 +149,8 @@
   --crit: #ff8a78;
   --crit-soft: rgb(240 119 102 / 0.16);
   --est: #b9adf5;
+  --rx: #5cc0f5;
+  --tx: #f39a5c;
   --est-soft: rgb(171 158 240 / 0.16);
   --rack: rgb(6 10 20 / 0.55);
   --rack-ink: #c3cedb;

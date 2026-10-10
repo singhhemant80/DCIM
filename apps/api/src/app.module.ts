@@ -37,6 +37,10 @@ import { IpamService } from './network/ipam.service';
 import { CredentialsService } from './network/credentials.service';
 import { DiscoveryService } from './network/discovery/discovery.service';
 import { DiscoveryQueue } from './network/discovery/queue';
+import { AlertsController, MonitoringController } from './monitoring/monitoring.controllers';
+import { MonitoringService } from './monitoring/monitoring.service';
+import { AlertsService } from './monitoring/alerts.service';
+import { MonitoringStream } from './monitoring/stream.service';
 import { RolesController } from './roles/roles.controller';
 import { RolesService } from './roles/roles.service';
 import { SettingsController } from './settings/settings.controller';
@@ -82,6 +86,8 @@ export class AppModule {
         DiscoveryController,
         IpamController,
         DnsController,
+        MonitoringController,
+        AlertsController,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
@@ -112,6 +118,9 @@ export class AppModule {
         DiscoveryQueue,
         DiscoveryService,
         DnsService,
+        MonitoringService,
+        AlertsService,
+        MonitoringStream,
         // Order matters: rate limit → authenticate → authorize.
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthGuard },

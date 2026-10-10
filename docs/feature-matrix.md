@@ -2,20 +2,20 @@
 
 Updated at the end of every phase. **Done** means it has frontend, backend logic, persistence, access control, error handling and automated tests. Anything less is listed as Partial or Not started, with the reason.
 
-Last updated: Phase 3, 9 October 2026.
+Last updated: Phase 4, 10 October 2026.
 
 ## Navigation sections
 
 | # | Section | Status | Phase | Notes |
 |---|---|---|---|---|
-| 1 | Overview Dashboard | **Partial** | 1 → 4–5 | Live counts: physical capacity, devices by state and category, warranty expiry, low spare parts, network devices, cables, circuits and committed transit, IPv4 utilization and nearly-full subnets, customers, users, security activity, audit integrity. Bandwidth and power arrive with Phases 4–5. |
+| 1 | Overview Dashboard | **Partial** | 1 → 5 | Live counts: physical capacity, devices by state and category, warranty expiry, low spare parts, network devices, cables, circuits and committed transit, IPv4 utilization and nearly-full subnets, customers, users, security activity, audit integrity; measured bandwidth now, last 24 h with 95th percentile, alerts firing (Phase 4). Power arrives with Phase 5. |
 | 2 | Datacenters | **Done** | 2 | Create, edit, delete (only when empty), counts per site |
 | 3 | Buildings and Rooms | **Done** | 2 | Buildings, rooms (floor size), rows; deletes refused while in use |
 | 4 | Floor Plans | **Done** | 2 | Tile grid per room; drag or click to position racks; fill colour by occupancy |
 | 5 | Racks and Rack Elevation | **Done** | 2 | Front/rear elevation, drag-and-drop placement, reservations, dedicated racks, rack relocation, history |
 | 6 | Servers and Hardware Inventory | **Done** | 2 | Devices with full spec, lifecycle with configurable rules, history, CSV import/export, bulk edit, QR labels, models, spare parts. Attachments (S3) pending, see below |
 | 7 | Network Infrastructure | **Done** | 3 | Network devices, physical and logical interfaces (LAG, VLAN, bridge, tunnel, loopback), cables, VLANs, VRFs, providers and circuits with history, topology, write-only access credentials, read-only discovery with preview and apply. Staff only. Live traffic is Phase 4 |
-| 8 | Network Monitoring | Not started | 4 | |
+| 8 | Network Monitoring | **Done** | 4 | Live per-port RX/TX, utilization, errors/discards and link state measured from counters (SNMP, RouterOS REST/API, FortiOS, NX-API); SSE live updates; history charts (1 h–30 d) with 95th percentile; totals over uplink ports with LAG de-duplication; live rates on the device page; customers see their own ports and the ports cabled to them. Simulator-tested only |
 | 9 | IP Address Management | **Done** | 3 | IPv4/IPv6 prefixes with hierarchy and utilization, VRFs, pools, atomic next-free allocation, reservations with expiry, release with history, conflict report, CSV import/export. Customers see their own subnets and addresses read-only |
 | 10 | Power Consumption | Not started | 5 | |
 | 11 | Colocation Management | Not started | 7 | |
@@ -25,7 +25,7 @@ Last updated: Phase 3, 9 October 2026.
 | 15 | Virtualizor Integration | Not started | 6 | |
 | 16 | Customers and Tenants | **Done** | 1 | List, search, filter, create and edit; closing a customer revokes its sessions |
 | 17 | Orders and Services | Not started | 7 | |
-| 18 | Monitoring and Alerts | Not started | 4 | |
+| 18 | Monitoring and Alerts | **Done** | 4 | Alert rules (utilization, traffic, errors, discards, port down, device unreachable) with duration and consecutive-sample logic, acknowledgement, maintenance windows with suppression, notifications by email, signed webhook, Slack and Telegram with retries, polling configuration and health, retention settings. Staff only |
 | 19 | Maintenance and Incidents | Not started | 8 | |
 | 20 | Remote Hands and Support Tickets | Not started | 7 | |
 | 21 | Automation and Workflows | Not started | 8 | |
@@ -60,7 +60,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Seed and admin bootstrap CLIs | Done | run manually during verification |
 | Production install script and systemd units | **Partial** | Units and nginx config written; full installer and tested procedure are Phase 9 |
 | API keys for machine clients | Not started | Phase 8 |
-| Distributed rate limiting (Redis store) | Not started | Phase 4 |
+| Distributed rate limiting (Redis store) | Not started | Moved to Phase 9 (the supported install runs a single API process) |
 
 ## Phase 2 capabilities
 
@@ -78,7 +78,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Lifecycle Planned → … → Retired with configurable transition rules and history | Done | `dcim.e2e` |
 | Spare-parts inventory with atomic stock movements | Done | `dcim.e2e` (concurrent withdrawals) |
 | CSV import (dry run against the DB) and export (formula-injection safe), bulk edit | Done | `dcim.e2e`, `dcim-regressions.e2e`, `csv.test` |
-| Warranty reminders | Partial | Shown on the overview and filterable; email notifications come with the notification module (Phase 4/8) |
+| Warranty reminders | Partial | Shown on the overview and filterable. Notification channels exist since Phase 4, but warranty reminders are not sent through them yet (Phase 8) |
 | QR codes and printable labels | Done | `dcim.e2e` |
 | Customer view of own equipment (no internal fields) | Done | `dcim.e2e` |
 | Power and network connection records | Partial | Network connections (cables, ports, circuits) done in Phase 3; power connections and readings in Phase 5 |
@@ -116,19 +116,44 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Independent review of Phase 3 (7 confirmed defects + plausible items) | Done | All fixed; `network-regressions.e2e` |
 | Independent review of the Phase 3 completion (4 confirmed defects + plausible items) | Done | All fixed; regression tests in `dns.e2e`, `network-automation.e2e` |
 
+## Phase 4 capabilities
+
+| Capability (brief §11) | Status | Tests |
+|---|---|---|
+| Polling in the worker, independent of browsers; due devices claimed with `FOR UPDATE SKIP LOCKED`; per-device interval 30 s–1 h; bounded concurrency; per-poll timeout | Done | `monitoring.e2e` (racing claims, `pollDue` with no client) and a live run of the built worker against the simulator |
+| Counter collection: SNMP IF-MIB HC (64-bit per port, 32-bit fallback), RouterOS REST and API, FortiOS REST, NX-API | Done | `monitoring.e2e` (SNMP agent with changing counters, RouterOS mock, API/FortiOS/NX-API mocks) |
+| Rate engine: deltas, 32-bit wrap, reset on restart, gaps (> 3 intervals), duplicates, implausible spikes, speed unknown/changed | Done | `rate-engine.test` (12), `monitoring.e2e` |
+| Raw rates, 5-minute and hourly time-weighted rollups (catching up after downtime), per-organization retention | Done | `monitoring.e2e` |
+| 95th percentile (nearest rank, complete 5-minute buckets) | Done | `rate-engine.test`, `monitoring.e2e` |
+| Totals over count-in-totals ports with LAG de-duplication; stale ports excluded and reported | Done | `rate-engine.test`, `monitoring.e2e` |
+| SSE live updates with tenant filtering, per-user stream limit and stream lifetime | Done | `monitoring.e2e` |
+| Port table, port charts (gaps drawn as breaks), totals chart, overview panel, live rates on the device page | Done | `app.test`; screenshots at desktop and phone width |
+| Alert rules with `forSeconds` + consecutive samples + clear samples; missing data neither fires nor clears; streak reset across gaps | Done | `monitoring.e2e` |
+| Device-unreachable alerts from consecutive failed polls | Done | `monitoring.e2e` |
+| Maintenance windows: suppression, and notification when the window ends while still firing | Done | `monitoring.e2e` |
+| Acknowledgement (recorded, never acts on devices) | Done | `monitoring.e2e` |
+| Notification outbox with retries and backoff: email (SMTP), signed webhook, Slack, Telegram; channel test; private-address guard | Done for email and webhook (tested against a local SMTP server and HTTP receiver); Slack and Telegram implemented but only their request shape is covered by code review, not by a test against the real services | `monitoring.e2e` |
+| Alerts closed when their target is no longer polled | Done | `monitoring.e2e` |
+| Environmental sensors, optical levels, CPU/memory, BGP session alerts | Not started | Need further collectors; candidates for a later phase |
+| TimescaleDB storage | Not done (deviation) | Plain PostgreSQL tables with worker rollups; see [database](database.md#phase-4-network-monitoring-implemented) |
+| Independent review of Phase 4 (6 confirmed defects + plausible items) | Done | All fixed; regression tests in `monitoring.e2e` |
+
 ## Integration compatibility matrix
 
 "Simulator tested" means the collector passed automated tests against a protocol simulator built from published documentation (a real SNMP agent in-process, HTTP mocks of the vendor APIs). It does not prove compatibility with a specific firmware release. Nothing is marked hardware-verified without a recorded run against the device.
 
 | Integration | Operations | Simulator tested | Hardware verified |
 |---|---|---|---|
-| SNMP v2c (any device) | GET/GETBULK: system, IF-MIB, IP-MIB, LAG-MIB, LLDP-MIB, CISCO-CDP-MIB, BGP4-MIB, ENTITY-MIB | Yes (`adapters.e2e`, `network.e2e`) | No |
+| SNMP v2c (any device) | GET/GETBULK: system, IF-MIB, IP-MIB, LAG-MIB, LLDP-MIB, CISCO-CDP-MIB, BGP4-MIB, ENTITY-MIB; counters: ifXTable HC, ifTable | Yes (`adapters.e2e`, `network.e2e`, `monitoring.e2e`) | No |
 | SNMP v3 authPriv (SHA/AES tested; MD5, SHA-2, AES-256 selectable) | same | Yes (SHA + AES) | No |
-| MikroTik RouterOS 7 REST | GET `/rest/system/*`, `/interface`, `/interface/ethernet`, `/interface/bonding`, `/ip/address`, `/ipv6/address`, `/ip/neighbor`, `/routing/bgp/session` | Yes (`network.e2e`) | Partial: CCR2004-1G-12S+2XS on RouterOS 7.24.5 answered `/rest/system/resource` with the fields the parser reads; full discovery run pending |
-| MikroTik RouterOS API (`api`, `api-ssl`) | `/login` and the same paths as `…/print` (client refuses anything else) | Yes (`network-automation.e2e`) | No |
-| Fortinet FortiOS REST | GET `monitor/system/status`, `cmdb/system/interface`, `monitor/system/interface`, `monitor/router/bgp/neighbors`, `monitor/network/lldp/neighbors` | Yes (`adapters.e2e`) | No (FortiGate 40F pending) |
-| Cisco NX-API (`cli_show`) | `show version`, `show interface`, `show ip interface vrf all`, `show port-channel summary`, `show lldp neighbors detail`, `show cdp neighbors detail`, `show ip bgp summary vrf all` | Yes (`adapters.e2e`) | No (Nexus 9372TX pending) |
+| MikroTik RouterOS 7 REST | GET `/rest/system/*`, `/interface`, `/interface/ethernet`, `/interface/bonding`, `/ip/address`, `/ipv6/address`, `/ip/neighbor`, `/routing/bgp/session`; counters: `/interface` byte/packet/error/drop counters | Yes (`network.e2e`, `monitoring.e2e`) | Partial: CCR2004-1G-12S+2XS on RouterOS 7.24.5 answered `/rest/system/resource` with the fields the parser reads; full discovery run pending |
+| MikroTik RouterOS API (`api`, `api-ssl`) | `/login` and the same paths as `…/print` (client refuses anything else) | Yes (`network-automation.e2e`, `monitoring.e2e`) | No |
+| Fortinet FortiOS REST | GET `monitor/system/status`, `cmdb/system/interface`, `monitor/system/interface`, `monitor/router/bgp/neighbors`, `monitor/network/lldp/neighbors` | Yes (`adapters.e2e`, counters in `monitoring.e2e`) | No (FortiGate 40F pending) |
+| Cisco NX-API (`cli_show`) | `show version`, `show interface`, `show ip interface vrf all`, `show port-channel summary`, `show lldp neighbors detail`, `show cdp neighbors detail`, `show ip bgp summary vrf all` | Yes (`adapters.e2e`, counters in `monitoring.e2e`) | No (Nexus 9372TX pending) |
 | Cisco IOS (4500-X, 2960-X) | via SNMP adapter | Through the SNMP tests | No |
 | PowerDNS authoritative (HTTP API v1) | zone read, rrset GET/PATCH (REPLACE/DELETE) on records marked as DCIM's | Yes (`dns.e2e`) | No |
 | Cloudflare DNS API v4 | token verify, zone read, record list/create/delete (records with DCIM's comment) | Yes (`dns.e2e`) | No |
+| SMTP (notifications) | STARTTLS / TLS / none, optional auth | Yes (local SMTP server in `monitoring.e2e`) | No |
+| Webhook (notifications) | POST JSON, HMAC-SHA256 signature | Yes (`monitoring.e2e`) | No |
+| Slack incoming webhook, Telegram Bot API | POST `{ text }`; `sendMessage` | No (implemented; not exercised against the services) | No |
 | Redfish, IPMI, Proxmox, Virtualizor, WHMCS | — | Not started | Not started |

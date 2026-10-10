@@ -1,6 +1,6 @@
 import type { InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
-import { DeviceHttpError, asArray, basicAuth, deviceRequest, int, normalizeMac, str } from './http';
+import type { Adapter, AdapterTarget, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import { DeviceHttpError, asArray, basicAuth, counter, deviceRequest, int, normalizeMac, str } from './http';
 
 /**
  * Cisco NX-OS NX-API (JSON-RPC style "ins_api", type cli_show).
@@ -147,6 +147,36 @@ export function parseNxos(out: Record<string, unknown>, warnings: string[]): Omi
   };
 }
 
+/** Counters from `show interface` (64-bit); SVIs without byte counters are skipped. */
+export function parseNxosCounters(version: Row | null, iface: unknown): CounterSnapshot {
+  const v = version ?? {};
+  const uptime = v.kern_uptm_secs !== undefined ? (int(v.kern_uptm_days) ?? 0) * 86400 + (int(v.kern_uptm_hrs) ?? 0) * 3600 + (int(v.kern_uptm_mins) ?? 0) * 60 + (int(v.kern_uptm_secs) ?? 0) : null;
+  return {
+    uptimeSeconds: uptime,
+    interfaces: rows(iface, 'interface')
+      .map(({ row: r }) => r)
+      .filter((r) => str(r.interface) && counter(r.eth_inbytes) !== null)
+      .map((r) => {
+        const bw = int(r.eth_bw);
+        return {
+          name: String(r.interface),
+          inOctets: counter(r.eth_inbytes),
+          outOctets: counter(r.eth_outbytes),
+          inPkts: counter(r.eth_inpkts),
+          outPkts: counter(r.eth_outpkts),
+          inErrors: counter(r.eth_inerr),
+          outErrors: counter(r.eth_outerr),
+          inDiscards: counter(r.eth_indiscard),
+          outDiscards: counter(r.eth_outdiscard),
+          bits: 64 as const,
+          errorBits: 64 as const,
+          speedBps: bw && bw > 0 ? bw * 1000 : null,
+          operUp: str(r.state) ? str(r.state) === 'up' : null,
+        };
+      }),
+  };
+}
+
 export function nxApiAdapter(): Adapter {
   const show = async (t: AdapterTarget, cmd: string): Promise<Row | null> => {
     const r = await deviceRequest(t, 'POST', '/ins', {
@@ -165,6 +195,11 @@ export function nxApiAdapter(): Adapter {
       const started = Date.now();
       const v = (await show(t, 'show version')) ?? {};
       return { ok: true, message: `Connected: ${str(v.host_name) ?? 'NX-OS'} — ${str(v.chassis_id) ?? ''} ${str(v.nxos_ver_str) ?? str(v.sys_ver_str) ?? ''}`.replace(/\s+/g, ' ').trim(), latencyMs: Date.now() - started, facts: { sysName: str(v.host_name), serial: str(v.proc_board_id), osVersion: str(v.nxos_ver_str) ?? str(v.sys_ver_str), vendor: 'Cisco' } };
+    },
+    async counters(t): Promise<CounterSnapshot> {
+      const version = await show(t, 'show version');
+      const iface = await show(t, 'show interface');
+      return parseNxosCounters(version, iface);
     },
     async discover(t): Promise<DiscoveryResult> {
       const warnings: string[] = [];

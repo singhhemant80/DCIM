@@ -136,3 +136,10 @@ export function asArray<T>(v: T | T[] | undefined | null): T[] {
   if (v === undefined || v === null) return [];
   return Array.isArray(v) ? v : [v];
 }
+
+/** Counter value from an API ("12345", 12345) → bigint; null when absent or not a non-negative integer. */
+export function counter(v: unknown): bigint | null {
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? BigInt(Math.trunc(v)) : null;
+  if (typeof v === 'string' && /^\d+$/.test(v.trim())) return BigInt(v.trim());
+  return null;
+}

@@ -7,7 +7,10 @@ import {
   cidr,
   customType,
   date,
+  doublePrecision,
   index,
+  real,
+  smallint,
   inet,
   integer,
   jsonb,
@@ -1096,3 +1099,280 @@ export type DnsServer = typeof dnsServers.$inferSelect;
 export type DnsZone = typeof dnsZones.$inferSelect;
 export type DeviceCredential = typeof deviceCredentials.$inferSelect;
 export type DiscoveryRun = typeof discoveryRuns.$inferSelect;
+
+/* ============================================================== Phase 4: monitoring */
+
+export const alertSeverityEnum = pgEnum('alert_severity', ['info', 'warning', 'critical']);
+export const alertStatusEnum = pgEnum('alert_status', ['firing', 'resolved']);
+export const channelKindEnum = pgEnum('channel_kind', ['email', 'webhook', 'slack', 'telegram']);
+export const notificationStatusEnum = pgEnum('notification_status', ['pending', 'sent', 'failed']);
+
+/** Polling configuration and health per device. */
+export const deviceMonitoring = pgTable(
+  'device_monitoring',
+  {
+    deviceId: uuid('device_id')
+      .primaryKey()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    orgId: orgRef(),
+    enabled: boolean('enabled').notNull().default(true),
+    credentialKind: credentialKindEnum('credential_kind').notNull(),
+    intervalSeconds: integer('interval_seconds').notNull().default(60),
+    nextPollAt: ts('next_poll_at'),
+    lastPollAt: ts('last_poll_at'),
+    lastOkAt: ts('last_ok_at'),
+    lastError: text('last_error'),
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    lastDurationMs: integer('last_duration_ms'),
+    /** Ports matched / reported at the last successful poll. */
+    lastMatched: integer('last_matched'),
+    lastReported: integer('last_reported'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('device_monitoring_due_idx').on(t.nextPollAt), check('device_monitoring_interval_ck', sql`${t.intervalSeconds} between 30 and 3600`)],
+);
+
+/** Last raw counter reading per interface: the baseline for the next rate. */
+export const interfaceCounters = pgTable('interface_counters', {
+  interfaceId: uuid('interface_id')
+    .primaryKey()
+    .references(() => interfaces.id, { onDelete: 'cascade' }),
+  orgId: orgRef(),
+  sampledAt: ts('sampled_at').notNull(),
+  uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
+  inOctets: numeric('in_octets', { precision: 20, scale: 0 }),
+  outOctets: numeric('out_octets', { precision: 20, scale: 0 }),
+  inPkts: numeric('in_pkts', { precision: 20, scale: 0 }),
+  outPkts: numeric('out_pkts', { precision: 20, scale: 0 }),
+  inErrors: numeric('in_errors', { precision: 20, scale: 0 }),
+  outErrors: numeric('out_errors', { precision: 20, scale: 0 }),
+  inDiscards: numeric('in_discards', { precision: 20, scale: 0 }),
+  outDiscards: numeric('out_discards', { precision: 20, scale: 0 }),
+  counterBits: smallint('counter_bits').notNull().default(64),
+  errorBits: smallint('error_bits').notNull().default(32),
+  speedBps: bigint('speed_bps', { mode: 'number' }),
+  operUp: boolean('oper_up'),
+  /** Latest computed rate, for fast "now" views. Null when the last poll gave none (first sample, reset, gap). */
+  lastRateAt: ts('last_rate_at'),
+  inBps: doublePrecision('in_bps'),
+  outBps: doublePrecision('out_bps'),
+  utilIn: real('util_in'),
+  utilOut: real('util_out'),
+  errorsPs: doublePrecision('errors_ps'),
+  discardsPs: doublePrecision('discards_ps'),
+  /** Why the last poll produced no rate (first, reset, gap, implausible…). */
+  lastSkip: text('last_skip'),
+});
+
+const rateCols = () => ({
+  orgId: orgRef(),
+  deviceId: uuid('device_id').notNull(),
+  inBps: doublePrecision('in_bps').notNull(),
+  outBps: doublePrecision('out_bps').notNull(),
+});
+
+/** One row per interface per successful poll (raw resolution, short retention). */
+export const interfaceRates = pgTable(
+  'interface_rates',
+  {
+    interfaceId: uuid('interface_id')
+      .notNull()
+      .references(() => interfaces.id, { onDelete: 'cascade' }),
+    at: ts('at').notNull(),
+    /** Seconds this rate covers (time since the previous reading); weights the rollup averages. */
+    seconds: real('seconds').notNull(),
+    ...rateCols(),
+    inPps: doublePrecision('in_pps'),
+    outPps: doublePrecision('out_pps'),
+    errorsPs: doublePrecision('errors_ps'),
+    discardsPs: doublePrecision('discards_ps'),
+    utilIn: real('util_in'),
+    utilOut: real('util_out'),
+    speedBps: bigint('speed_bps', { mode: 'number' }),
+    flags: text('flags').array().notNull().default(sql`'{}'::text[]`),
+  },
+  (t) => [primaryKey({ columns: [t.interfaceId, t.at] }), index('interface_rates_at_idx').on(t.at)],
+);
+
+const rollup = (name: string) =>
+  pgTable(
+    name,
+    {
+      interfaceId: uuid('interface_id')
+        .notNull()
+        .references(() => interfaces.id, { onDelete: 'cascade' }),
+      bucket: ts('bucket').notNull(),
+      ...rateCols(),
+      inMax: doublePrecision('in_max').notNull(),
+      outMax: doublePrecision('out_max').notNull(),
+      utilInMax: real('util_in_max'),
+      utilOutMax: real('util_out_max'),
+      errorsPs: doublePrecision('errors_ps'),
+      discardsPs: doublePrecision('discards_ps'),
+      samples: integer('samples').notNull(),
+      /** Seconds covered by samples (lets readers tell a partial bucket from a full one). */
+      coveredSeconds: integer('covered_seconds').notNull(),
+    },
+    (t) => [primaryKey({ columns: [t.interfaceId, t.bucket] }), index(`${name}_bucket_idx`).on(t.bucket)],
+  );
+/** 5-minute averages and maxima (time-weighted), medium retention; used for 95th percentile. */
+export const interfaceRates5m = rollup('interface_rates_5m');
+/** Hourly averages and maxima, long retention. */
+export const interfaceRates1h = rollup('interface_rates_1h');
+
+export const monitoringSettings = pgTable('monitoring_settings', {
+  orgId: uuid('org_id')
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  rawDays: integer('raw_days').notNull().default(7),
+  fiveMinuteDays: integer('five_minute_days').notNull().default(90),
+  hourlyDays: integer('hourly_days').notNull().default(730),
+  updatedAt: updatedAt(),
+});
+
+export interface AlertScopeFields {
+  datacenterId?: string | null;
+  deviceIds?: string[];
+  interfaceIds?: string[];
+}
+
+export const alertRules = pgTable('alert_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: orgRef(),
+  name: text('name').notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  metric: text('metric').notNull(),
+  comparator: text('comparator').notNull().default('gt'),
+  threshold: doublePrecision('threshold').notNull().default(0),
+  forSeconds: integer('for_seconds').notNull().default(300),
+  minSamples: integer('min_samples').notNull().default(3),
+  clearSamples: integer('clear_samples').notNull().default(2),
+  severity: alertSeverityEnum('severity').notNull().default('warning'),
+  scope: text('scope').notNull().default('all'),
+  datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'cascade' }),
+  deviceIds: uuid('device_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  interfaceIds: uuid('interface_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  channelIds: uuid('channel_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  notifyOnResolve: boolean('notify_on_resolve').notNull().default(true),
+  createdBy: uuid('created_by'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/** Per (rule, target) evaluation state between polls. */
+export const alertState = pgTable(
+  'alert_state',
+  {
+    ruleId: uuid('rule_id')
+      .notNull()
+      .references(() => alertRules.id, { onDelete: 'cascade' }),
+    /** "i:<interface id>" or "d:<device id>". */
+    targetKey: text('target_key').notNull(),
+    orgId: orgRef(),
+    breachSince: ts('breach_since'),
+    breachCount: integer('breach_count').notNull().default(0),
+    clearCount: integer('clear_count').notNull().default(0),
+    lastValue: doublePrecision('last_value'),
+    lastEvaluatedAt: ts('last_evaluated_at'),
+  },
+  (t) => [primaryKey({ columns: [t.ruleId, t.targetKey] })],
+);
+
+export const alerts = pgTable(
+  'alerts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    ruleId: uuid('rule_id').references(() => alertRules.id, { onDelete: 'set null' }),
+    ruleName: text('rule_name').notNull(),
+    metric: text('metric').notNull(),
+    targetKey: text('target_key').notNull(),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'cascade' }),
+    interfaceId: uuid('interface_id').references(() => interfaces.id, { onDelete: 'cascade' }),
+    severity: alertSeverityEnum('severity').notNull(),
+    status: alertStatusEnum('status').notNull().default('firing'),
+    message: text('message').notNull(),
+    startedAt: ts('started_at').notNull(),
+    resolvedAt: ts('resolved_at'),
+    lastValue: doublePrecision('last_value'),
+    peakValue: doublePrecision('peak_value'),
+    /** Raised inside a maintenance window: shown, but no notifications were sent. */
+    suppressed: boolean('suppressed').notNull().default(false),
+    acknowledgedAt: ts('acknowledged_at'),
+    acknowledgedBy: text('acknowledged_by'),
+    ackNote: text('ack_note'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('alerts_one_firing_uq').on(t.ruleId, t.targetKey).where(sql`${t.status} = 'firing'`),
+    index('alerts_org_status_idx').on(t.orgId, t.status, t.startedAt),
+  ],
+);
+
+export const maintenanceWindows = pgTable(
+  'maintenance_windows',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    startsAt: ts('starts_at').notNull(),
+    endsAt: ts('ends_at').notNull(),
+    scope: text('scope').notNull().default('devices'),
+    datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'cascade' }),
+    deviceIds: uuid('device_ids').array().notNull().default(sql`'{}'::uuid[]`),
+    notes: text('notes'),
+    createdBy: text('created_by'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('maintenance_windows_org_time_idx').on(t.orgId, t.endsAt), check('maintenance_windows_time_ck', sql`${t.endsAt} > ${t.startsAt}`)],
+);
+
+export const notificationChannels = pgTable(
+  'notification_channels',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    kind: channelKindEnum('kind').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    /** Non-secret settings (recipients, SMTP host…). */
+    config: jsonb('config').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    /** SecretBox ciphertext of the secret fields; never returned. */
+    secretEnc: text('secret_enc').notNull(),
+    lastSentAt: ts('last_sent_at'),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('notification_channels_org_name_uq').on(t.orgId, sql`lower(${t.name})`)],
+);
+
+/** Outbox of notifications, delivered by the worker with retries. */
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    channelId: uuid('channel_id')
+      .notNull()
+      .references(() => notificationChannels.id, { onDelete: 'cascade' }),
+    alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'cascade' }),
+    event: text('event').notNull(),
+    status: notificationStatusEnum('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: ts('next_attempt_at').notNull().defaultNow(),
+    lastError: text('last_error'),
+    sentAt: ts('sent_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('notifications_due_idx').on(t.status, t.nextAttemptAt)],
+);
+
+export type DeviceMonitoring = typeof deviceMonitoring.$inferSelect;
+export type InterfaceCounter = typeof interfaceCounters.$inferSelect;
+export type AlertRule = typeof alertRules.$inferSelect;
+export type Alert = typeof alerts.$inferSelect;
+export type MaintenanceWindow = typeof maintenanceWindows.$inferSelect;
+export type NotificationChannel = typeof notificationChannels.$inferSelect;
