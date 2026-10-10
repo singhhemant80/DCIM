@@ -46,6 +46,10 @@ import { PowerService } from './power/power.service';
 import { BootController, ProvisioningController, VirtualizationController } from './provisioning/provisioning.controller';
 import { ProvisioningService } from './provisioning/provisioning.service';
 import { BootService } from './provisioning/boot.service';
+import { ColocationController, ServicesController, TicketsController } from './colocation/colocation.controller';
+import { ColocationService } from './colocation/colocation.service';
+import { ServicesService } from './colocation/services.service';
+import { TicketsService } from './colocation/tickets.service';
 import { RolesController } from './roles/roles.controller';
 import { RolesService } from './roles/roles.service';
 import { SettingsController } from './settings/settings.controller';
@@ -97,6 +101,9 @@ export class AppModule {
         ProvisioningController,
         VirtualizationController,
         BootController,
+        ColocationController,
+        ServicesController,
+        TicketsController,
       ],
       providers: [
         { provide: APP_CONFIG, useValue: config },
@@ -133,6 +140,9 @@ export class AppModule {
         PowerService,
         ProvisioningService,
         BootService,
+        ColocationService,
+        ServicesService,
+        TicketsService,
         // Order matters: rate limit → authenticate → authorize.
         { provide: APP_GUARD, useClass: ThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthGuard },

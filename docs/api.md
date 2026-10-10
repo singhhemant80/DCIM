@@ -198,9 +198,26 @@ Error codes added: `no_credential`, `duplicate_name`, `too_many_streams`.
 | `GET /config/:token` (also `/user-data`, `/meta-data`) · `GET /config?mac=` | Rendered install file. By MAC only once per job |
 | `POST /callback/:token` | `{ status: started\|done\|failed, message? }` from the installer |
 
+## Phase 7 endpoints (implemented)
+
+**Colocation** — under `/api/v1/colocation`. Reads need `services.read`; customers get their own rows only (other ids → 404) without staff notes, cable ids or staff identities. Allocation changes need `services.write` (staff). Requests (cross-connects, shipments, visits) are filed by staff with `services.write` or by customer users with `tickets.write` for their own account; status changes are staff work, except that a customer can withdraw/cancel its own request.
+
+| Method and path | Notes |
+|---|---|
+| `GET /overview` | Space (units), contracted power, measured W and estimated W apart, unknown devices, allocations measured over contract and those that may exceed only with estimates, bandwidth now, open requests |
+| `GET /sites` | Datacenter codes and names (for requests) |
+| `GET /allocations?status=active\|ended&customerId=&datacenterId=` · `GET /allocations/:id` | With power use; detail lists the customer's equipment in the space |
+| `POST /allocations` · `PUT /allocations/:id` · `POST /allocations/:id/end` | `{ customerId, rackId, kind, part, startU, endU, contractedPowerW, feeds, breakerAmps, voltage, startDate, serviceId, notes }`; update keeps fields left out; end `{ endDate (not in the future), reason }` |
+| `GET, POST /cross-connects` · `POST /cross-connects/:id/status` | `{ aDeviceId, aInterfaceId, aLabel, zLabel, loaReference, media, speed }`; status `{ status, circuitId, cableId, reason }` |
+| `GET, POST /shipments` · `POST /shipments/:id/status` | `{ datacenterId, direction, carrier, trackingNumber, expectedOn, packages, description, instructions }`; status `{ status, storageLocation, packagesReceived, conditionNote }` |
+| `GET, POST /visits` · `POST /visits/:id/status` | `{ datacenterId, visitors[{ name, company, idLast4 }], startsAt, endsAt, purpose }`; status `{ status, note, escort, badge }` |
+
+**Orders & services** — `/api/v1/services`: `GET /` (filters `q`, `customerId`, `kind`, `status`), `GET /:id` (history, linked allocations and cross-connects), `POST /`, `PUT /:id`, `POST /:id/status` `{ status, reason }` (staff, `services.write`). Status changes are records only.
+
+**Tickets** — `/api/v1/tickets` (`tickets.read` / `tickets.write`): `GET /?status=open|all|…&kind=&customerId=&q=&mine=`, `GET /:id` (customers: public messages and billable time only), `POST /` `{ customerId?, kind, priority, subject, body, deviceId, authorizedMinutes }`, `POST /:id/messages` `{ body, internal }` (internal: staff only), `PATCH /:id` `{ status, priority, assigneeUserId, authorizedMinutes }` (customers: resolve, close, reopen a resolved ticket), `POST /:id/time` `{ minutes, note, billable }` (staff), `GET /assignees` (staff).
+
 ## Planned resources
 
 | Phase | Resources |
 |---|---|
-| 7 | `/services`, `/colocation/allocations`, `/cross-connects`, `/tickets`, `/remote-hands`, `/visitors` |
 | 8 | `/billing/whmcs/webhook` (HMAC-signed, idempotent), `/billing/mappings`, `/reports/*` (CSV/PDF), `/workflows`, `/api-keys`, `/webhook-subscriptions` |

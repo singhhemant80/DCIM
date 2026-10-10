@@ -183,3 +183,21 @@ Migration `0010_provisioning.sql`.
 | `virt_guests` | VMs as reported (status, size, uptime, addresses), customer assignment kept across syncs; `missing_since` instead of deletion |
 
 Partial unique indexes enforce one active job per device, per VM, per boot MAC and per image verification, one job per idempotency key per organization, and unique boot-token hashes. Triggers keep every row in the organization of the device, image, integration or customer it references.
+
+### Phase 7: colocation, services and tickets (implemented)
+
+Migration `0011_colocation.sql`.
+
+| Table | Purpose and rules |
+|---|---|
+| `services` | A customer's service: kind, name, description, status (`pending`, `active`, `suspended`, `cancelled`, `terminated`), dates, billing reference, optional server or VM, staff notes |
+| `service_events` | Status and change history per service |
+| `colo_allocations` | Rack space for a customer: kind (`full`, `half`, `quarter`, `custom`), part, U range, contracted power (W), feeds, breaker, voltage, start and end, optional service. While active its units are held by a `rack_reservations` row (`allocation_id`, unique) so the existing overlap constraint and placement rules apply |
+| `cross_connects` | A side (customer device/port and label), Z side (text), LOA reference, media, speed, status (`requested` → `approved` → `in_progress` → `active` → `decommissioned`, or `rejected`), cross-connect id, optional documented cable |
+| `shipments` | Inbound/outbound shipments per customer and datacenter: carrier, tracking, expected date, packages, status (`expected`, `received`, `delivered`, `shipped_out`, `cancelled`), storage location, condition note, who received it |
+| `visits` | Site access: visitors (name, company, last characters of the ID number only), window, purpose, status (`requested`, `approved`, `denied`, `checked_in`, `checked_out`, `cancelled`), escort, badge |
+| `tickets`, `ticket_counters` | Tickets with a per-organization number, kind, priority, status (`open`, `in_progress`, `waiting_customer`, `resolved`, `closed`), optional customer (none = internal), device, assignee (staff only, enforced by trigger), authorized remote-hands minutes |
+| `ticket_messages` | Conversation; `internal` messages are never returned to customers; system lines record status changes |
+| `ticket_time_entries` | Remote-hands work: minutes, note, billable flag |
+
+A trigger (`colo_check_org`) keeps every row in the organization of the customer, rack, device, datacenter, service or user it references, and requires a linked service to belong to the same customer.

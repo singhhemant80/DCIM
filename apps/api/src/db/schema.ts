@@ -407,6 +407,8 @@ export const rackReservations = pgTable(
     reason: text('reason').notNull(),
     expiresAt: ts('expires_at'),
     createdBy: uuid('created_by'),
+    /** Set when the reservation holds the space of a colocation allocation (managed there). */
+    allocationId: uuid('allocation_id').references((): AnyPgColumn => coloAllocations.id, { onDelete: 'cascade' }),
     createdAt: createdAt(),
   },
   (t) => [index('rack_reservations_rack_idx').on(t.rackId), check('rack_reservations_range_ck', sql`${t.startU} >= 1 and ${t.endU} >= ${t.startU}`)],
@@ -1762,3 +1764,264 @@ export type OsImage = typeof osImages.$inferSelect;
 export type ControlCredential = typeof controlCredentials.$inferSelect;
 export type VirtIntegration = typeof virtIntegrations.$inferSelect;
 export type VirtGuest = typeof virtGuests.$inferSelect;
+
+/* ============================================================== Phase 7: colocation, services, tickets */
+
+export const serviceKindEnum = pgEnum('service_kind', ['colocation', 'dedicated_server', 'vps', 'ip_transit', 'cross_connect', 'remote_hands', 'other']);
+export const serviceStatusEnum = pgEnum('service_status', ['pending', 'active', 'suspended', 'cancelled', 'terminated']);
+export const allocationKindEnum = pgEnum('allocation_kind', ['full', 'half', 'quarter', 'custom']);
+export const crossConnectStatusEnum = pgEnum('cross_connect_status', ['requested', 'approved', 'rejected', 'in_progress', 'active', 'decommissioned']);
+export const shipmentStatusEnum = pgEnum('shipment_status', ['expected', 'received', 'delivered', 'shipped_out', 'cancelled']);
+export const visitStatusEnum = pgEnum('visit_status', ['requested', 'approved', 'denied', 'checked_in', 'checked_out', 'cancelled']);
+export const ticketKindEnum = pgEnum('ticket_kind', ['support', 'remote_hands', 'cross_connect', 'shipment', 'access', 'billing', 'other']);
+export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'high', 'urgent']);
+export const ticketStatusEnum = pgEnum('ticket_status', ['open', 'in_progress', 'waiting_customer', 'resolved', 'closed']);
+
+/** A customer's service (an order line): what they have, its lifecycle and its billing reference. */
+export const services = pgTable(
+  'services',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    kind: serviceKindEnum('kind').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    status: serviceStatusEnum('status').notNull().default('pending'),
+    startDate: date('start_date'),
+    endDate: date('end_date'),
+    billingReference: text('billing_reference'),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    guestId: uuid('guest_id').references(() => virtGuests.id, { onDelete: 'set null' }),
+    /** Staff only. */
+    notes: text('notes'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('services_customer_idx').on(t.customerId), index('services_org_idx').on(t.orgId, t.status)],
+);
+
+export const serviceEvents = pgTable(
+  'service_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    serviceId: uuid('service_id')
+      .notNull()
+      .references(() => services.id, { onDelete: 'cascade' }),
+    at: createdAt(),
+    actorLabel: text('actor_label'),
+    fromStatus: serviceStatusEnum('from_status'),
+    toStatus: serviceStatusEnum('to_status'),
+    summary: text('summary').notNull(),
+  },
+  (t) => [index('service_events_service_idx').on(t.serviceId, t.at)],
+);
+
+/** Rack space contracted to a customer. Its units are held by a linked rack reservation while active. */
+export const coloAllocations = pgTable(
+  'colo_allocations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    serviceId: uuid('service_id').references(() => services.id, { onDelete: 'set null' }),
+    rackId: uuid('rack_id')
+      .notNull()
+      .references(() => racks.id, { onDelete: 'restrict' }),
+    kind: allocationKindEnum('kind').notNull(),
+    part: smallint('part'),
+    startU: integer('start_u').notNull(),
+    endU: integer('end_u').notNull(),
+    contractedPowerW: integer('contracted_power_w').notNull(),
+    feeds: text('feeds').notNull().default('single'),
+    breakerAmps: integer('breaker_amps'),
+    voltage: integer('voltage'),
+    startDate: date('start_date').notNull(),
+    endDate: date('end_date'),
+    endedAt: ts('ended_at'),
+    endReason: text('end_reason'),
+    notes: text('notes'),
+    createdBy: text('created_by'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('colo_allocations_customer_idx').on(t.customerId),
+    index('colo_allocations_rack_idx').on(t.rackId),
+    check('colo_allocations_range_ck', sql`${t.startU} >= 1 and ${t.endU} >= ${t.startU}`),
+  ],
+);
+
+export const crossConnects = pgTable(
+  'cross_connects',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    serviceId: uuid('service_id').references(() => services.id, { onDelete: 'set null' }),
+    aDeviceId: uuid('a_device_id').references(() => devices.id, { onDelete: 'set null' }),
+    aInterfaceId: uuid('a_interface_id').references(() => interfaces.id, { onDelete: 'set null' }),
+    aLabel: text('a_label').notNull(),
+    zLabel: text('z_label').notNull(),
+    loaReference: text('loa_reference'),
+    media: text('media').notNull(),
+    speed: text('speed'),
+    status: crossConnectStatusEnum('status').notNull().default('requested'),
+    circuitId: text('circuit_id'),
+    cableId: uuid('cable_id').references(() => cables.id, { onDelete: 'set null' }),
+    statusReason: text('status_reason'),
+    notes: text('notes'),
+    requestedBy: text('requested_by'),
+    requestedAt: ts('requested_at').notNull().defaultNow(),
+    completedAt: ts('completed_at'),
+    decommissionedAt: ts('decommissioned_at'),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('cross_connects_customer_idx').on(t.customerId), index('cross_connects_org_idx').on(t.orgId, t.status)],
+);
+
+export const shipments = pgTable(
+  'shipments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    datacenterId: uuid('datacenter_id')
+      .notNull()
+      .references(() => datacenters.id, { onDelete: 'restrict' }),
+    direction: text('direction').notNull().default('inbound'),
+    carrier: text('carrier').notNull(),
+    trackingNumber: text('tracking_number'),
+    expectedOn: date('expected_on'),
+    packages: integer('packages').notNull().default(1),
+    description: text('description').notNull(),
+    instructions: text('instructions'),
+    status: shipmentStatusEnum('status').notNull().default('expected'),
+    packagesReceived: integer('packages_received'),
+    storageLocation: text('storage_location'),
+    conditionNote: text('condition_note'),
+    receivedAt: ts('received_at'),
+    receivedBy: text('received_by'),
+    closedAt: ts('closed_at'),
+    createdBy: text('created_by'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('shipments_customer_idx').on(t.customerId), index('shipments_org_idx').on(t.orgId, t.status)],
+);
+
+export const visits = pgTable(
+  'visits',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    datacenterId: uuid('datacenter_id')
+      .notNull()
+      .references(() => datacenters.id, { onDelete: 'restrict' }),
+    /** [{ name, company, idLast4 }] — no full ID numbers are stored. */
+    visitors: jsonb('visitors').$type<{ name: string; company?: string | null; idLast4?: string | null }[]>().notNull(),
+    startsAt: ts('starts_at').notNull(),
+    endsAt: ts('ends_at').notNull(),
+    purpose: text('purpose').notNull(),
+    status: visitStatusEnum('status').notNull().default('requested'),
+    escort: boolean('escort').notNull().default(false),
+    badge: text('badge'),
+    decisionNote: text('decision_note'),
+    decidedBy: text('decided_by'),
+    checkedInAt: ts('checked_in_at'),
+    checkedOutAt: ts('checked_out_at'),
+    requestedBy: text('requested_by'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('visits_customer_idx').on(t.customerId), index('visits_org_idx').on(t.orgId, t.startsAt), check('visits_time_ck', sql`${t.endsAt} > ${t.startsAt}`)],
+);
+
+export const ticketCounters = pgTable('ticket_counters', {
+  orgId: uuid('org_id')
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  next: integer('next').notNull().default(1),
+});
+
+export const tickets = pgTable(
+  'tickets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    number: integer('number').notNull(),
+    /** Null for internal tickets (staff only). */
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'restrict' }),
+    kind: ticketKindEnum('kind').notNull(),
+    priority: ticketPriorityEnum('priority').notNull().default('normal'),
+    status: ticketStatusEnum('status').notNull().default('open'),
+    subject: text('subject').notNull(),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    assigneeUserId: uuid('assignee_user_id').references(() => users.id, { onDelete: 'set null' }),
+    authorizedMinutes: integer('authorized_minutes'),
+    createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+    createdBy: text('created_by').notNull(),
+    /** Who acts next, for queues: staff or customer. */
+    lastPublicReplyBy: text('last_public_reply_by'),
+    firstResponseAt: ts('first_response_at'),
+    resolvedAt: ts('resolved_at'),
+    closedAt: ts('closed_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('tickets_org_number_uq').on(t.orgId, t.number), index('tickets_customer_idx').on(t.customerId, t.status), index('tickets_org_status_idx').on(t.orgId, t.status)],
+);
+
+export const ticketMessages = pgTable(
+  'ticket_messages',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    at: createdAt(),
+    authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** Display name at the time; null for system lines (status changes). */
+    authorLabel: text('author_label'),
+    authorType: text('author_type').notNull(),
+    /** Staff-only note: never returned to customers. */
+    internal: boolean('internal').notNull().default(false),
+    body: text('body').notNull(),
+  },
+  (t) => [index('ticket_messages_ticket_idx').on(t.ticketId, t.id)],
+);
+
+export const ticketTimeEntries = pgTable(
+  'ticket_time_entries',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    at: createdAt(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    userLabel: text('user_label').notNull(),
+    minutes: integer('minutes').notNull(),
+    note: text('note').notNull(),
+    billable: boolean('billable').notNull().default(true),
+  },
+  (t) => [index('ticket_time_ticket_idx').on(t.ticketId), check('ticket_time_minutes_ck', sql`${t.minutes} > 0`)],
+);
+
+export type Service = typeof services.$inferSelect;
+export type ColoAllocation = typeof coloAllocations.$inferSelect;
+export type CrossConnect = typeof crossConnects.$inferSelect;
+export type Shipment = typeof shipments.$inferSelect;
+export type Visit = typeof visits.$inferSelect;
+export type Ticket = typeof tickets.$inferSelect;

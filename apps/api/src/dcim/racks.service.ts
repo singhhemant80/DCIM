@@ -252,6 +252,8 @@ export class RacksService {
   async removeReservation(p: Principal, rackId: string, reservationId: string, meta: RequestMeta) {
     await this.get(p, rackId);
     await this.db.transaction(async (tx) => {
+      const [held] = await tx.select({ allocationId: rackReservations.allocationId }).from(rackReservations).where(and(eq(rackReservations.id, reservationId), eq(rackReservations.rackId, rackId)));
+      if (held?.allocationId) throw new ConflictException({ error: 'managed_by_allocation', message: 'This space is held by a colocation allocation; end the allocation under Colocation instead' });
       const [r] = await tx.delete(rackReservations).where(and(eq(rackReservations.id, reservationId), eq(rackReservations.rackId, rackId))).returning();
       if (!r) throw new NotFoundException({ error: 'not_found', message: 'Reservation not found' });
       await this.event(tx, p, rackId, 'reservation', `Released reservation U${r.startU}–U${r.endU}`);
