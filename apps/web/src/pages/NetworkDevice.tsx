@@ -25,7 +25,7 @@ import { formatDateTime, relativeTime } from '../lib/format';
 import { deviceLabel, formatBps, formatUptime, useVlans, type BgpT, type CredentialT, type DeviceSummaryT, type FactsT, type InterfaceT, type NetworkDeviceT, type RunT } from '../lib/network';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Table, cx } from '../components/ui';
 import { CableFields, Kv, Tabs } from './Network';
-import { bps, useMonitoringStream, withLive, type PortRateT } from '../lib/monitoring';
+import { bps, useLiveWatch, useMonitoringStream, withFast, withLive, type PortRateT } from '../lib/monitoring';
 import type { Paginated } from '../lib/api';
 
 const s = (v: unknown) => (v === null || v === undefined ? '' : String(v));
@@ -216,7 +216,9 @@ function PortsPanel({ device, list }: { device: NetworkDeviceT; list: ReturnType
   const rates = useQuery({ queryKey: ['monitoring', 'ports', 'device', device.id], queryFn: () => api.get<Paginated<PortRateT>>(`/monitoring/ports?deviceId=${device.id}&pageSize=200&sort=name`), enabled: canMon, refetchInterval: 30_000 });
   const polled = !!rates.data?.items.length;
   const stream = useMonitoringStream(canMon && polled);
-  const rateOf = useMemo(() => new Map((rates.data?.items ?? []).map((r) => [r.interfaceId, withLive(r, stream.live)])), [rates.data, stream.live]);
+  // Live view: while this page is open the device is read once a second.
+  const live = useLiveWatch(polled ? rates.data!.items[0]!.interfaceId : null);
+  const rateOf = useMemo(() => new Map((rates.data?.items ?? []).map((r) => [r.interfaceId, withFast(withLive(r, stream.live), stream.fast)])), [rates.data, stream.live, stream.fast]);
   return (
     <Panel
       flush
@@ -259,7 +261,16 @@ function PortsPanel({ device, list }: { device: NetworkDeviceT; list: ReturnType
               <th>Name</th>
               <th>Type</th>
               <th>Speed</th>
-              {polled && <th>Traffic</th>}
+              {polled && (
+                <th>
+                  Traffic{' '}
+                  {live?.live && stream.fast.size > 0 && (
+                    <span className="ml-1 inline-flex items-center gap-1 text-[11.5px] font-normal text-ok" title="Read from the device once a second while this page is open (not stored)">
+                      <span className="size-1.5 animate-pulse rounded-full bg-ok" aria-hidden /> live · 1 s
+                    </span>
+                  )}
+                </th>
+              )}
               <th>VLANs</th>
               <th>{tab === 'physical' ? 'Connected to' : 'Members / parent'}</th>
               <th>Neighbor (LLDP/CDP)</th>

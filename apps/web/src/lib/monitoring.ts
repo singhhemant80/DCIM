@@ -1,3 +1,4 @@
+import { api } from './api';
 import { useEffect, useRef, useState } from 'react';
 import { formatBitRate } from '@crapplet/shared';
 
@@ -185,4 +186,43 @@ export function withLive(p: PortRateT, live: Map<string, LivePort>): PortRateT {
   if (!l || (p.sampledAt && new Date(l.at) <= new Date(p.sampledAt))) return p;
   const fresh = l.skip === null;
   return { ...p, sampledAt: l.at, lastRateAt: fresh ? l.at : p.lastRateAt, fresh, lastSkip: l.skip, operUp: l.operUp, inBps: l.inBps, outBps: l.outBps, utilIn: l.utilIn, utilOut: l.utilOut, errorsPs: l.errorsPs, discardsPs: l.discardsPs };
+}
+
+/**
+ * Keeps the live view running for a device while the component is mounted:
+ * the worker then reads the device once a second (nothing is stored).
+ * Any monitored port of the device identifies it.
+ */
+export function useLiveWatch(interfaceId: string | null | undefined) {
+  const [state, setState] = useState<{ live: boolean; reason?: string } | null>(null);
+  useEffect(() => {
+    if (!interfaceId) return;
+    let stop = false;
+    const beat = () =>
+      api
+        .post<{ live: boolean; reason?: string }>(`/monitoring/ports/${interfaceId}/watch`)
+        .then((r) => !stop && setState(r))
+        .catch(() => !stop && setState({ live: false, reason: 'Live view is not available' }));
+    void beat();
+    const h = setInterval(beat, 10_000);
+    return () => {
+      stop = true;
+      clearInterval(h);
+    };
+  }, [interfaceId]);
+  return state;
+}
+
+/** The newest per-second sample of a port, when it is recent (under 4 s old). */
+export function latestLive(samples: LiveSample[] | undefined): LiveSample | null {
+  const l = samples?.length ? samples[samples.length - 1]! : null;
+  return l && l.inBps !== null && Date.now() - l.t < 4000 ? l : null;
+}
+
+/** A port row with the newest per-second values applied while the live view runs. */
+export function withFast(p: PortRateT, fast: Map<string, LiveSample[]>): PortRateT {
+  const l = latestLive(fast.get(p.interfaceId));
+  if (!l) return p;
+  const util = (v: number | null) => (v !== null && p.speedBps ? Math.min(100, (v / p.speedBps) * 100) : null);
+  return { ...p, inBps: l.inBps, outBps: l.outBps, utilIn: util(l.inBps), utilOut: util(l.outBps), fresh: true };
 }
