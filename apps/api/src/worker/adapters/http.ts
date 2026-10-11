@@ -77,9 +77,23 @@ export function deviceRequest(
     );
     // `timeout` above is an idle timeout; this caps the whole request, so a device
     // that drips bytes slowly can't hold the worker past the limit.
-    const deadline = setTimeout(() => req.destroy(new DeviceHttpError(`Timed out after ${timeout} ms`, null)), timeout);
+    // Say whether the connection itself never opened (firewall, wrong port) or the device was slow to answer.
+    let connected = false;
+    req.on('socket', (sock) => {
+      const mark = () => (connected = true);
+      if ((sock as { connecting?: boolean }).connecting === false) mark();
+      else sock.once(scheme === 'https' ? 'secureConnect' : 'connect', mark);
+    });
+    const timedOut = () =>
+      new DeviceHttpError(
+        connected
+          ? `Connected to ${t.host}:${t.port ?? opts.defaultPort}, but no answer within ${Math.round(timeout / 1000)} s`
+          : `Could not connect to ${t.host}:${t.port ?? opts.defaultPort} within ${Math.round(timeout / 1000)} s: check that the port is open to this server (firewall) and the address is right`,
+        null,
+      );
+    const deadline = setTimeout(() => req.destroy(timedOut()), timeout);
     req.on('close', () => clearTimeout(deadline));
-    req.on('timeout', () => req.destroy(new DeviceHttpError(`Timed out after ${timeout} ms`, null)));
+    req.on('timeout', () => req.destroy(timedOut()));
     req.on('error', (e: NodeJS.ErrnoException) => {
       if (e instanceof DeviceHttpError) return reject(e);
       const tls = /certificate|self[- ]signed|SSL|TLS/i.test(e.message);

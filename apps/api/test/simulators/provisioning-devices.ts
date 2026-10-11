@@ -326,7 +326,10 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
         else return send({ error: { action: 'Invalid action' } });
         return send({ done: { msg: `VPS ${q.action} done` } });
       }
-      const list = [...vps].filter(([id]) => !vpsid || id === vpsid);
+      // Paged like Virtualizor (page / reslen).
+      const per = Number(q.reslen ?? 50);
+      const pg = Number(q.page ?? 1);
+      const list = [...vps].filter(([id]) => !vpsid || id === vpsid).slice((pg - 1) * per, pg * per);
       return send({
         vs: Object.fromEntries(
           list.map(([id, v]) => [id, { vpsid: id, vps_name: `v10${id}`, hostname: v.hostname, serid: v.serid, virt: v.virt, status: v.status, suspended: v.suspended, cores: '2', ram: '2048', space: '40', ips: Object.fromEntries(v.ips.map((ip, i) => [String(i + 1), ip])) }]),

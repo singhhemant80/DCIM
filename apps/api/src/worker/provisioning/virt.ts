@@ -44,9 +44,9 @@ type Row = Record<string, unknown>;
 const n = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
 const s = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : typeof v === 'number' ? String(v) : null);
 
-function target(url: string, verifyTls: boolean): AdapterTarget {
+function target(url: string, verifyTls: boolean, timeoutMs = 20_000): AdapterTarget {
   const u = new URL(url);
-  return { host: u.hostname, port: u.port ? Number(u.port) : null, params: { scheme: u.protocol === 'http:' ? 'http' : 'https', verifyTls, timeoutMs: 20_000 }, secret: {} };
+  return { host: u.hostname, port: u.port ? Number(u.port) : null, params: { scheme: u.protocol === 'http:' ? 'http' : 'https', verifyTls, timeoutMs }, secret: {} };
 }
 const fail = (e: unknown): never => {
   if (e instanceof DeviceHttpError && (e.status === 401 || e.status === 403)) throw new PermanentError(e.message);
@@ -146,7 +146,8 @@ export function proxmoxClient(cfg: { url: string; verifyTls: boolean; tokenId: s
 const VZ_ACTIONS: Partial<Record<GuestAction, string>> = { start: 'start', shutdown: 'stop', stop: 'poweroff', reboot: 'restart' };
 
 export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey: string; apiPass: string; actionsEnabled: boolean }): VirtClient {
-  const t = target(cfg.url, cfg.verifyTls);
+  // A master listing many slaves and VPSes can take a while to answer.
+  const t = target(cfg.url, cfg.verifyTls, 60_000);
   const call = async (params: Record<string, string>) => {
     const q = new URLSearchParams({ ...params, api: 'json', adminapikey: cfg.apiKey, adminapipass: cfg.apiPass });
     try {
@@ -183,7 +184,15 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
     },
     async inventory() {
       const servers = ((await call({ act: 'servers' })).servs as Record<string, Row> | undefined) ?? {};
-      const vs = ((await call({ act: 'vs' })).vs as Record<string, Row> | undefined) ?? {};
+      // VPS lists are paged: read page after page until a short one.
+      const vs: Record<string, Row> = {};
+      const per = 500;
+      for (let page = 1; page <= 200; page++) {
+        const chunk = ((await call({ act: 'vs', page: String(page), reslen: String(per) })).vs as Record<string, Row> | undefined) ?? {};
+        const before = Object.keys(vs).length;
+        Object.assign(vs, chunk);
+        if (Object.keys(chunk).length < per || Object.keys(vs).length === before) break;
+      }
       return {
         hosts: Object.values(servers).map((x) => ({
           externalId: String(x.serid),

@@ -118,6 +118,15 @@ describe('addresses recorded from Virtualizor', () => {
     expect((await ok(admin.get(`${I}/addresses?q=192.0.2.77`))).items).toHaveLength(0);
   });
 
+  it('reads every page of a large VPS list', async () => {
+    for (let n = 100; n < 1350; n++) vz.vps.set(String(n), { serid: '0', hostname: `bulk${n}.example.net`, status: 1, suspended: 0, virt: 'kvm', ips: [] });
+    await syncDueIntegrations(deps(), { force: ids.vz });
+    const r = await ok(admin.get(`${V}/guests?integrationId=${ids.vz}&pageSize=1`));
+    expect(r.total).toBe(1252);
+    for (let n = 100; n < 1350; n++) vz.vps.delete(String(n));
+    await syncDueIntegrations(deps(), { force: ids.vz });
+  });
+
   it('follows the VM to its customer, and releases an address the VM no longer has', async () => {
     const guests = (await ok(admin.get(`${V}/guests?integrationId=${ids.vz}`))).items;
     const g11 = guests.find((g: { name: string }) => g.name === 'vps11.example.net');
