@@ -11,6 +11,7 @@ import { redact } from '../processor';
 import { PermanentError, type EngineDeps, type KindDef, type StepContext, type StepDef } from './engine';
 import { ipmiControl, redfishControl, type BmcControl } from './bmc';
 import { proxmoxClient, virtualizorClient, type VirtClient } from './virt';
+import { recordGuestAddresses, type SyncedGuest } from './guest-ips';
 
 export interface ProvisioningDeps extends EngineDeps {
   publicUrl?: string;
@@ -603,13 +604,22 @@ export async function syncDueIntegrations(deps: ProvisioningDeps, opts: { force?
           hostIds.set(h.externalId, row!.id);
         }
         // Hosts are linked to DCIM devices only by an operator (no guessing from names).
+        const synced: SyncedGuest[] = [];
         for (const g of inv.guests) {
           const { hostExternalId, ...rest } = g;
           const hostId = hostExternalId ? (hostIds.get(hostExternalId) ?? null) : null;
-          await tx
+          const [row] = await tx
             .insert(virtGuests)
             .values({ orgId: i.orgId, integrationId: i.id, hostId, ...rest, lastSeenAt: started, missingSince: null })
-            .onConflictDoUpdate({ target: [virtGuests.integrationId, virtGuests.externalId], set: { hostId, ...rest, lastSeenAt: started, missingSince: null } });
+            .onConflictDoUpdate({ target: [virtGuests.integrationId, virtGuests.externalId], set: { hostId, ...rest, lastSeenAt: started, missingSince: null } })
+            .returning({ id: virtGuests.id, name: virtGuests.name, customerId: virtGuests.customerId });
+          synced.push({ id: row!.id, name: row!.name, externalId: g.externalId, customerId: row!.customerId, ipAddresses: g.ipAddresses });
+        }
+        // The VMs' addresses go into IPAM (inside existing prefixes only), in a savepoint so a bad row can't fail the sync.
+        try {
+          await tx.transaction((sp) => recordGuestAddresses(sp, i.orgId, i.name, i.kind, synced));
+        } catch (e) {
+          deps.logger.warn({ integrationId: i.id, err: (e as Error).message }, 'recording VM addresses in IPAM failed');
         }
         // Gone from the hypervisor: kept (with their customer assignment) and marked missing, never deleted silently.
         await tx.execute(sql`update virt_guests set missing_since = coalesce(missing_since, now()) where integration_id = ${i.id} and (last_seen_at is null or last_seen_at < ${started.toISOString()}::timestamptz)`);

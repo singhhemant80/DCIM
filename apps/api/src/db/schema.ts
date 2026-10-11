@@ -881,6 +881,10 @@ export const prefixes = pgTable(
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'restrict' }),
     gateway: inetCol('gateway'),
     description: text('description'),
+    /** Ping every address of the prefix (IPv4 up to /22) or its recorded addresses, every few minutes. */
+    pingSweep: boolean('ping_sweep').notNull().default(false),
+    pingCheckedAt: ts('ping_checked_at'),
+    pingError: text('ping_error'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -910,6 +914,10 @@ export const ipAddresses = pgTable(
     interfaceId: uuid('interface_id').references(() => interfaces.id, { onDelete: 'set null' }),
     /** Reference to a VPS or service in another system until Phases 6–7 model services. */
     serviceRef: text('service_ref'),
+    /** The VM this address belongs to, when it was recorded from a hypervisor sync. */
+    guestId: uuid('guest_id').references((): AnyPgColumn => virtGuests.id, { onDelete: 'set null' }),
+    /** 'manual' (entered or imported by a person) or 'hypervisor' (recorded by a Proxmox/Virtualizor sync). */
+    source: text('source').notNull().default('manual'),
     reservedUntil: ts('reserved_until'),
     notes: text('notes'),
     /** DNS records this address should have in managed zones, and whether they were pushed. */
@@ -926,10 +934,25 @@ export const ipAddresses = pgTable(
     index('ip_addresses_customer_idx').on(t.customerId),
     index('ip_addresses_device_idx').on(t.deviceId),
     index('ip_addresses_interface_idx').on(t.interfaceId),
+    index('ip_addresses_guest_idx').on(t.guestId),
     check('ip_addresses_host_ck', sql`masklen(${t.address}) = case family(${t.address}) when 4 then 32 else 128 end`),
     check('ip_addresses_prefix_length_ck', sql`${t.prefixLength} is null or ${t.prefixLength} between 0 and case family(${t.address}) when 4 then 32 else 128 end`),
     check('ip_addresses_released_ck', sql`${t.status} <> 'released' or (${t.deviceId} is null and ${t.interfaceId} is null and ${t.customerId} is null)`),
   ],
+);
+
+/** Last ping result per address (ICMP echo from the worker; read-only). */
+export const ipReachability = pgTable(
+  'ip_reachability',
+  {
+    orgId: orgRef(),
+    address: inetCol('address').notNull(),
+    reachable: boolean('reachable').notNull(),
+    rttMs: real('rtt_ms'),
+    lastSeenAt: ts('last_seen_at'),
+    checkedAt: ts('checked_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.address] })],
 );
 
 export const ipEvents = pgTable(

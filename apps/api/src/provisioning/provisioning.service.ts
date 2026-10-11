@@ -659,6 +659,8 @@ export class ProvisioningService {
       if (!c) throw new BadRequestException({ error: 'invalid_customer', message: 'Customer does not exist' });
     }
     const rows = await this.db.update(virtGuests).set({ customerId }).where(and(eq(virtGuests.id, id), eq(virtGuests.orgId, p.orgId))).returning({ id: virtGuests.id, name: virtGuests.name });
+    // Addresses recorded from the hypervisor for this VM follow its customer (addresses entered by a person are not touched).
+    if (rows.length) await this.db.execute(sql`update ip_addresses set customer_id = ${customerId}, updated_at = now() where org_id = ${p.orgId} and guest_id = ${id} and source = 'hypervisor' and status <> 'released'`).catch(() => undefined);
     if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
     await this.record(p, meta, 'virt.guest_assign', { type: 'virt_guest', id }, { customerId, name: rows[0]!.name });
     return { ok: true };

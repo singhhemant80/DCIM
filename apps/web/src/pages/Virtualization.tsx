@@ -337,7 +337,7 @@ function GuestActionDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; on
 }
 
 function Guests({ kind, integrations, staff }: { kind: Kind; integrations: IntegrationT[] | null; staff: boolean }) {
-  const { can } = useAuth();
+  const { can, me } = useAuth();
   const canControl = can('hardware.control');
   const canAssign = staff && can('provisioning.execute');
   const qc = useQueryClient();
@@ -423,7 +423,7 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
                   <td>
                     {canAssign ? (
                       <Select className="w-44" aria-label={`Customer for ${g.name}`} value={g.customerId ?? ''} onChange={(e) => assign.mutate({ id: g.id, customerId: e.target.value || null })}>
-                        <option value="">Unassigned</option>
+                        <option value="">{me?.organization.name ?? 'Own'} (own)</option>
                         {customers.data?.items.map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name}

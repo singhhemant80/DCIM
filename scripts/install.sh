@@ -97,7 +97,7 @@ UPGRADE=0; [ -f "$ENV_FILE" ] && UPGRADE=1 && ok "Existing installation found: u
 step "Installing system packages (PostgreSQL, Redis, Git, ipmitool, build tools)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates curl gnupg git openssl rsync postgresql redis-server ipmitool >/dev/null
+apt-get install -y -qq ca-certificates curl gnupg git openssl rsync postgresql redis-server ipmitool iputils-ping >/dev/null
 ok "Packages installed"
 
 if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt "$NODE_MAJOR" ]; then

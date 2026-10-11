@@ -194,6 +194,10 @@ PowerDNS API keys and Cloudflare tokens follow the device-credential rules: writ
 - **Incidents and notices** show customers only public items that affect them; internal updates, staff identities, maintenance window names and notes are withheld.
 - **Independent review.** Fixed before release: a schedule whose channel stopped being email could block all scheduled reports; an approved workflow step could run after the workflow was edited (four-eyes bypass) and runs created before an edit could fail partway; WHMCS event ids grouped separate changes within a minute; two events could create the same service twice; usage counted PDUs' energy as well as the servers they feed; customer-internal links doubled the 95th percentile; keys could manage users, roles and settings; the provisioning event was written outside the job's transaction; the module's connection test stored an empty reconciliation; the module's yes/no options couldn't be switched off; webhook destinations were open to DNS rebinding; customers saw internal maintenance window names; a run the worker kept crashing on was retried forever.
 
+## IP reachability
+
+The worker pings addresses only in prefixes where an administrator turned the check on, with the system `ping` (one echo request, 1-second timeout, at most 64 at a time, every 5 minutes). It sends nothing else and changes nothing. Results are stored per address; when ping itself cannot run, the error is shown on the prefix instead of marking addresses down.
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.

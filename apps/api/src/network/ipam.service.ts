@@ -127,8 +127,11 @@ export class IpamService {
       addressUtilization: usable > 0n ? Number((BigInt(used) * 1_000_000n) / usable) / 10_000 : 0,
       /** Share of the prefix covered by more-specific child prefixes. */
       childCoverage: Number((covered * 1_000_000n) / size) / 10_000,
+      pingSweep: !!r.ping_sweep,
+      pingCheckedAt: (r.ping_checked_at as string | null) ?? null,
+      pingError: (r.ping_error as string | null) ?? null,
     };
-    return p.userType === 'staff' ? base : { ...base, description: null, datacenterId: null, datacenterCode: null, depth: 0, childCount: 0 };
+    return p.userType === 'staff' ? base : { ...base, description: null, datacenterId: null, datacenterCode: null, depth: 0, childCount: 0, pingError: null };
   }
 
   async getPrefix(p: Principal, id: string) {
@@ -140,7 +143,18 @@ export class IpamService {
     const same = (x: (typeof all)[number]) => x.vrfId === self.vrfId && x.id !== id;
     const parents = all.filter((x) => same(x) && x.depth < self.depth).sort((a, b) => a.depth - b.depth);
     const children = all.filter((x) => same(x) && x.depth === self.depth + 1);
-    return { ...self, parents, children, available: p.userType === 'staff' ? await this.availableRanges(this.db, pre, c, 20) : [], ptrZone: reverseZone(c) };
+    // Addresses that answer ping but are not recorded in IPAM (staff only): unknown users of the prefix.
+    const unrecorded =
+      p.userType === 'staff'
+        ? (
+            await this.db.execute<{ ip: string; rtt_ms: number | null; last_seen_at: string }>(sql`
+              select host(r.address) as ip, r.rtt_ms, r.last_seen_at from ip_reachability r
+               where r.org_id = ${p.orgId} and r.reachable and r.address <<= ${String(pre.prefix)}::cidr
+                 and not exists (select 1 from ip_addresses a where a.org_id = r.org_id and a.address = r.address and coalesce(a.vrf_id, ${ZERO_UUID}) = coalesce(${pre.vrfId}::uuid, ${ZERO_UUID}) and a.status <> 'released')
+               order by r.address limit 500`)
+          ).rows.map((x) => ({ address: x.ip, rttMs: x.rtt_ms === null ? null : Number(x.rtt_ms), lastSeenAt: x.last_seen_at }))
+        : [];
+    return { ...self, parents, children, available: p.userType === 'staff' ? await this.availableRanges(this.db, pre, c, 20) : [], ptrZone: reverseZone(c), unrecorded };
   }
 
   async createPrefix(p: Principal, input: PrefixInput, meta: RequestMeta) {
@@ -201,6 +215,7 @@ export class IpamService {
       customerId: i.customerId ?? null,
       gateway: i.gateway ?? null,
       description: i.description ?? null,
+      ...(i.pingSweep !== undefined ? { pingSweep: i.pingSweep } : {}),
     };
   }
 
@@ -327,7 +342,8 @@ export class IpamService {
   private addressSelect() {
     return sql`
       select a.*, host(a.address) as ip, v.name as vrf_name, cu.name as customer_name, coalesce(d.hostname, d.asset_tag) as device_name, i.name as interface_name,
-             d.customer_id as device_customer_id,
+             d.customer_id as device_customer_id, o.name as org_name, g.name as guest_name,
+             rr.reachable as ping_reachable, rr.rtt_ms as ping_rtt_ms, rr.last_seen_at as ping_last_seen_at, rr.checked_at as ping_checked_at,
              (select x.customer_id from prefixes x where x.org_id = a.org_id and ${sameVrf('x', 'a')} and a.address <<= x.prefix order by masklen(x.prefix) desc limit 1) as prefix_customer_id,
              (select x.id from prefixes x where x.org_id = a.org_id and ${sameVrf('x', 'a')} and a.address <<= x.prefix order by masklen(x.prefix) desc limit 1) as prefix_id,
              (select x.prefix::text from prefixes x where x.org_id = a.org_id and ${sameVrf('x', 'a')} and a.address <<= x.prefix order by masklen(x.prefix) desc limit 1) as prefix
@@ -335,7 +351,10 @@ export class IpamService {
       left join vrfs v on v.id = a.vrf_id
       left join customers cu on cu.id = a.customer_id
       left join devices d on d.id = a.device_id
-      left join interfaces i on i.id = a.interface_id`;
+      left join interfaces i on i.id = a.interface_id
+      left join organizations o on o.id = a.org_id
+      left join virt_guests g on g.id = a.guest_id
+      left join ip_reachability rr on rr.org_id = a.org_id and rr.address = a.address`;
   }
 
   addressView(p: Principal, r: Record<string, unknown>) {
@@ -364,6 +383,16 @@ export class IpamService {
       prefixId: r.prefix_id as string | null,
       prefix: r.prefix as string | null,
       updatedAt: r.updated_at as string,
+      /** No customer means the address is the organization's own (e.g. Crapplet's). */
+      ownerName: (r.customer_name as string | null) ?? `${String(r.org_name ?? 'Own')} (own)`,
+      source: (r.source as string) ?? 'manual',
+      guestId: (r.guest_id as string | null) ?? null,
+      guestName: (r.guest_name as string | null) ?? null,
+      /** Last ping from the worker (only for prefixes with reachability checks on). */
+      reachability:
+        r.ping_checked_at === null || r.ping_checked_at === undefined
+          ? null
+          : { reachable: !!r.ping_reachable, rttMs: r.ping_rtt_ms === null ? null : Number(r.ping_rtt_ms), lastSeenAt: (r.ping_last_seen_at as string | null) ?? null, checkedAt: r.ping_checked_at as string },
     };
     if (p.userType === 'staff') {
       return {

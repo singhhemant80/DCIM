@@ -17,6 +17,7 @@ import { applyRetention, rollup } from './monitoring/rollup';
 import { closeUnmonitoredAlerts, evaluateAlerts } from './monitoring/alerts';
 import { deliverDue } from './monitoring/notify';
 import { createLiveLoop } from './monitoring/live';
+import { sweepDuePrefix } from './monitoring/ping';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
@@ -138,6 +139,10 @@ async function main() {
     every('notify', 10_000, () => deliverDue({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
     // Live view: once a second for devices someone is watching (nothing stored).
     every('live', 1_000, createLiveLoop({ db, secrets, logger, redis: pub, publish: (orgId, ev) => publish(orgId, ev) })),
+    // IP reachability: one due prefix at a time (each swept every 5 minutes).
+    every('ping-sweep', 15_000, async () => {
+      for (let n = 0; n < 4 && (await sweepDuePrefix({ db, logger })); n++);
+    }),
     every('events', 2_000, async () => {
       // Fan out, then run the workflows and webhooks that fan-out produced.
       while ((await dispatchEvents(automation)) === 200);

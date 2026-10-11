@@ -34,12 +34,17 @@ export interface PrefixT {
   usedAddresses: number;
   addressUtilization: number;
   childCoverage: number;
+  pingSweep: boolean;
+  pingCheckedAt: string | null;
+  pingError: string | null;
 }
 interface PrefixDetailT extends PrefixT {
   parents: PrefixT[];
   children: PrefixT[];
   available: { first: string; last: string; count: string }[];
   ptrZone: string;
+  /** Answer ping but are not recorded in IPAM. */
+  unrecorded: { address: string; rttMs: number | null; lastSeenAt: string }[];
 }
 export interface AddressT {
   id: string;
@@ -66,6 +71,34 @@ export interface AddressT {
   notes?: string | null;
   dns?: { status: string; error: string | null; syncedAt: string | null; records: { name: string; type: string; content: string }[] };
   updatedAt: string;
+  ownerName: string;
+  source: 'manual' | 'hypervisor';
+  guestId: string | null;
+  guestName: string | null;
+  reachability: { reachable: boolean; rttMs: number | null; lastSeenAt: string | null; checkedAt: string } | null;
+}
+
+/** "<organization> (own)": an address or prefix without a customer belongs to the organization itself. */
+function useOrgOwn() {
+  const { me } = useAuth();
+  return `${me?.organization.name ?? 'Own'} (own)`;
+}
+
+/** Ping status of an address: answering, not answering (with when it last did), or not checked. */
+function Reach({ r }: { r: AddressT['reachability'] }) {
+  if (!r) return <span className="text-[12px] text-ink-3">not checked</span>;
+  if (r.reachable)
+    return (
+      <Chip tone="ok" title={`Checked ${formatDateTime(r.checkedAt)}`}>
+        ● up{r.rttMs !== null ? ` · ${r.rttMs < 10 ? r.rttMs.toFixed(1) : Math.round(r.rttMs)} ms` : ''}
+      </Chip>
+    );
+  return (
+    <span title={`Checked ${formatDateTime(r.checkedAt)}`}>
+      <Chip tone="crit">● no reply</Chip>
+      <div className="mt-0.5 text-[11.5px] text-ink-3">{r.lastSeenAt ? `last up ${formatDateTime(r.lastSeenAt)}` : 'never answered'}</div>
+    </span>
+  );
 }
 
 const t = (v: string) => (v.trim() === '' ? null : v.trim());
@@ -259,6 +292,7 @@ function PrefixTable({ rows, showVrf }: { rows: PrefixT[]; showVrf?: boolean }) 
 
 function PrefixForm({ prefix, onClose }: { prefix?: PrefixT; onClose: (id?: string) => void }) {
   const qc = useQueryClient();
+  const orgOwn = useOrgOwn();
   const vrfs = useVrfs();
   const vlans = useVlans();
   const tree = useTree();
@@ -273,6 +307,7 @@ function PrefixForm({ prefix, onClose }: { prefix?: PrefixT; onClose: (id?: stri
     customerId: s(prefix?.customerId),
     gateway: s(prefix?.gateway),
     description: s(prefix?.description),
+    pingSweep: prefix?.pingSweep ?? false,
   });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((x) => ({ ...x, [k]: e.target.value }));
   const body = () => ({
@@ -283,6 +318,7 @@ function PrefixForm({ prefix, onClose }: { prefix?: PrefixT; onClose: (id?: stri
     customerId: t(f.customerId),
     gateway: t(f.gateway),
     description: t(f.description),
+    pingSweep: f.pingSweep,
   });
   const m = useMutation({
     mutationFn: () =>
@@ -339,7 +375,7 @@ function PrefixForm({ prefix, onClose }: { prefix?: PrefixT; onClose: (id?: stri
         <Field label="Customer">
           {(id) => (
             <Select id={id} value={f.customerId} onChange={set('customerId')}>
-              <option value="">Not assigned</option>
+              <option value="">{orgOwn} — no customer</option>
               {customers.data?.items.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -377,6 +413,9 @@ function PrefixForm({ prefix, onClose }: { prefix?: PrefixT; onClose: (id?: stri
         <label className="flex items-center gap-2 text-[13.5px] sm:col-span-2" title="In a pool every address is usable, including the first and last (e.g. NAT pools, /31 links)">
           <input type="checkbox" checked={f.isPool} onChange={(e) => setF((x) => ({ ...x, isPool: e.target.checked }))} /> Pool: every address is usable (no network/broadcast reservation)
         </label>
+        <label className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={f.pingSweep} onChange={(e) => setF((x) => ({ ...x, pingSweep: e.target.checked }))} /> Check reachability: ping {'every address (IPv4 up to /22; otherwise the recorded ones)'} every 5 minutes
+        </label>
         <ErrorNote error={m.error} className="sm:col-span-2" />
         <div className="flex justify-end gap-2 sm:col-span-2">
           <Button type="button" variant="ghost" onClick={() => onClose()}>
@@ -402,6 +441,7 @@ export function PrefixDetailPage() {
   });
   const [edit, setEdit] = useState(false);
   const [alloc, setAlloc] = useState<'next' | 'specific' | null>(null);
+  const [preset, setPreset] = useState('');
   const [confirm, setConfirm] = useState(false);
   const del = useMutation({
     mutationFn: () => api.delete(`/ipam/prefixes/${id}`),
@@ -485,10 +525,43 @@ export function PrefixDetailPage() {
             <p className="mt-2 text-[12.5px] text-ink-3">Reverse DNS zone: {p.ptrZone}</p>
           </Panel>
         )}
+        {staff && p.pingSweep && (
+          <Panel title="Reachability">
+            <p className="text-[13px] text-ink-2">
+              {p.pingError ? (
+                <span className="text-crit">Last check failed: {p.pingError}</span>
+              ) : p.pingCheckedAt ? (
+                <>Pinged {formatDateTime(p.pingCheckedAt)} from the NexoraDC worker; checked again every 5 minutes. A device that blocks ping shows “no reply” even when it is up.</>
+              ) : (
+                'Waiting for the first check (within a minute).'
+              )}
+            </p>
+            {p.unrecorded.length > 0 && (
+              <div className="mt-3">
+                <div className="mb-1.5 text-[13px] font-medium">Answer ping but are not recorded ({p.unrecorded.length})</div>
+                <ul className="flex flex-wrap gap-2 font-mono text-[12.5px]">
+                  {p.unrecorded.map((x) => (
+                    <li key={x.address}>
+                      <button
+                        className="rounded-lg border border-warn/40 bg-warn-soft px-2 py-1 hover:border-warn"
+                        title="Record this address"
+                        onClick={() => (setPreset(x.address), setAlloc('specific'))}
+                      >
+                        {x.address}
+                        {x.rttMs !== null && <span className="ml-1 font-sans text-ink-3">{x.rttMs < 10 ? x.rttMs.toFixed(1) : Math.round(x.rttMs)} ms</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-[12.5px] text-ink-3">Something is using these addresses without an IPAM record. Click one to record it.</p>
+              </div>
+            )}
+          </Panel>
+        )}
         <AddressList prefixId={p.id} />
       </div>
       {edit && <PrefixForm prefix={p} onClose={() => (setEdit(false), qc.invalidateQueries({ queryKey: ['ipam'] }))} />}
-      {alloc && <AllocateForm prefix={p} mode={alloc} onClose={() => setAlloc(null)} />}
+      {alloc && <AllocateForm prefix={p} mode={alloc} initialAddress={alloc === 'specific' ? preset : ''} onClose={() => (setAlloc(null), setPreset(''))} />}
       <ConfirmDialog
         open={confirm}
         onOpenChange={setConfirm}
@@ -547,8 +620,10 @@ function AddressList({ prefixId }: { prefixId?: string }) {
               <tr>
                 <th>Address</th>
                 <th>Status</th>
+                <th>Reachability</th>
                 <th>DNS name</th>
                 <th>Assigned to</th>
+                <th>Owner</th>
                 {staff && <th>Service</th>}
                 {!prefixId && <th>Prefix</th>}
                 <th>Updated</th>
@@ -566,6 +641,9 @@ function AddressList({ prefixId }: { prefixId?: string }) {
                     <Chip tone={STATUS_TONE[a.status]}>{IP_STATUS_LABELS[a.status]}</Chip>
                     {a.reservationExpired && <Chip tone="warn">expired</Chip>}
                     {a.role && <span className="ml-1 text-[12px] text-ink-3">{a.role}</span>}
+                  </td>
+                  <td>
+                    <Reach r={a.reachability} />
                   </td>
                   <td className="text-[13px]">
                     {a.dnsName ?? '—'}
@@ -588,9 +666,15 @@ function AddressList({ prefixId }: { prefixId?: string }) {
                       )
                     ) : null}
                     {a.interfaceName && <span className="font-mono"> {a.interfaceName}</span>}
-                    {a.customerName && <div className="text-ink-3">{a.customerName}</div>}
-                    {!a.deviceName && !a.customerName && '—'}
+                    {a.guestName && (
+                      <div>
+                        VM <span className="font-medium">{a.guestName}</span>
+                        {a.source === 'hypervisor' && <span className="ml-1 text-[11.5px] text-ink-3">(from hypervisor sync)</span>}
+                      </div>
+                    )}
+                    {!a.deviceName && !a.guestName && '—'}
                   </td>
+                  <td className="text-[13px]">{a.customerName ?? <span className="text-ink-2">{a.ownerName}</span>}</td>
                   {staff && <td className="text-[13px]">{a.serviceRef ?? '—'}</td>}
                   {!prefixId && <td className="font-mono text-[12.5px]">{a.prefix ?? <Chip tone="crit">no prefix</Chip>}</td>}
                   <td className="text-[12.5px] whitespace-nowrap text-ink-3">{formatDateTime(a.updatedAt)}</td>
@@ -651,6 +735,7 @@ const assignBody = (f: AssignForm) => ({
 });
 
 function AssignFields({ f, setF, allowDeprecated }: { f: AssignForm; setF: (fn: (x: AssignForm) => AssignForm) => void; allowDeprecated?: boolean }) {
+  const orgOwn = useOrgOwn();
   const customers = useCustomerOptions();
   const devices = useQuery({
     queryKey: ['network', 'devices', 'all'],
@@ -716,7 +801,7 @@ function AssignFields({ f, setF, allowDeprecated }: { f: AssignForm; setF: (fn: 
       <Field label="Customer" hint="Defaults to the device's or prefix's customer">
         {(id, d) => (
           <Select id={id} aria-describedby={d} value={f.customerId} onChange={set('customerId')}>
-            <option value="">—</option>
+            <option value="">{orgOwn} — no customer</option>
             {customers.data?.items.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -738,14 +823,14 @@ function AssignFields({ f, setF, allowDeprecated }: { f: AssignForm; setF: (fn: 
   );
 }
 
-function AllocateForm({ prefix, mode, onClose }: { prefix: PrefixT; mode: 'next' | 'specific'; onClose: () => void }) {
+function AllocateForm({ prefix, mode, initialAddress = '', onClose }: { prefix: PrefixT; mode: 'next' | 'specific'; initialAddress?: string; onClose: () => void }) {
   const qc = useQueryClient();
   const [f, setF] = useState<AssignForm>({
     ...emptyAssign(),
     customerId: s(prefix.customerId),
   });
   const [count, setCount] = useState('1');
-  const [address, setAddress] = useState('');
+  const [address, setAddress] = useState(initialAddress);
   const m = useMutation({
     mutationFn: () =>
       mode === 'next'

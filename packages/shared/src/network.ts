@@ -423,6 +423,8 @@ export const prefixSchema = z.object({
   customerId: uuid.nullable().optional(),
   gateway: ipSchema.nullable().optional(),
   description: optText(300),
+  /** Ping the prefix's addresses every few minutes (read-only ICMP from the worker). Left unchanged when omitted. */
+  pingSweep: z.boolean().optional(),
 });
 
 export const prefixUpdateSchema = prefixSchema.omit({ prefix: true, vrfId: true });
