@@ -297,14 +297,18 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
   const server = http.createServer((req, res) => {
     const url = new URL(req.url!, 'http://x');
     const q = Object.fromEntries(url.searchParams);
-    const { apikey, apipass, ...rest } = q;
+    const { adminapikey: apikey, adminapipass: apipass, ...rest } = q;
     requests.push({ act: q.act ?? null, params: rest });
     const send = (b: unknown) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(b));
     };
     if (url.pathname !== '/index.php' || q.api !== 'json') return send({ error: { unknown: 'Unknown request' } });
-    if (apikey !== apiKey || apipass !== apiPass) return send({ error: { auth: 'API Key / API Pass is invalid' } });
+    // Like Virtualizor: a request without valid admin API credentials is sent to the login page.
+    if (apikey !== apiKey || apipass !== apiPass) {
+      res.writeHead(302, { Location: '/index.php?act=login' });
+      return res.end();
+    }
     if (q.act === 'servers') return send({ servs: { '0': { serid: '0', server_name: 'kvm-node-1', status: '1', total_cores: '48', total_ram: '262144' } } });
     if (q.act === 'vs') {
       const vpsid = q.vpsid ?? q.suspend ?? q.unsuspend;

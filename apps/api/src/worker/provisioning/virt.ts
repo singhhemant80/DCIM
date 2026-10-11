@@ -132,7 +132,7 @@ export function proxmoxClient(cfg: { url: string; verifyTls: boolean; tokenId: s
 /* ------------------------------------------------------------------ Virtualizor */
 
 /**
- * Virtualizor admin API (index.php?act=…&api=json&apikey=…&apipass=…). The key
+ * Virtualizor admin API (index.php?act=…&api=json&adminapikey=…&adminapipass=…). The key
  * is in the query string by Virtualizor's design; error messages here never
  * include the query string. Response shapes follow Virtualizor's API docs and
  * have not been checked against a live panel.
@@ -148,13 +148,23 @@ const VZ_ACTIONS: Partial<Record<GuestAction, string>> = { start: 'start', shutd
 export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey: string; apiPass: string; actionsEnabled: boolean }): VirtClient {
   const t = target(cfg.url, cfg.verifyTls);
   const call = async (params: Record<string, string>) => {
-    const q = new URLSearchParams({ ...params, api: 'json', apikey: cfg.apiKey, apipass: cfg.apiPass });
+    const q = new URLSearchParams({ ...params, api: 'json', adminapikey: cfg.apiKey, adminapipass: cfg.apiPass });
     try {
-      const r = (await deviceRequest(t, 'GET', `/index.php?${q.toString()}`, { defaultPort: 4085 })).json as Row | null;
-      if (!r || typeof r !== 'object') throw new Error('Empty response from Virtualizor');
-      if (r.error && Object.keys(r.error as object).length) {
-        const msg = Object.values(r.error as Row).map(String).join('; ');
-        throw /api|key|pass|auth/i.test(msg) ? new PermanentError(`Virtualizor refused the request: ${msg}`) : new Error(`Virtualizor: ${msg}`);
+      const res = await deviceRequest(t, 'GET', `/index.php?${q.toString()}`, { defaultPort: 4085, rawErrors: true });
+      // Virtualizor answers a request it doesn't accept with a redirect to its login page.
+      if (res.status === 301 || res.status === 302 || res.status === 303 || res.status === 401 || res.status === 403)
+        throw new PermanentError(
+          `Virtualizor did not accept the API credentials (HTTP ${res.status}). Use an Admin API key and password (Virtualizor admin panel → Configuration → API Credentials, on the master), and allow this NexoraDC server's IP for that key`,
+        );
+      if (res.status >= 400) throw new Error(`HTTP ${res.status} from Virtualizor`);
+      const r = res.json as Row | null;
+      if (!r || typeof r !== 'object')
+        throw new Error('Virtualizor sent no JSON. Check that the URL is the admin panel of the master (https://<master>:4085) and that the API credentials are Admin API credentials');
+      const err = r.error as unknown;
+      const msgs = Array.isArray(err) ? err.map((x) => String((x as Row)?.msg ?? x)) : err && typeof err === 'object' ? Object.values(err as Row).map(String) : [];
+      if (msgs.length) {
+        const msg = msgs.join('; ');
+        throw /api|key|pass|auth|login|permission/i.test(msg) ? new PermanentError(`Virtualizor refused the request: ${msg}`) : new Error(`Virtualizor: ${msg}`);
       }
       return r;
     } catch (e) {

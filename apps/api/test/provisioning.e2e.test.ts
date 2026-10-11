@@ -759,4 +759,14 @@ describe('hypervisors', () => {
     const events = JSON.stringify(await ok(admin.get(`${P}/jobs/${j.id}`)));
     expect(events).not.toMatch(/VZKEY123|vz-api-pass-77/);
   });
+
+  it('Virtualizor: sends the admin API credentials and explains a rejected key', async () => {
+    // The key and pass go in adminapikey / adminapipass (the mock only answers those).
+    expect(vz.requests.length).toBeGreaterThan(0);
+    const bad = await ok(admin.post(`${V}/integrations`, { kind: 'virtualizor', name: 'VZ wrong key', url: `http://127.0.0.1:${vz.port}`, verifyTls: false, apiKey: 'WRONGKEY', apiPass: 'wrong-pass-123', actionsEnabled: false, syncMinutes: 10 }));
+    await syncDueIntegrations(deps(), { force: bad.id }).catch(() => undefined);
+    const row = (await ok(admin.get(`${V}/integrations`))).find((x: { id: string }) => x.id === bad.id);
+    expect(row.lastError).toMatch(/did not accept the API credentials/);
+    expect(JSON.stringify(row)).not.toMatch(/WRONGKEY|wrong-pass-123/);
+  });
 });
