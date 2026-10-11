@@ -82,6 +82,8 @@ export class RouterOsApiClient {
   private buf = Buffer.alloc(0);
   private waiting: { resolve: (s: string[][]) => void; reject: (e: Error) => void; acc: string[][] } | null = null;
   private failure: Error | null = null;
+  private received = false;
+  private port = 0;
 
   constructor(private readonly t: AdapterTarget) {}
 
@@ -89,6 +91,7 @@ export class RouterOsApiClient {
     const timeout = this.t.params.timeoutMs ?? 5000;
     const useTls = this.t.params.tls !== false;
     const port = this.t.port ?? (useTls ? 8729 : 8728);
+    this.port = port;
     const host = this.t.host.replace(/^\[|\]$/g, '');
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -111,7 +114,15 @@ export class RouterOsApiClient {
     this.sock.setTimeout(timeout, () => this.fail(new RouterOsApiError(`No reply within ${timeout} ms`)));
     this.sock.on('data', (d: Buffer) => this.onData(d));
     this.sock.on('error', (e) => this.fail(e));
-    this.sock.on('close', () => this.fail(new RouterOsApiError('Connection closed by the router')));
+    this.sock.on('close', () =>
+      this.fail(
+        new RouterOsApiError(
+          this.received
+            ? 'Connection closed by the router'
+            : `Connection closed by the router on port ${port} before it answered. Check that this port is the API service (api 8728, api-ssl ${useTls ? '8729' : '8729 with TLS'}) and not the web/REST port (www, www-ssl: use the "MikroTik RouterOS REST API" credential for those), that the service is enabled, and that /ip service … address= allows this server`,
+        ),
+      ),
+    );
   }
 
   private fail(e: Error) {
@@ -122,6 +133,12 @@ export class RouterOsApiClient {
   }
 
   private onData(d: Buffer) {
+    // A web server on this port (www / www-ssl) answers the API's binary login with an HTTP error page.
+    if (!this.received && d.subarray(0, 5).toString('latin1') === 'HTTP/') {
+      this.received = true;
+      return this.fail(new RouterOsApiError(`Port ${this.port} is a web (HTTP) service, not the RouterOS API. Use the "MikroTik RouterOS REST API" credential for this port, or port 8729 (api-ssl) / 8728 (api) for this one`));
+    }
+    this.received = true;
     this.buf = Buffer.concat([this.buf, d]);
     if (this.buf.length > MAX_BUFFER) return this.fail(new RouterOsApiError('Reply too large'));
     const { sentences, rest } = decodeSentences(this.buf);
