@@ -39,4 +39,20 @@ export interface AlertLiveEvent {
   suppressed: boolean;
 }
 
-export type MonitoringEvent = RatesEvent | AlertLiveEvent;
+/**
+ * Second-by-second rates while someone is watching a port (live view). Not
+ * stored: the regular poll keeps writing history. Measured from counters
+ * read once a second.
+ */
+export interface LiveEvent {
+  type: 'live';
+  deviceId: string;
+  at: string;
+  ports: { interfaceId: string; inBps: number | null; outBps: number | null; operUp: boolean | null }[];
+}
+
+/** Devices someone is watching live: sorted set of "<orgId>:<deviceId>" scored by expiry (ms). */
+export const LIVE_WATCH_KEY = 'cdcim:live:watch';
+export const LIVE_WATCH_TTL_MS = 20_000;
+
+export type MonitoringEvent = RatesEvent | AlertLiveEvent | LiveEvent;

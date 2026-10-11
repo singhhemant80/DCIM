@@ -17,7 +17,8 @@ import { claimDue, pollDue, runPoll, type PollOutcome } from '../src/worker/moni
 import { closeUnmonitoredAlerts, evaluateAlerts, type AlertEvent } from '../src/worker/monitoring/alerts';
 import { applyRetention, rollup } from '../src/worker/monitoring/rollup';
 import { deliverDue, isPrivateAddress } from '../src/worker/monitoring/notify';
-import { monitoringChannel } from '../src/monitoring/events';
+import { LIVE_WATCH_KEY, monitoringChannel, type LiveEvent } from '../src/monitoring/events';
+import { createLiveLoop } from '../src/worker/monitoring/live';
 import { routerOsApiAdapter } from '../src/worker/adapters/routeros-api';
 import { fortiOsAdapter } from '../src/worker/adapters/fortios';
 import { nxApiAdapter } from '../src/worker/adapters/nxapi';
@@ -623,6 +624,36 @@ describe('live stream', () => {
     expect(cust.text()).not.toContain('777');
     expect(cust.text()).not.toContain('secret-ish');
     expect(staff.text()).not.toContain('5555'); // other organization
+  });
+
+  it('live view: a watched device is read every second and streamed, without storing anything', async () => {
+    const M2 = '/api/v1/monitoring';
+    expect(await ok(noc.post(`${M2}/ports/${ids.swif.ether1}/watch`))).toMatchObject({ live: true, everySeconds: 1 });
+    // Customers can watch only ports they may see.
+    expect((await acme.post(`${M2}/ports/${ids.if.ether1}/watch`)).status).toBe(404);
+    expect((await acme.post(`${M2}/ports/${ids.swif.ether1}/watch`)).status).toBe(200);
+    const redis = new Redis(process.env.TEST_REDIS_URL ?? 'redis://127.0.0.1:6379');
+    expect(await redis.zscore(LIVE_WATCH_KEY, `${ctx.org.id}:${ids.sw}`)).not.toBeNull();
+    const events: LiveEvent[] = [];
+    const loop = createLiveLoop({ db: ctx.db, secrets: ctx.app.get(SecretBox), logger: silent, redis, publish: (_o, ev) => void events.push(ev) });
+    const storedBefore = (await ctx.db.select({ n: sql<number>`count(*)::int` }).from(interfaceRates))[0]!.n;
+    const before = rest.requests.length;
+    expect(await loop()).toBe(1);
+    await new Promise((r) => setTimeout(r, 1000));
+    rosAdd('ether1', 12_500_000n, 1_250_000n); // ~100 / 10 Mbit/s over the second
+    await loop();
+    const end = Date.now() + 3000;
+    while (!events.length && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+    const p = events[0]!.ports.find((x) => x.interfaceId === ids.swif.ether1)!;
+    expect(p.inBps!).toBeGreaterThan(80e6);
+    expect(p.inBps!).toBeLessThan(105e6);
+    expect(events[0]!.type).toBe('live');
+    expect(rest.requests.slice(before).every((q) => q.method === 'GET')).toBe(true);
+    expect((await ctx.db.select({ n: sql<number>`count(*)::int` }).from(interfaceRates))[0]!.n).toBe(storedBefore);
+    // The watch lapses without heartbeats.
+    await redis.zadd(LIVE_WATCH_KEY, Date.now() - 1, `${ctx.org.id}:${ids.sw}`);
+    expect(await loop()).toBe(0);
+    redis.disconnect();
   });
 
   it('limits concurrent streams per user', async () => {

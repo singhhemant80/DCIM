@@ -109,8 +109,19 @@ export const perSec = (v: number | null | undefined) => (v === null || v === und
  * itself; `connected` is false while it does. The data on screen is also
  * refetched periodically, so a missed event only delays an update.
  */
+/** One second-by-second sample from the live view. */
+export interface LiveSample {
+  t: number;
+  inBps: number | null;
+  outBps: number | null;
+}
+/** Seconds of per-second samples kept per port in the browser. */
+export const LIVE_WINDOW_SECONDS = 300;
+
 export function useMonitoringStream(enabled = true) {
   const [live, setLive] = useState<Map<string, LivePort>>(() => new Map());
+  const [fast, setFast] = useState<Map<string, LiveSample[]>>(() => new Map());
+  const pendingFast = useRef<Map<string, LiveSample[]>>(new Map());
   const [connected, setConnected] = useState(false);
   const [feed, setFeed] = useState<boolean | null>(null);
   const [lastAlertAt, setLastAlertAt] = useState(0);
@@ -120,6 +131,16 @@ export function useMonitoringStream(enabled = true) {
     const es = new EventSource('/api/v1/monitoring/stream');
     // Batch updates so a burst of devices re-renders once.
     const flush = setInterval(() => {
+      if (pendingFast.current.size) {
+        const fb = pendingFast.current;
+        pendingFast.current = new Map();
+        setFast((prev) => {
+          const next = new Map(prev);
+          const cutoff = Date.now() - LIVE_WINDOW_SECONDS * 1000;
+          for (const [k, v] of fb) next.set(k, [...(prev.get(k) ?? []), ...v].filter((x) => x.t >= cutoff));
+          return next;
+        });
+      }
       if (!pending.current.size) return;
       const batch = pending.current;
       pending.current = new Map();
@@ -140,13 +161,22 @@ export function useMonitoringStream(enabled = true) {
       const ev = JSON.parse((e as MessageEvent).data) as { at: string; ports: Omit<LivePort, 'at'>[] };
       for (const p of ev.ports) pending.current.set(p.interfaceId, { ...p, at: ev.at });
     });
+    es.addEventListener('live', (e) => {
+      const ev = JSON.parse((e as MessageEvent).data) as { at: string; ports: { interfaceId: string; inBps: number | null; outBps: number | null }[] };
+      const t = new Date(ev.at).getTime();
+      for (const p of ev.ports) {
+        const list = pendingFast.current.get(p.interfaceId) ?? [];
+        list.push({ t, inBps: p.inBps, outBps: p.outBps });
+        pendingFast.current.set(p.interfaceId, list);
+      }
+    });
     es.addEventListener('alert', () => setLastAlertAt(Date.now()));
     return () => {
       clearInterval(flush);
       es.close();
     };
   }, [enabled]);
-  return { live, connected, feed, lastAlertAt };
+  return { live, fast, connected, feed, lastAlertAt };
 }
 
 /** A port row with the newest live values applied (when they are newer than the row). */

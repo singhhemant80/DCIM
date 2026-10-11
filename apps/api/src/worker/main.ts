@@ -16,6 +16,7 @@ import { createPollLoop, type PollOutcome } from './monitoring/poller';
 import { applyRetention, rollup } from './monitoring/rollup';
 import { closeUnmonitoredAlerts, evaluateAlerts } from './monitoring/alerts';
 import { deliverDue } from './monitoring/notify';
+import { createLiveLoop } from './monitoring/live';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
@@ -135,6 +136,8 @@ async function main() {
     every('provisioning', 2_000, createJobLoop(provisioning, Math.max(1, Math.min(32, Number(process.env.PROVISIONING_CONCURRENCY ?? 4) || 4)))),
     every('virt-sync', 30_000, () => syncDueIntegrations(provisioning)),
     every('notify', 10_000, () => deliverDue({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
+    // Live view: once a second for devices someone is watching (nothing stored).
+    every('live', 1_000, createLiveLoop({ db, secrets, logger, redis: pub, publish: (orgId, ev) => publish(orgId, ev) })),
     every('events', 2_000, async () => {
       // Fan out, then run the workflows and webhooks that fan-out produced.
       while ((await dispatchEvents(automation)) === 200);

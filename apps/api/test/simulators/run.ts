@@ -86,8 +86,8 @@ void (async () => {
       if (!p) continue;
       const c = totals.get(i.ifIndex) ?? { in: 10_000_000_000n, out: 4_000_000_000n, pin: 0n, pout: 0n };
       const noise = () => 0.85 + Math.random() * 0.3;
-      const dIn = BigInt(Math.round((p.inBps * daily * noise() * 5) / 8));
-      const dOut = BigInt(Math.round((p.outBps * daily * noise() * 5) / 8));
+      const dIn = BigInt(Math.round((p.inBps * daily * noise()) / 8));
+      const dOut = BigInt(Math.round((p.outBps * daily * noise()) / 8));
       c.in += dIn;
       c.out += dOut;
       c.pin += dIn / 900n;
@@ -100,8 +100,8 @@ void (async () => {
     }
   };
   step();
-  setInterval(step, 5000);
+  setInterval(step, 1000);
   process.stdout.write(
-    `SNMP simulator on udp/127.0.0.1:16161 (community demo-public-ro), counters advance every 5 s\nRedfish BMC mock on http://127.0.0.1:${bmc.port} (root / demo-bmc-pass, scheme HTTP)\nAPC PDU simulator on udp/127.0.0.1:16162 (community demo-pdu-ro)\nRouterOS REST mock on http://127.0.0.1:${ros.port} (dcim-ro / demo-pass, use scheme HTTP)\nControl Redfish BMC on http://127.0.0.1:18081 (dcim-ctl / demo-ctl-pass), demo installer MAC ${DEMO_MAC}\nImage mirror http://127.0.0.1:18090: demo.iso ${sha(iso)}\n  vmlinuz ${sha(kernel)}\n  initrd.img ${sha(initrd)}\nProxmox VE mock on http://127.0.0.1:18006, Virtualizor mock on http://127.0.0.1:14085\nCtrl+C to stop.\n`,
+    `SNMP simulator on udp/127.0.0.1:16161 (community demo-public-ro), counters advance every second\nRedfish BMC mock on http://127.0.0.1:${bmc.port} (root / demo-bmc-pass, scheme HTTP)\nAPC PDU simulator on udp/127.0.0.1:16162 (community demo-pdu-ro)\nRouterOS REST mock on http://127.0.0.1:${ros.port} (dcim-ro / demo-pass, use scheme HTTP)\nControl Redfish BMC on http://127.0.0.1:18081 (dcim-ctl / demo-ctl-pass), demo installer MAC ${DEMO_MAC}\nImage mirror http://127.0.0.1:18090: demo.iso ${sha(iso)}\n  vmlinuz ${sha(kernel)}\n  initrd.img ${sha(initrd)}\nProxmox VE mock on http://127.0.0.1:18006, Virtualizor mock on http://127.0.0.1:14085\nCtrl+C to stop.\n`,
   );
 })();

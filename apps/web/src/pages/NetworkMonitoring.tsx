@@ -5,7 +5,7 @@ import { RATE_RANGES, type RateRange } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { relativeTime } from '../lib/format';
-import { SKIP_LABELS, bps, pct, perSec, useMonitoringStream, withLive, type PortHistoryT, type PortRateT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
+import { SKIP_LABELS, bps, pct, perSec, useMonitoringStream, withLive, LIVE_WINDOW_SECONDS, type LiveSample, type PortHistoryT, type PortRateT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
 import { RateChart } from '../components/RateChart';
 import { Chip, EmptyState, ErrorNote, Input, Loading, PageHeader, Pagination, Panel, Select, Stat, Table, cx } from '../components/ui';
 
@@ -100,8 +100,32 @@ function TotalsPanel() {
   );
 }
 
-function PortDetail({ port, onClose }: { port: PortRateT; onClose: () => void }) {
+function PortDetail({ port, liveSamples, onClose }: { port: PortRateT; liveSamples?: LiveSample[]; onClose: () => void }) {
   const [range, setRange] = useState<RateRange>('1h');
+  // Live view: keep the worker reading this device every second while the chart is open.
+  const [watch, setWatch] = useState<{ live: boolean; reason?: string } | null>(null);
+  useEffect(() => {
+    let stop = false;
+    const beat = () =>
+      api
+        .post<{ live: boolean; reason?: string }>(`/monitoring/ports/${port.interfaceId}/watch`)
+        .then((r) => !stop && setWatch(r))
+        .catch(() => !stop && setWatch({ live: false, reason: 'Live view is not available' }));
+    void beat();
+    const h = setInterval(beat, 10_000);
+    return () => {
+      stop = true;
+      clearInterval(h);
+    };
+  }, [port.interfaceId]);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const h = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(h);
+  }, []);
+  const lastLive = liveSamples?.length ? liveSamples[liveSamples.length - 1]! : null;
+  const liveNow = !!lastLive && Date.now() - lastLive.t < 4000 && lastLive.inBps !== null;
+  void tick;
   const h = useQuery({ queryKey: ['monitoring', 'history', port.interfaceId, range], queryFn: () => api.get<PortHistoryT>(`/monitoring/ports/${port.interfaceId}/history${qs({ range })}`), refetchInterval: range === '1h' ? 30_000 : 120_000, placeholderData: keepPreviousData });
   const now = Date.now();
   const d = h.data;
@@ -140,12 +164,25 @@ function PortDetail({ port, onClose }: { port: PortRateT; onClose: () => void })
       }
     >
       <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-5">
-        <Stat label="In now" value={bps(port.inBps)} note={port.utilIn !== null ? `${pct(port.utilIn)} of ${bps(port.speedBps)}` : port.speedBps ? undefined : 'Speed unknown'} />
-        <Stat label="Out now" value={bps(port.outBps)} note={port.utilOut !== null ? `${pct(port.utilOut)} of ${bps(port.speedBps)}` : undefined} />
+        <Stat label={liveNow ? 'In · live' : 'In now'} value={bps(liveNow ? lastLive!.inBps : port.inBps)} note={liveNow && port.speedBps ? `${pct(((lastLive!.inBps ?? 0) / port.speedBps) * 100)} of ${bps(port.speedBps)}` : port.utilIn !== null ? `${pct(port.utilIn)} of ${bps(port.speedBps)}` : port.speedBps ? undefined : 'Speed unknown'} />
+        <Stat label={liveNow ? 'Out · live' : 'Out now'} value={bps(liveNow ? lastLive!.outBps : port.outBps)} note={liveNow && port.speedBps ? `${pct(((lastLive!.outBps ?? 0) / port.speedBps) * 100)} of ${bps(port.speedBps)}` : port.utilOut !== null ? `${pct(port.utilOut)} of ${bps(port.speedBps)}` : undefined} />
         <Stat label="95th pct in" value={bps(d?.p95.inBps)} note={d ? `${d.p95.samples} × 5-min averages` : undefined} />
         <Stat label="95th pct out" value={bps(d?.p95.outBps)} />
         <Stat label="Errors / discards" value={`${perSec(port.errorsPs)} · ${perSec(port.discardsPs)}`} tone={(port.errorsPs ?? 0) > 0 ? 'warn' : undefined} />
       </dl>
+      <div className="mb-5">
+        <div className="mb-1 flex items-center gap-2 text-[13px]">
+          <span className={liveNow ? 'size-2 animate-pulse rounded-full bg-ok' : 'size-2 rounded-full bg-ink-3'} aria-hidden />
+          <span className="font-medium">Live, every second</span>
+          <span className="text-ink-3">
+            {liveNow ? 'Read from the device once a second while this chart is open (not stored).' : watch && !watch.live ? watch.reason : 'Starting live view…'}
+          </span>
+        </div>
+        {!!liveSamples?.length && (
+          <RateChart label={`Live traffic on ${port.deviceName} ${port.name}`} points={liveSamples} stepSeconds={1} from={Date.now() - LIVE_WINDOW_SECONDS * 1000} to={Date.now()} />
+        )}
+      </div>
+      <div className="mb-1 text-[13px] font-medium">History</div>
       <ErrorNote error={h.error} />
       {h.isLoading && <Loading />}
       {d && chartPoints.length === 0 && <EmptyState title="No measurements in this range">{range === '1h' || range === '6h' ? 'Rates appear after two polls of the device.' : 'Longer ranges use 5-minute and hourly aggregates, built every minute from the raw readings.'}</EmptyState>}
@@ -215,7 +252,7 @@ export function NetworkMonitoringPage() {
       />
       <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
         {staff && !deviceId && <TotalsPanel />}
-        {detail && <PortDetail key={detail.interfaceId} port={detail} onClose={() => select(null)} />}
+        {detail && <PortDetail key={detail.interfaceId} port={detail} liveSamples={stream.fast.get(detail.interfaceId)} onClose={() => select(null)} />}
         <Panel
           flush
           title={deviceId && rows[0] ? `Ports on ${rows[0].deviceName}` : 'Ports'}

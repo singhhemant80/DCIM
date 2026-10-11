@@ -87,6 +87,10 @@ crapplet-dcim/
 
 SSE was chosen over WebSockets because updates only flow server to client, it works through nginx with no upgrade handling, and it reconnects automatically.
 
+## Live view
+
+While a port chart is open, the browser calls `POST /monitoring/ports/:id/watch` every 10 seconds. The API puts the port's device in a Redis sorted set with a 20-second expiry; the worker reads every watched device's counters once a second with its stored read-only credential, computes per-second rates in memory and publishes them as `live` events on the same SSE stream (customers receive only ports they may see). Nothing is stored; the recorded history still comes from the regular poll. At most 20 devices are sampled live at once.
+
 ## Polling design (Phase 4, implemented)
 
 ```mermaid

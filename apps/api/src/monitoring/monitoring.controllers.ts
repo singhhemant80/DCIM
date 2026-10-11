@@ -20,7 +20,10 @@ import type { Principal, RequestMeta } from '../auth/principal';
 import { MonitoringService } from './monitoring.service';
 import { AlertsService } from './alerts.service';
 import { MonitoringStream } from './stream.service';
-import type { MonitoringEvent } from './events';
+import { LIVE_WATCH_KEY, LIVE_WATCH_TTL_MS, type MonitoringEvent } from './events';
+import { Inject } from '@nestjs/common';
+import type Redis from 'ioredis';
+import { REDIS } from '../redis/redis';
 
 type Infer<T extends z.ZodTypeAny> = z.infer<T>;
 const UUID = new ParseUUIDPipe();
@@ -36,7 +39,30 @@ export class MonitoringController {
   constructor(
     private readonly svc: MonitoringService,
     private readonly stream: MonitoringStream,
+    @Inject(REDIS) private readonly redis: Redis,
   ) {}
+
+  /**
+   * Live view: while a browser keeps calling this (every ~10 s), the worker
+   * reads the port's device once a second and streams the rates as `live`
+   * events. Read-only, nothing is stored; the watch lapses 20 s after the last call.
+   */
+  @Post('ports/:id/watch')
+  @HttpCode(200)
+  @RequirePermissions('monitoring.read')
+  @ApiOperation({ summary: 'Keep second-by-second live rates flowing for the device of this port (heartbeat).' })
+  async watch(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    const port = await this.svc.port(p, id);
+    if (!port.pollingEnabled) return { live: false, reason: 'Polling is not enabled for this device' };
+    try {
+      // The shared connection is lazy; the first watch opens it.
+      if (this.redis.status === 'wait') await this.redis.connect();
+      await this.redis.zadd(LIVE_WATCH_KEY, Date.now() + LIVE_WATCH_TTL_MS, `${p.orgId}:${port.deviceId}`);
+    } catch {
+      return { live: false, reason: 'The live feed is unavailable (Redis); the chart still updates with each poll' };
+    }
+    return { live: true, everySeconds: 1, until: new Date(Date.now() + LIVE_WATCH_TTL_MS).toISOString() };
+  }
 
   @Get('ports')
   @RequirePermissions('monitoring.read')
@@ -145,11 +171,11 @@ export class MonitoringController {
           if (staff) sub.next({ type: 'alert', data: ev });
           return;
         }
-        if (staff) return sub.next({ type: 'rates', data: ev });
+        if (staff) return sub.next({ type: ev.type, data: ev });
         if (!visible) return;
-        const ports = ev.ports.filter((x) => visible!.has(x.interfaceId));
+        const ports = (ev.ports as { interfaceId: string }[]).filter((x) => visible!.has(x.interfaceId));
         // A customer learns nothing about devices they have no visible ports on.
-        if (ports.length) sub.next({ type: 'rates', data: { ...ev, error: undefined, ports } });
+        if (ports.length) sub.next({ type: ev.type, data: { ...ev, error: undefined, ports } });
       };
       const unsubscribe = this.stream.subscribe(p.orgId, send, p.userId);
       if (!unsubscribe) {
