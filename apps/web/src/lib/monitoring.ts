@@ -194,22 +194,28 @@ export function withLive(p: PortRateT, live: Map<string, LivePort>): PortRateT {
  * Any monitored port of the device identifies it.
  */
 export function useLiveWatch(interfaceId: string | null | undefined) {
+  const r = useLiveWatchMany(interfaceId ? [interfaceId] : []);
+  return r;
+}
+
+/** useLiveWatch for several devices at once (one monitored port id per device). */
+export function useLiveWatchMany(interfaceIds: string[]) {
+  const key = [...interfaceIds].sort().join(',');
   const [state, setState] = useState<{ live: boolean; reason?: string } | null>(null);
   useEffect(() => {
-    if (!interfaceId) return;
+    const ids = key ? key.split(',') : [];
+    if (!ids.length) return;
     let stop = false;
     const beat = () =>
-      api
-        .post<{ live: boolean; reason?: string }>(`/monitoring/ports/${interfaceId}/watch`)
-        .then((r) => !stop && setState(r))
-        .catch(() => !stop && setState({ live: false, reason: 'Live view is not available' }));
+      Promise.all(ids.map((id) => api.post<{ live: boolean; reason?: string }>(`/monitoring/ports/${id}/watch`).catch(() => ({ live: false, reason: 'Live view is not available' }))))
+        .then((rs) => !stop && setState(rs.find((r) => r.live) ?? rs[0]!));
     void beat();
     const h = setInterval(beat, 10_000);
     return () => {
       stop = true;
       clearInterval(h);
     };
-  }, [interfaceId]);
+  }, [key]);
   return state;
 }
 

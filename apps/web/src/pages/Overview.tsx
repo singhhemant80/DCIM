@@ -11,7 +11,8 @@ import { STATE_TONE, daysUntil } from '../lib/dcim';
 import { CustomerEquipment } from './Hardware';
 import { OccupancyBar } from './Racks';
 import { formatBps } from '../lib/network';
-import { bps, type AlertSummaryT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
+import { useEffect, useMemo, useState } from 'react';
+import { bps, latestLive, useLiveWatchMany, useMonitoringStream, withLive, type AlertSummaryT, type LiveSample, type PortRateT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
 import { RateChart } from '../components/RateChart';
 import { formatKwh, formatWattsShort } from '@crapplet/shared';
 import type { EnergyT, PowerNowT } from '../lib/power';
@@ -141,10 +142,118 @@ function BandwidthPanel() {
             <Stat label="95th pct in, 24 h" value={bps(d.history.p95.inBps)} note={`${d.history.p95.samples} 5-minute samples`} />
             <Stat label="Alerts firing" value={d.alerts.firing} tone={d.alerts.critical ? 'crit' : d.alerts.firing ? 'warn' : 'ok'} note={d.alerts.firing ? `${d.alerts.critical} critical` : 'All clear'} />
           </dl>
+          <LiveUplinks />
           {d.history.points.length > 1 && <RateChart label="Total traffic, last 24 hours" points={d.history.points.map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps }))} stepSeconds={d.history.stepSeconds} from={now - 86400_000} to={now} p95={d.history.p95} />}
         </>
       )}
     </Panel>
+  );
+}
+
+/** A tiny in/out line chart of the last two minutes of per-second samples. */
+function Sparkline({ samples, max }: { samples: LiveSample[]; max: number }) {
+  const W = 220;
+  const H = 44;
+  const now = Date.now();
+  const from = now - 120_000;
+  const pts = samples.filter((s) => s.t >= from);
+  const path = (k: 'inBps' | 'outBps') => {
+    let d = '';
+    let prev: number | null = null;
+    for (const s of pts) {
+      const v = s[k];
+      if (v === null) {
+        prev = null;
+        continue;
+      }
+      const x = ((s.t - from) / 120_000) * W;
+      const y = H - 2 - (Math.min(v, max) / max) * (H - 4);
+      d += `${prev === null || s.t - prev > 3000 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+      prev = s.t;
+    }
+    return d;
+  };
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="h-11 w-full" role="img" aria-label="Last two minutes, every second">
+      <line x1={0} x2={W} y1={H - 1} y2={H - 1} stroke="var(--rule)" />
+      <path d={path('outBps')} fill="none" strokeWidth={1.5} style={{ stroke: 'var(--tx)' }} />
+      <path d={path('inBps')} fill="none" strokeWidth={1.5} style={{ stroke: 'var(--rx)' }} />
+    </svg>
+  );
+}
+
+/**
+ * Each uplink / transit port on its own, live: while the overview is open the
+ * worker reads those devices once a second (nothing stored).
+ */
+function LiveUplinks() {
+  const q = useQuery({ queryKey: ['monitoring', 'ports', 'uplinks'], queryFn: () => api.get<{ items: PortRateT[] }>('/monitoring/ports?totalsOnly=true&pageSize=50&sort=name'), refetchInterval: 30_000 });
+  const items = q.data?.items ?? [];
+  const stream = useMonitoringStream(items.length > 0);
+  // One watched port per device is enough to read the whole device.
+  const perDevice = useMemo(() => [...new Map(items.map((p) => [p.deviceId, p.interfaceId])).values()], [items]);
+  const watch = useLiveWatchMany(perDevice);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const h = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(h);
+  }, []);
+  if (!items.length) return null;
+  return (
+    <div className="mb-4 rounded-xl border border-rule">
+      <div className="flex items-center justify-between border-b border-rule px-3 py-2 text-[13px]">
+        <span className="font-medium">Uplinks</span>
+        <span className="flex items-center gap-1.5 text-ink-3">
+          {watch?.live && stream.fast.size ? (
+            <>
+              <span className="size-1.5 animate-pulse rounded-full bg-ok" aria-hidden /> live, every second (not stored)
+            </>
+          ) : (
+            (watch?.reason ?? 'starting live view…')
+          )}
+        </span>
+      </div>
+      <ul className="divide-y divide-rule">
+        {items.map((raw) => {
+          const p = withLive(raw, stream.live);
+          const samples = stream.fast.get(p.interfaceId) ?? [];
+          const l = latestLive(samples);
+          const inBps = l ? l.inBps : p.fresh ? p.inBps : null;
+          const outBps = l ? l.outBps : p.fresh ? p.outBps : null;
+          const peak = Math.max(1, ...samples.slice(-120).flatMap((s) => [s.inBps ?? 0, s.outBps ?? 0]));
+          const pctOf = (v: number | null) => (v !== null && p.speedBps ? `${((v / p.speedBps) * 100).toFixed(v / p.speedBps < 0.1 ? 1 : 0)}%` : null);
+          return (
+            <li key={p.interfaceId} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)] items-center gap-x-3 gap-y-1.5 px-3 py-2.5">
+              <Link to={`/network-monitoring?port=${p.interfaceId}`} className="col-span-3 min-w-0 hover:underline">
+                <div className="truncate font-medium">
+                  {p.description || p.name}
+                </div>
+                <div className="truncate text-[12px] text-ink-3">
+                  {p.deviceName} · <span className="font-mono">{p.name}</span>
+                  {p.speedBps ? ` · ${bps(p.speedBps)}` : ''}
+                  {p.operUp === false && <span className="ml-1 text-crit">· down</span>}
+                </div>
+              </Link>
+              <div>
+                <div className="text-[11.5px] text-ink-3">In</div>
+                <div className="text-[17px] font-semibold whitespace-nowrap tabular-nums" style={{ color: 'var(--rx)' }}>
+                  {bps(inBps)}
+                </div>
+                {pctOf(inBps) && <div className="text-[11.5px] text-ink-3">{pctOf(inBps)} of link</div>}
+              </div>
+              <div>
+                <div className="text-[11.5px] text-ink-3">Out</div>
+                <div className="text-[17px] font-semibold whitespace-nowrap tabular-nums" style={{ color: 'var(--tx)' }}>
+                  {bps(outBps)}
+                </div>
+                {pctOf(outBps) && <div className="text-[11.5px] text-ink-3">{pctOf(outBps)} of link</div>}
+              </div>
+              {samples.length > 1 ? <Sparkline samples={samples} max={peak * 1.1} /> : <div className="text-[12px] text-ink-3">{l ? '' : 'waiting for live samples…'}</div>}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
