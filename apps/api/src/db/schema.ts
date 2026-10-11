@@ -1133,7 +1133,7 @@ export const deviceMonitoring = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('device_monitoring_due_idx').on(t.nextPollAt), check('device_monitoring_interval_ck', sql`${t.intervalSeconds} between 30 and 3600`)],
+  (t) => [index('device_monitoring_due_idx').on(t.nextPollAt), check('device_monitoring_interval_ck', sql`${t.intervalSeconds} between 10 and 3600`)],
 );
 
 /** Last raw counter reading per interface: the baseline for the next rate. */

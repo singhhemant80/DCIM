@@ -952,7 +952,7 @@ function PollingForm({ row, onDone }: { row: PollingT; onDone: () => void }) {
       <Field label="Interval" hint="Shorter intervals give finer charts and faster alerts but more load on the device">
         {(id, d) => (
           <Select id={id} aria-describedby={d} value={interval} onChange={(e) => setIntervalS(Number(e.target.value))}>
-            {[30, 60, 120, 300, 600].map((s) => (
+            {[10, 15, 30, 60, 120, 300, 600].map((s) => (
               <option key={s} value={s}>
                 {s < 60 ? `${s} seconds` : `${s / 60} minute${s === 60 ? '' : 's'}`}
               </option>

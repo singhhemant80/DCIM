@@ -105,6 +105,17 @@ function PortDetail({ port, onClose }: { port: PortRateT; onClose: () => void })
   const h = useQuery({ queryKey: ['monitoring', 'history', port.interfaceId, range], queryFn: () => api.get<PortHistoryT>(`/monitoring/ports/${port.interfaceId}/history${qs({ range })}`), refetchInterval: range === '1h' ? 30_000 : 120_000, placeholderData: keepPreviousData });
   const now = Date.now();
   const d = h.data;
+  // Live samples arriving over the event stream are drawn at once, between history refetches.
+  const [livePts, setLivePts] = useState<{ t: number; inBps: number | null; outBps: number | null }[]>([]);
+  useEffect(() => setLivePts([]), [d, port.interfaceId]);
+  useEffect(() => {
+    if (!port.sampledAt || !port.fresh || port.inBps === null) return;
+    const t = new Date(port.sampledAt).getTime();
+    setLivePts((l) => (l.some((x) => x.t === t) ? l : [...l.slice(-720), { t, inBps: port.inBps, outBps: port.outBps }]));
+  }, [port.sampledAt, port.fresh, port.inBps, port.outBps]);
+  const histPoints = (d?.points ?? []).map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps, inMax: p.inMax, outMax: p.outMax }));
+  const lastT = histPoints.length ? histPoints[histPoints.length - 1]!.t : 0;
+  const chartPoints = d?.resolution === 'raw' ? [...histPoints, ...livePts.filter((p) => p.t > lastT)] : histPoints;
   return (
     <Panel
       title={
@@ -137,19 +148,19 @@ function PortDetail({ port, onClose }: { port: PortRateT; onClose: () => void })
       </dl>
       <ErrorNote error={h.error} />
       {h.isLoading && <Loading />}
-      {d && d.points.length === 0 && <EmptyState title="No measurements in this range">{range === '1h' || range === '6h' ? 'Rates appear after two polls of the device.' : 'Longer ranges use 5-minute and hourly aggregates, built every minute from the raw readings.'}</EmptyState>}
-      {d && d.points.length > 0 && (
+      {d && chartPoints.length === 0 && <EmptyState title="No measurements in this range">{range === '1h' || range === '6h' ? 'Rates appear after two polls of the device.' : 'Longer ranges use 5-minute and hourly aggregates, built every minute from the raw readings.'}</EmptyState>}
+      {d && chartPoints.length > 0 && (
         <>
           <RateChart
             label={`Traffic on ${port.deviceName} ${port.name}`}
-            points={d.points.map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps, inMax: p.inMax, outMax: p.outMax }))}
+            points={chartPoints}
             stepSeconds={d.stepSeconds}
             from={now - RANGE_MS[range]}
             to={now}
             p95={d.p95}
           />
           <p className="mt-2 text-[12.5px] text-ink-3">
-            {d.resolution === 'raw' ? `Every poll (${d.stepSeconds} s).` : d.resolution === '5m' ? '5-minute averages (hover for the peak in each).' : 'Hourly averages (hover for the peak in each).'} All values are measured from interface counters. 95th percentile by nearest rank over 5-minute averages.
+            {d.resolution === 'raw' ? `Every poll (${d.stepSeconds} s), drawn live as each poll arrives.` : d.resolution === '5m' ? '5-minute averages (hover for the peak in each).' : 'Hourly averages (hover for the peak in each).'} All values are measured from interface counters. 95th percentile by nearest rank over 5-minute averages.
             {d.points.some((p) => p.flags.includes('wrap')) && ' Some readings crossed a 32-bit counter wrap and were corrected.'}
           </p>
         </>

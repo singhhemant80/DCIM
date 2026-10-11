@@ -92,6 +92,13 @@
       "when": 1791643462140,
       "tag": "0012_automation",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791714366413,
+      "tag": "0013_poll_interval",
+      "breakpoints": true
     }
   ]
 }

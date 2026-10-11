@@ -1,0 +1,2 @@
+ALTER TABLE "device_monitoring" DROP CONSTRAINT "device_monitoring_interval_ck";--> statement-breakpoint
+ALTER TABLE "device_monitoring" ADD CONSTRAINT "device_monitoring_interval_ck" CHECK ("device_monitoring"."interval_seconds" between 10 and 3600);

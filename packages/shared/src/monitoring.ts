@@ -11,7 +11,7 @@ export const deviceMonitoringSchema = z.object({
   enabled: z.boolean(),
   credentialKind: z.enum(POLL_KINDS),
   /** Seconds between polls. */
-  intervalSeconds: z.number().int().min(30).max(3600).default(60),
+  intervalSeconds: z.number().int().min(10).max(3600).default(60),
 });
 export type DeviceMonitoringInput = z.infer<typeof deviceMonitoringSchema>;
 

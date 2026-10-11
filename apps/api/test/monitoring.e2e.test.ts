@@ -210,7 +210,7 @@ describe('polling configuration', () => {
   it('needs a stored credential of the chosen kind and monitoring.configure', async () => {
     expect((await admin.put(`${M}/devices/${ids.r1}`, { enabled: true, credentialKind: 'nxapi', intervalSeconds: 60 })).status).toBe(400);
     expect((await noc.put(`${M}/devices/${ids.r1}`, { enabled: true, credentialKind: 'snmp_v2c', intervalSeconds: 60 })).status).toBe(403);
-    expect((await admin.put(`${M}/devices/${ids.r1}`, { enabled: true, credentialKind: 'snmp_v2c', intervalSeconds: 10 })).status).toBe(400);
+    expect((await admin.put(`${M}/devices/${ids.r1}`, { enabled: true, credentialKind: 'snmp_v2c', intervalSeconds: 5 })).status).toBe(400);
     for (const id of [ids.r1, ids.r2]) await ok(admin.put(`${M}/devices/${id}`, { enabled: true, credentialKind: 'snmp_v2c', intervalSeconds: 60 }));
     await ok(admin.put(`${M}/devices/${ids.sw}`, { enabled: true, credentialKind: 'routeros_rest', intervalSeconds: 60 }));
     const list = await ok(noc.get(`${M}/devices`));
