@@ -20,6 +20,7 @@ import { createLiveLoop } from './monitoring/live';
 import { sweepDuePrefix } from './monitoring/ping';
 import { checkDueDevices } from './monitoring/device-ping';
 import { fetchDueHardware } from './hardware/collect';
+import { startConsoleRelay } from './console/relay';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
@@ -109,6 +110,11 @@ async function main() {
   const automation: AutomationDeps = { db, secrets, logger, allowPrivate: process.env.CDCIM_WEBHOOK_ALLOW_PRIVATE === 'true' };
   const pollConcurrency = Math.max(1, Math.min(64, Number(process.env.POLL_CONCURRENCY ?? 16) || 16));
 
+  // Remote console relay (127.0.0.1 only): the API hands browser connections to it.
+  const consoleRelay = await startConsoleRelay({ db, secrets, logger }).catch((e) => {
+    logger.error({ err: (e as Error).message }, 'console relay could not start; remote consoles are unavailable');
+    return null;
+  });
   const timers = [
     every('schedules', 60_000, async () => {
       const ids = await runDueSchedules(db, async (runId) => {
@@ -162,6 +168,7 @@ async function main() {
   const stop = async (signal: string) => {
     logger.info({ signal }, 'stopping worker');
     timers.forEach(clearInterval);
+    await consoleRelay?.close().catch(() => undefined);
     await worker.close().catch(() => undefined);
     await producer.close().catch(() => undefined);
     pub.disconnect();

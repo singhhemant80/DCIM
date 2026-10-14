@@ -62,7 +62,9 @@ export const PERMISSIONS = [
   p('power.configure', 'Configure power estimates and tariffs', 'Power'),
 
   // Hardware control (Phase 2/6) — customer-grantable only for own devices
-  p('hardware.control', 'Power control and remote console', 'Hardware', false, true),
+  p('hardware.control', 'Power control', 'Hardware', false, true),
+  // Full keyboard/screen or serial access to a server; customers only for their own servers.
+  p('hardware.console', 'Remote console (screen, keyboard, serial)', 'Hardware', false, true),
 
   // Provisioning (Phase 6)
   p('provisioning.read', 'View provisioning jobs', 'Provisioning'),

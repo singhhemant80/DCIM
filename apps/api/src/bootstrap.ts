@@ -14,6 +14,8 @@ import type { Logger } from 'pino';
 import { AppModule } from './app.module';
 import type { AppConfig } from './config/config';
 import { PinoNestLogger } from './common/logger';
+import { attachConsoleGateway } from './console/gateway';
+import { DB } from './db/db';
 
 const REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -95,6 +97,8 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
       .build();
     SwaggerModule.setup('api/docs', app, () => SwaggerModule.createDocument(app, doc), { jsonDocumentUrl: 'api/docs/openapi.json' });
   }
+  // Remote console WebSocket (one-time tickets; bytes are relayed through the worker).
+  attachConsoleGateway(app.getHttpServer(), app.get(DB), logger);
   return app;
 }
 

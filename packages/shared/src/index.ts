@@ -11,3 +11,4 @@ export * from './provisioning';
 export * from './colocation';
 export * from './automation';
 export * from './hardware';
+export * from './console';

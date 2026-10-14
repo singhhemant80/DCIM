@@ -1666,6 +1666,67 @@ export const controlCredentials = pgTable('control_credentials', {
   updatedAt: updatedAt(),
 });
 
+/**
+ * Console access to a server (VNC password, Serial-over-LAN login, BMC web
+ * address). Kept apart from read-only monitoring credentials and from power
+ * control: a console gives full control of the machine.
+ */
+export const consoleCredentials = pgTable(
+  'console_credentials',
+  {
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    /** vnc | sol | web */
+    kind: text('kind').notNull(),
+    orgId: orgRef(),
+    host: text('host'),
+    port: integer('port'),
+    username: text('username'),
+    params: jsonb('params').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    /** SecretBox ciphertext (AAD: org, device, "console", kind, host, port); null for the web address. */
+    secretEnc: text('secret_enc'),
+    rotatedAt: ts('rotated_at').notNull().defaultNow(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.deviceId, t.kind] }), check('console_credentials_kind_ck', sql`${t.kind} in ('vnc', 'sol', 'web')`)],
+);
+
+/** Every console session: who, which server, how long, and how it ended. */
+export const consoleSessions = pgTable(
+  'console_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    userId: uuid('user_id'),
+    userLabel: text('user_label').notNull(),
+    userType: text('user_type').notNull(),
+    clientIp: text('client_ip'),
+    /** pending (ticket issued) → connecting → active → ended | failed */
+    status: text('status').notNull().default('pending'),
+    /** SHA-256 of the one-time browser ticket, and of the API→worker relay token. */
+    ticketHash: text('ticket_hash'),
+    ticketExpiresAt: ts('ticket_expires_at'),
+    relayHash: text('relay_hash'),
+    createdAt: createdAt(),
+    connectedAt: ts('connected_at'),
+    endedAt: ts('ended_at'),
+    endReason: text('end_reason'),
+    bytesIn: bigint('bytes_in', { mode: 'number' }).notNull().default(0),
+    bytesOut: bigint('bytes_out', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [
+    index('console_sessions_device_idx').on(t.deviceId, t.createdAt),
+    // One live session per server and console type (BMCs allow only one SOL session anyway).
+    uniqueIndex('console_sessions_live_uq').on(t.deviceId, t.kind).where(sql`${t.status} in ('pending', 'connecting', 'active')`),
+  ],
+);
+
 export const osImages = pgTable(
   'os_images',
   {

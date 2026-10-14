@@ -202,6 +202,14 @@ The worker pings addresses only in prefixes where an administrator turned the ch
 
 The worker runs two pings per device: the management address (or the host of the device's first stored credential), and the server address (or the host name when it is a full DNS name). It checks devices that are racked, provisioning, active or in maintenance, once a minute, with one echo request and one retry. The address must be an IP literal or a DNS name (a URL or host:port is reduced to its host); anything else is refused before it reaches `ping`, so a stored value can never become a `ping` option. Results show only up / down (the address pinged is shown to staff only); a check error or a result older than five minutes is shown as "not checked", never as down. Nothing else is sent to the device.
 
+## Remote console
+
+A console gives full control of a server, so it has its own permission, `hardware.console`, separate from monitoring (read-only credentials) and power control. Super and operations administrators have it; customer roles do not by default, and a customer granted it reaches only their own servers. Console secrets (VNC password, IPMI Serial-over-LAN login) are stored encrypted, bound to their device and kind, set only by staff with `provisioning.execute`, and never returned.
+
+Opening a console issues a one-time ticket (random, stored as a SHA-256 hash, valid 60 seconds). The browser presents it on the WebSocket `/api/v1/console/ws`; cross-site origins are refused. The API never connects to a BMC: it hands the connection, with a single-use relay token, to the worker's relay on 127.0.0.1, which alone talks to the BMC. For VNC the relay authenticates to the BMC itself and offers the browser a password-less RFB session, so the password never leaves the server; for Serial-over-LAN, ipmitool gets the password in its environment, never on the command line. One live session per server and console; sessions end after 15 minutes without input or 8 hours, when ended by staff, or when the worker restarts. Every start, end, credential change and BMC web-console opening is in the audit log, and each session (who, when, bytes, how it ended) in the console session log.
+
+The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be off); keep BMCs on a management network. The BMC web console link opens the BMC's own interface in the user's browser, which needs network access to the BMC and has its own login.
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.

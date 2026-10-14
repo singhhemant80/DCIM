@@ -28,6 +28,8 @@ import { RacksService } from './dcim/racks.service';
 import { ModelsService } from './dcim/models.service';
 import { DevicesService } from './dcim/devices.service';
 import { HardwareService } from './dcim/hardware.service';
+import { ConsoleService } from './console/console.service';
+import { ConsoleController } from './console/console.controller';
 import { DeviceHardwareController } from './dcim/hardware.controller';
 import { SparesService } from './dcim/spares.service';
 import { DcimSummaryService } from './dcim/summary.service';
@@ -102,6 +104,7 @@ export class AppModule {
         ModelsController,
         DevicesController,
         DeviceHardwareController,
+        ConsoleController,
         SparesController,
         NetworkController,
         DiscoveryController,
@@ -145,6 +148,7 @@ export class AppModule {
         ModelsService,
         DevicesService,
         HardwareService,
+        ConsoleService,
         SparesService,
         DcimSummaryService,
         InterfacesService,

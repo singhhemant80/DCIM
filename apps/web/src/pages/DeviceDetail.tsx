@@ -9,6 +9,7 @@ import { formatDateTime, relativeTime } from '../lib/format';
 import { daysUntil, STATE_TONE, useRacks, type DeviceT, type EventT } from '../lib/dcim';
 import { PowerControlPanel } from '../components/PowerControl';
 import { AccessoriesPanel, BmcHardwarePanel } from '../components/DeviceHardware';
+import { ConsolePanel } from '../components/Console';
 import { Button, Chip, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Textarea } from '../components/ui';
 import { DeviceForm } from './Hardware';
 import { formatWattsShort } from '@crapplet/shared';
@@ -372,6 +373,7 @@ export function DeviceDetailPage() {
           <AccessoriesPanel deviceId={d.id} canWrite={canWrite} />
           {can('power.read') && d.lifecycleState !== 'retired' && <DevicePowerPanel id={d.id} />}
           {can('hardware.control') && d.category === 'server' && d.lifecycleState !== 'retired' && <PowerControlPanel deviceId={d.id} />}
+          {can('hardware.console') && (d.category === 'server' || d.category === 'gpu_server' || d.category === 'storage') && d.lifecycleState !== 'retired' && <ConsolePanel deviceId={d.id} />}
           {staff && (
             <Panel title="Purchase and warranty">
               <Facts

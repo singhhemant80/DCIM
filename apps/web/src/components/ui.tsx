@@ -195,7 +195,7 @@ export function Pagination({ page, pageSize, total, onPage }: { page: number; pa
   );
 }
 
-export function Modal({ open, onOpenChange, title, description, children, wide }: { open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: string; children: ReactNode; wide?: boolean }) {
+export function Modal({ open, onOpenChange, title, description, children, wide, full }: { open: boolean; onOpenChange: (o: boolean) => void; title: string; description?: string; children: ReactNode; wide?: boolean; full?: boolean }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -203,7 +203,7 @@ export function Modal({ open, onOpenChange, title, description, children, wide }
         <Dialog.Content
           className={cx(
             'fixed top-1/2 left-1/2 z-50 max-h-[calc(100dvh-32px)] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto glass-strong rounded-2xl p-5 focus:outline-none',
-            wide ? 'max-w-2xl' : 'max-w-md',
+            full ? 'max-w-[1400px]' : wide ? 'max-w-2xl' : 'max-w-md',
           )}
         >
           <Dialog.Title className="text-[16px] font-semibold">{title}</Dialog.Title>

@@ -127,6 +127,13 @@
       "when": 1791984011536,
       "tag": "0017_hardware_accessories",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791987362232,
+      "tag": "0018_console",
+      "breakpoints": true
     }
   ]
 }

@@ -149,7 +149,7 @@ export class HardwareService {
         await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'device.hardware.apply', target: { type: 'device', id }, outcome: 'success', meta, metadata: { fields: changed } }, tx);
       });
     } catch (e) {
-      if ((e as { code?: string }).code === '23505') throw new BadRequestException({ error: 'serial_taken', message: 'Another device already has this serial number' });
+      if (((e as { code?: string }).code ?? (e as { cause?: { code?: string } }).cause?.code) === '23505') throw new BadRequestException({ error: 'serial_taken', message: 'Another device already has this serial number' });
       throw e;
     }
     return { changed };
