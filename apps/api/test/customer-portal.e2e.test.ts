@@ -54,6 +54,23 @@ describe('customer portal', () => {
     expect((await acme.get(`${D}/devices/${ids.other}`)).status).toBe(404);
   });
 
+  it('colocation shows their racked equipment even without a space allocation', async () => {
+    const dc = (await ok(admin.post(`${D}/datacenters`, { code: 'cp1', name: 'CP' }))).id;
+    const b = (await ok(admin.post(`${D}/buildings`, { datacenterId: dc, name: 'B' }))).id;
+    const room = (await ok(admin.post(`${D}/rooms`, { buildingId: b, name: 'R', gridCols: 4, gridRows: 4 }))).id;
+    const rack = (await ok(admin.post(`${D}/racks`, { roomId: room, name: 'R2R36', uHeight: 42, gridX: 0, gridY: 0 }))).id;
+    await ok(admin.post(`${D}/devices/${ids.mine}/placement`, { rackId: rack, positionU: 20, face: 'front' }));
+    await ok(admin.post(`${D}/devices/${ids.other}/placement`, { rackId: rack, positionU: 22, face: 'front' }));
+    const eq = await ok(acme.get('/api/v1/colocation/equipment'));
+    expect(eq).toHaveLength(1);
+    expect(eq[0]).toMatchObject({ name: 'ded-01', rackName: 'R2R36', startU: 20, allocationId: null });
+    const o = await ok(acme.get('/api/v1/colocation/overview'));
+    expect(o.equipment).toMatchObject({ devices: 1, unallocated: 1 });
+    expect(o.allocations).toBe(0);
+    // Staff see it as customer equipment without an allocation.
+    expect((await ok(admin.get('/api/v1/colocation/equipment'))).map((e: { customerName: string }) => e.customerName)).toEqual(['Acme']);
+  });
+
   it('amounts appear for customers only once the datacenter turns them on', async () => {
     const s = await ok(admin.get('/api/v1/power/settings'));
     expect(s.customerCost).toBe(false);

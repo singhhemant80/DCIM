@@ -98,7 +98,27 @@ export interface VisitT {
   requestedBy: string | null;
 }
 
+export interface ColoEquipmentT {
+  deviceId: string;
+  name: string;
+  assetTag: string;
+  model: string;
+  category: string;
+  state: string;
+  ownership: string;
+  customerId: string;
+  customerName: string;
+  rackId: string;
+  rackName: string;
+  datacenterCode: string;
+  startU: number | null;
+  endU: number | null;
+  allocationId: string | null;
+  power: { watts: number | null; quality: 'measured' | 'estimated' | 'unknown' | 'off'; source: string | null; counted: boolean } | null;
+}
+
 export interface OverviewT {
+  equipment: { devices: number; unallocated: number; measuredW: number; estimatedW: number; unknownDevices: number };
   allocations: number;
   units: number;
   contractedPowerW: number;

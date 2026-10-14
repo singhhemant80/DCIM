@@ -52,6 +52,13 @@ export class ColocationController {
     return this.svc.overview(p);
   }
 
+  @Get('equipment')
+  @RequirePermissions('services.read')
+  @ApiOperation({ summary: "Customer equipment in racks with its power now, and the space allocation that covers it (if any). Customers: their own." })
+  equipment(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(coloListQuerySchema)) q: Infer<typeof coloListQuerySchema>) {
+    return this.svc.equipment(p, { customerId: q.customerId });
+  }
+
   @Get('sites')
   @RequirePermissions('services.read')
   sites(@CurrentPrincipal() p: Principal) {

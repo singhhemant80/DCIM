@@ -19,7 +19,7 @@ import {
 import { api, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
-import { useCustomerDevices, useCustomerOptions, useSites, watts, type AllocationT, type CrossConnectT, type OverviewT, type ShipmentT, type VisitT } from '../lib/colocation';
+import { useCustomerDevices, useCustomerOptions, useSites, watts, type AllocationT, type CrossConnectT, type ColoEquipmentT, type OverviewT, type ShipmentT, type VisitT } from '../lib/colocation';
 import { Button, Chip, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Stat, Table, Textarea, cx } from '../components/ui';
 import { Tabs } from './Network';
 
@@ -105,13 +105,14 @@ function OverviewPanel() {
         <Stat label={staff ? 'Allocated space' : 'Your space'} value={`${o.units}U`} note={`${o.allocations} allocation${o.allocations === 1 ? '' : 's'}`} />
         <Stat label="Contracted power" value={watts(o.contractedPowerW)} />
         <Stat
-          label="Measured now"
-          value={watts(o.measuredW)}
+          label={staff ? 'Customer equipment now' : 'Your equipment now'}
+          value={watts(o.equipment.measuredW)}
           tone={o.overContract.length ? 'crit' : undefined}
           note={
             <>
-              {o.estimatedW > 0 ? <span className="text-est">+ {watts(o.estimatedW)} estimated (not measured)</span> : 'No estimates included'}
-              {o.unknownDevices > 0 && `, ${o.unknownDevices} device(s) unknown`}
+              measured, {o.equipment.devices} device{o.equipment.devices === 1 ? '' : 's'}
+              {o.equipment.estimatedW > 0 && <span className="text-est"> · + {watts(o.equipment.estimatedW)} estimated</span>}
+              {o.equipment.unknownDevices > 0 && `, ${o.equipment.unknownDevices} unknown`}
             </>
           }
         />
@@ -137,7 +138,7 @@ function OverviewPanel() {
         </p>
       )}
       <p className="mt-4 text-[12.5px] text-ink-3">
-        Power is the equipment in each allocated space: measured where a BMC or PDU reports it, otherwise the device's estimate (shown separately).{' '}
+        Power is your racked equipment: measured where a BMC or PDU reports it, otherwise the device's estimate (shown separately). Contracted power applies to allocated space.{' '}
         <Link className="text-accent hover:underline" to="/power">
           Power details
         </Link>{' '}
@@ -152,16 +153,16 @@ function OverviewPanel() {
 
 /* ================================================================== allocations */
 
-function AllocationDialog({ current, onClose }: { current: AllocationT | null; onClose: () => void }) {
+function AllocationDialog({ current, preset, onClose }: { current: AllocationT | null; preset?: { customerId: string; rackId: string; startU: number; endU: number }; onClose: () => void }) {
   const qc = useQueryClient();
   const racks = useQuery({ queryKey: ['dcim', 'racks', 'all'], queryFn: () => api.get<{ id: string; name: string; uHeight: number; status: string; location: { datacenterCode: string; roomName: string } }[]>('/dcim/racks'), enabled: !current });
   const services = useQuery({ queryKey: ['services', 'for', current?.customerId], queryFn: () => api.get<{ items: { id: string; name: string; customerId: string; status: string }[] }>(`/services?pageSize=200`) });
-  const [customerId, setCustomerId] = useState(current?.customerId ?? '');
-  const [rackId, setRackId] = useState(current?.rackId ?? '');
-  const [kind, setKind] = useState<AllocationKind>(current?.kind ?? 'half');
+  const [customerId, setCustomerId] = useState(current?.customerId ?? preset?.customerId ?? '');
+  const [rackId, setRackId] = useState(current?.rackId ?? preset?.rackId ?? '');
+  const [kind, setKind] = useState<AllocationKind>(current?.kind ?? (preset ? 'custom' : 'half'));
   const [part, setPart] = useState(String(current?.part ?? 1));
-  const [startU, setStartU] = useState(String(current?.startU ?? 1));
-  const [endU, setEndU] = useState(String(current?.endU ?? 10));
+  const [startU, setStartU] = useState(String(current?.startU ?? preset?.startU ?? 1));
+  const [endU, setEndU] = useState(String(current?.endU ?? preset?.endU ?? 10));
   const [power, setPower] = useState(String(current?.contractedPowerW ?? 2000));
   const [feeds, setFeeds] = useState<'single' | 'a_b'>(current?.feeds ?? 'a_b');
   const [amps, setAmps] = useState(String(current?.breakerAmps ?? 16));
@@ -453,6 +454,81 @@ function AllocationsTab() {
       )}
       {edit && <AllocationDialog current={edit === 'new' ? null : edit} onClose={() => setEdit(null)} />}
       {ending && <EndAllocationDialog a={ending} onClose={() => setEnding(null)} />}
+    </Panel>
+  );
+}
+
+/** Customer equipment in our racks, with or without a space allocation around it. */
+function EquipmentPanel() {
+  const { staff, manage } = useRole();
+  const q = useQuery({ queryKey: ['colo', 'equipment'], queryFn: () => api.get<ColoEquipmentT[]>('/colocation/equipment'), refetchInterval: 60_000 });
+  const [preset, setPreset] = useState<ColoEquipmentT | null>(null);
+  const items = q.data ?? [];
+  if (q.data && !items.length) return null;
+  return (
+    <Panel flush title={staff ? 'Customer equipment in racks' : 'Your equipment in our racks'} className="mt-5">
+      <ErrorNote error={q.error} className="m-4" />
+      {q.isLoading && <Loading />}
+      {items.length > 0 && (
+        <Table label="Equipment">
+          <thead>
+            <tr>
+              <th>Device</th>
+              {staff && <th>Customer</th>}
+              <th>Location</th>
+              <th className="text-right">Power now</th>
+              <th>Space</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((e) => (
+              <tr key={e.deviceId}>
+                <td>
+                  <Link to={`/hardware/${e.deviceId}`} className="font-medium text-accent hover:underline">
+                    {e.name}
+                  </Link>
+                  <span className="block text-[12px] text-ink-3">{e.model}</span>
+                </td>
+                {staff && <td className="text-ink-2">{e.customerName}</td>}
+                <td className="whitespace-nowrap text-ink-2">
+                  {e.datacenterCode}, rack {e.rackName}
+                  {e.startU !== null ? ` U${e.startU}${e.endU !== null && e.endU !== e.startU ? `–${e.endU}` : ''}` : ''}
+                </td>
+                <td className="text-right whitespace-nowrap">
+                  {!e.power || e.power.quality === 'off' ? (
+                    <span className="text-ink-3">Not powered</span>
+                  ) : e.power.watts === null ? (
+                    <span className="text-ink-3">Unknown</span>
+                  ) : (
+                    <>
+                      {watts(e.power.watts)}
+                      <span className={cx('block text-[11.5px]', e.power.quality === 'measured' ? 'text-ok' : 'text-est')}>{e.power.quality}</span>
+                    </>
+                  )}
+                </td>
+                <td>
+                  {e.allocationId ? (
+                    <Chip tone="ok">In allocated space</Chip>
+                  ) : (
+                    <span className="flex flex-wrap items-center gap-2">
+                      <Chip tone="warn">{staff ? 'No space allocation' : 'Not in contracted space'}</Chip>
+                      {manage && (
+                        <Button size="sm" variant="ghost" onClick={() => setPreset(e)}>
+                          Allocate space
+                        </Button>
+                      )}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+      {staff && items.some((e) => !e.allocationId) && (
+        <p className="px-4 py-2.5 text-[12.5px] text-ink-3">Equipment outside an allocation still counts toward the customer's power and bandwidth; allocate the space to track it against a contracted power and rack units.</p>
+      )}
+      {preset && <AllocationDialog current={null} preset={{ customerId: preset.customerId, rackId: preset.rackId, startU: preset.startU ?? 1, endU: preset.endU ?? preset.startU ?? 1 }} onClose={() => setPreset(null)} />}
     </Panel>
   );
 }
@@ -1127,7 +1203,12 @@ export function ColocationPage() {
       />
       <OverviewPanel />
       <Tabs tabs={TABS} value={tab} onChange={(k) => setParams(k === 'space' ? {} : { tab: k })} label="Colocation" />
-      {tab === 'space' && <AllocationsTab />}
+      {tab === 'space' && (
+        <>
+          <AllocationsTab />
+          <EquipmentPanel />
+        </>
+      )}
       {tab === 'cross-connects' && <CrossConnectsTab />}
       {tab === 'shipments' && <ShipmentsTab />}
       {tab === 'visits' && <VisitsTab />}

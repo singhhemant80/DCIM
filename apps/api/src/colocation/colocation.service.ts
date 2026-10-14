@@ -631,8 +631,59 @@ export class ColocationService {
   /* ================================================================ overview */
 
   /** Customer portal home (and the staff summary): space, contracted vs used power, bandwidth, open requests. */
+  /**
+   * Customer equipment in racks, whether or not it sits inside a space
+   * allocation (a server can be racked for a customer before the space is
+   * contracted). Each device shows the allocation that covers it, if any.
+   */
+  async equipment(p: Principal, q: { customerId?: string } = {}) {
+    const conds: SQL[] = [this.scope(p, 'd'), sql`d.customer_id is not null`, sql`d.rack_id is not null`, sql`d.lifecycle_state <> 'retired'`];
+    if (q.customerId && staff(p)) conds.push(sql`d.customer_id = ${q.customerId}`);
+    const r = await this.db.execute<Record<string, unknown>>(sql`
+      select d.id, coalesce(d.hostname, d.asset_tag) as name, d.asset_tag, d.category::text as category, d.lifecycle_state::text as state, d.ownership::text as ownership,
+             d.customer_id, c.name as customer_name, d.rack_id, k.name as rack_name, dc.code as datacenter_code,
+             lower(d.u_range) as lo, upper(d.u_range) - 1 as hi, d.u_height, m.name as model_name, mf.name as manufacturer_name,
+             (select a.id from colo_allocations a
+               where a.rack_id = d.rack_id and a.customer_id = d.customer_id and a.ended_at is null
+                 and (d.u_range is null or d.u_range && int4range(a.start_u, a.end_u + 1))
+               order by a.start_u limit 1) as allocation_id
+        from devices d
+        join customers c on c.id = d.customer_id
+        join device_models m on m.id = d.model_id join manufacturers mf on mf.id = m.manufacturer_id
+        join racks k on k.id = d.rack_id join rooms rm on rm.id = k.room_id join buildings b on b.id = rm.building_id join datacenters dc on dc.id = b.datacenter_id
+       where ${sql.join(conds, sql` and `)}
+       order by c.name, dc.code, k.name, lower(d.u_range) nulls last`);
+    const ids = r.rows.map((x) => x.id as string);
+    const now = ids.length ? await this.power.current(p, sql`d.id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)})`) : [];
+    const pw = new Map(now.map((d) => [d.deviceId, d]));
+    return r.rows.map((d) => {
+      const x = pw.get(d.id as string);
+      return {
+        deviceId: d.id as string,
+        name: d.name as string,
+        assetTag: d.asset_tag as string,
+        model: `${d.manufacturer_name} ${d.model_name}`,
+        category: d.category as string,
+        state: d.state as string,
+        ownership: d.ownership as string,
+        customerId: d.customer_id as string,
+        customerName: d.customer_name as string,
+        rackId: d.rack_id as string,
+        rackName: d.rack_name as string,
+        datacenterCode: d.datacenter_code as string,
+        startU: (d.lo as number | null) ?? null,
+        endU: (d.hi as number | null) ?? null,
+        allocationId: (d.allocation_id as string | null) ?? null,
+        power: x ? { watts: x.watts, quality: x.quality, source: x.source, counted: x.counted } : null,
+      };
+    });
+  }
+
   async overview(p: Principal) {
     const allocs = await this.allocations(p, { active: true });
+    const equipment = await this.equipment(p);
+    const counted = equipment.filter((e) => e.power?.counted);
+    const eqSum = (q: string) => counted.filter((e) => e.power!.quality === q).reduce((a, e) => a + (e.power!.watts ?? 0), 0);
     const sum = (k: 'measuredW' | 'estimatedW' | 'unknownDevices') => allocs.reduce((a, x) => a + (x.power?.[k] ?? 0), 0);
     const counts = await this.db.execute<{ k: string; n: number }>(sql`
       select 'cross_connects' as k, count(*)::int as n from cross_connects x where ${this.scope(p, 'x')} and x.status in ('requested','approved','in_progress')
@@ -650,6 +701,14 @@ export class ColocationService {
       measuredW: sum('measuredW'),
       estimatedW: sum('estimatedW'),
       unknownDevices: sum('unknownDevices'),
+      // All of the customer's racked equipment, inside a space allocation or not.
+      equipment: {
+        devices: equipment.length,
+        unallocated: equipment.filter((e) => !e.allocationId).length,
+        measuredW: eqSum('measured'),
+        estimatedW: eqSum('estimated'),
+        unknownDevices: counted.filter((e) => e.power!.quality === 'unknown').length,
+      },
       overContract: allocs.filter((x) => x.power?.overContract).map((x) => ({ id: x.id, customerName: x.customerName, rackName: x.rackName, datacenterCode: x.datacenterCode })),
       mayExceed: allocs.filter((x) => x.power?.mayExceed).map((x) => ({ id: x.id, customerName: x.customerName, rackName: x.rackName, datacenterCode: x.datacenterCode })),
       bandwidth: bandwidth ? { inBps: bandwidth.inBps, outBps: bandwidth.outBps, ports: bandwidth.ports, freshPorts: bandwidth.freshPorts } : null,
