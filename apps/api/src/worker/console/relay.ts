@@ -1,3 +1,4 @@
+import { assertDeviceHost } from '../device-allow';
 import net from 'node:net';
 import { spawn, execFile } from 'node:child_process';
 import { and, eq, sql } from 'drizzle-orm';
@@ -242,6 +243,7 @@ export async function startConsoleRelay(deps: RelayDeps): Promise<{ port: number
     if (s.kind === 'vnc') {
       let vnc: Awaited<ReturnType<typeof connectVnc>>;
       try {
+        await assertDeviceHost(host);
         vnc = await connectVnc(host, cred!.port ?? 5901, password);
       } catch (e) {
         const msg = hide((e as Error).message);
@@ -274,6 +276,12 @@ export async function startConsoleRelay(deps: RelayDeps): Promise<{ port: number
     const bin = deps.ipmitool || process.env.IPMITOOL_PATH || 'ipmitool';
     const base = ['-I', 'lanplus', '-H', host, '-p', String(cred!.port ?? 623), '-U', cred!.username ?? '', '-E', '-L', String(cred!.params.privilege ?? 'ADMINISTRATOR')];
     const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', IPMI_PASSWORD: password };
+    try {
+      await assertDeviceHost(host);
+    } catch (e) {
+      client.write(`[NexoraDC] ${hide((e as Error).message)}\r\n`);
+      return finish('failed', hide((e as Error).message));
+    }
     client.write(`[NexoraDC] Connecting to the serial console of ${host}…\r\n`);
     // A previous session left open on the BMC would block this one.
     await new Promise<void>((r) => execFile(bin, [...base, 'sol', 'deactivate'], { env, timeout: 15_000 }, () => r()));

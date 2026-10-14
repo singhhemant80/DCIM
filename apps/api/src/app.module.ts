@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { type DynamicModule, Inject, Injectable, Module, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { RedisThrottlerStorage } from './common/redis-throttler';
 import type { Pool } from 'pg';
 import type Redis from 'ioredis';
 import type { Logger } from 'pino';
@@ -69,14 +71,18 @@ import { SettingsController } from './settings/settings.controller';
 import { UsersController } from './users/users.controller';
 import { UsersService } from './users/users.service';
 
+const THROTTLE_REDIS = Symbol('THROTTLE_REDIS');
+
 @Injectable()
 class ResourceCloser implements OnApplicationShutdown {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(REDIS) private readonly redis: Redis,
+    @Inject(THROTTLE_REDIS) private readonly throttleRedis: Redis,
   ) {}
   async onApplicationShutdown(): Promise<void> {
     this.redis.disconnect();
+    this.throttleRedis.disconnect();
     await this.pool.end();
   }
 }
@@ -84,11 +90,17 @@ class ResourceCloser implements OnApplicationShutdown {
 @Module({})
 export class AppModule {
   static forRoot(config: AppConfig, logger: Logger): DynamicModule {
+    // Rate-limit counters live in Redis so several API processes share one budget per client.
+    const throttleRedis = createRedis(config.REDIS_URL);
     return {
       module: AppModule,
       imports: [
         // Default budget per client IP; auth routes override with tighter limits.
-        ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 600 }]),
+        ThrottlerModule.forRoot({
+          throttlers: [{ name: 'default', ttl: 60_000, limit: 600 }],
+          // Test apps get their own counters, as separate processes would not share a test's budget.
+          storage: new RedisThrottlerStorage(throttleRedis, config.NODE_ENV === 'test' ? `cdcim:throttle:test-${randomUUID()}:` : undefined),
+        }),
       ],
       controllers: [
         AuthController,
@@ -133,6 +145,7 @@ export class AppModule {
         { provide: PG_POOL, useFactory: () => createPool(config.DATABASE_URL, config.DATABASE_POOL_MAX) },
         { provide: DB, useFactory: (pool: Pool) => createDb(pool), inject: [PG_POOL] },
         { provide: REDIS, useFactory: () => createRedis(config.REDIS_URL) },
+        { provide: THROTTLE_REDIS, useValue: throttleRedis },
         { provide: SecretBox, useFactory: () => new SecretBox(config.CDCIM_ENCRYPTION_KEYS) },
         ResourceCloser,
         AuditService,

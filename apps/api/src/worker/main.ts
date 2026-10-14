@@ -22,6 +22,7 @@ import { checkDueDevices } from './monitoring/device-ping';
 import { fetchDueHardware } from './hardware/collect';
 import { startConsoleRelay } from './console/relay';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
+import { WORKER_HEARTBEAT_KEY } from '../health/worker-heartbeat';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
 import { createJobLoop } from './provisioning/engine';
@@ -116,6 +117,10 @@ async function main() {
     return null;
   });
   const timers = [
+    // Liveness for the install check (doctor) and the readiness endpoint.
+    every('heartbeat', 15_000, async () => {
+      if (pub.status === 'ready') await pub.set(WORKER_HEARTBEAT_KEY, JSON.stringify({ at: new Date().toISOString(), pid: process.pid }), 'EX', 90);
+    }),
     every('schedules', 60_000, async () => {
       const ids = await runDueSchedules(db, async (runId) => {
         await producer.add('run', { runId }, { jobId: runId, attempts: 1, removeOnComplete: 1000, removeOnFail: 1000 });

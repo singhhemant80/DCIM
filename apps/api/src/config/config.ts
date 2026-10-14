@@ -5,7 +5,7 @@ import { z } from 'zod';
  * once at startup. The process refuses to start with an invalid or insecure
  * configuration rather than running with surprising defaults.
  */
-const keyRing = z
+export const keyRing = z
   .string()
   .min(1)
   .transform((raw, ctx) => {

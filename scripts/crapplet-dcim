@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+# NexoraDC management command, installed as /usr/local/bin/crapplet-dcim by scripts/install.sh.
+#
+#   crapplet-dcim start|stop|restart|status|logs
+#   crapplet-dcim doctor                 check the installation (exit 1 on a failure)
+#   crapplet-dcim backup [--tag NAME]    encrypted backup of the database, configuration and audit anchors
+#   crapplet-dcim restore FILE [--yes] [--keep-config]
+#   crapplet-dcim backups                list backups
+#   crapplet-dcim rollback [--yes]       go back to the previous release (and its database backup if needed)
+#   crapplet-dcim releases               list installed releases
+#   crapplet-dcim anchor                 record the audit log heads outside the database (daily timer)
+#   crapplet-dcim secrets check|rotate   stored credentials vs. encryption keys
+#   crapplet-dcim version
+#
+# Application code always runs as the service account, never as root; this
+# script (root) only moves files, runs PostgreSQL tools and encrypts backups
+# with openssl.
+set -Eeuo pipefail
+umask 077
+
+CONF=/etc/crapplet-dcim/install.conf
+[ -r "$CONF" ] || { echo "NexoraDC is not installed here ($CONF missing)" >&2; exit 2; }
+# shellcheck disable=SC1090
+. "$CONF"
+: "${PREFIX:?}" "${RUN_USER:?}" "${SERVICE:?}" "${ENV_FILE:?}" "${STATE_DIR:?}" "${BACKUP_DIR:?}" "${ANCHOR_DIR:?}" "${BACKUP_KEY:?}"
+APP_DIR="$PREFIX/app"
+# One scratch directory per run, removed on exit (also on errors).
+TMPROOT="$(mktemp -d)"
+trap 'rm -rf "$TMPROOT"' EXIT
+scratch() { mktemp -d -p "$TMPROOT"; }
+KEEP_BACKUPS="${KEEP_BACKUPS:-14}"
+
+c_green=$'\033[1;32m'; c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_off=$'\033[0m'
+[ -t 1 ] || { c_green=''; c_yellow=''; c_red=''; c_off=''; }
+ok()   { printf '%s  ✓%s %s\n' "$c_green" "$c_off" "$*"; }
+warn() { printf '%s  !%s %s\n' "$c_yellow" "$c_off" "$*"; }
+die()  { printf '%s  ✗ %s%s\n' "$c_red" "$*" "$c_off" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "Run as root (sudo crapplet-dcim $*)"; }
+has_systemd() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
+
+env_get() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -1; }
+db_name() { local u; u="$(env_get DATABASE_URL)"; u="${u##*/}"; printf '%s' "${u%%\?*}"; }
+db_user() { local u; u="$(env_get DATABASE_URL)"; u="${u#*://}"; printf '%s' "${u%%:*}"; }
+db_pass() { local u; u="$(env_get DATABASE_URL)"; u="${u#*://*:}"; printf '%s' "${u%%@*}"; }
+as_app() { # run application code as the service account with the configuration loaded
+  runuser -u "$RUN_USER" -- bash -c "set -a; . '$ENV_FILE'; set +a; cd '$APP_DIR/apps/api' && $1"
+}
+pg() { runuser -u postgres -- "$@"; }
+
+svc() { # svc start|stop|restart
+  if has_systemd; then systemctl "$1" "$SERVICE" "$SERVICE-worker"; else "$PREFIX/bin/nosystemd" "$1"; fi
+}
+wait_ready() { # wait_ready SECONDS
+  local port; port="$(env_get PORT)"; port="${port:-8080}"
+  for _ in $(seq 1 "$1"); do
+    curl -fsS "http://127.0.0.1:$port/api/v1/health/ready" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# ----------------------------------------------------------------- backups
+# File format (.cdcim-backup): a tar of payload.enc (AES-256-CTR, key from
+# PBKDF2 over the backup key) and payload.hmac (HMAC-SHA256 of payload.enc,
+# encrypt-then-MAC). A changed or truncated backup is refused before anything
+# is decrypted.
+# The MAC key is derived from the backup key inside node (system binary, inline code), so it never
+# appears on a command line where other local users could read it.
+hmac_of() {
+  node -e '
+    const c = require("crypto"), fs = require("fs");
+    const k = c.createHash("sha256").update("cdcim-backup-mac:" + fs.readFileSync(process.argv[1], "utf8").trim()).digest();
+    const h = c.createHmac("sha256", k);
+    const fd = fs.openSync(process.argv[2], "r"), b = Buffer.alloc(1 << 20);
+    for (let n; (n = fs.readSync(fd, b, 0, b.length, null)) > 0; ) h.update(b.subarray(0, n));
+    console.log(h.digest("hex"));' "$BACKUP_KEY" "$1"
+}
+
+cmd_backup() {
+  need_root backup
+  local tag="manual"
+  [ "${1:-}" = "--tag" ] && tag="${2:?}"
+  [ -s "$BACKUP_KEY" ] || die "Backup key $BACKUP_KEY missing"
+  install -d -m 0700 "$BACKUP_DIR"
+  local work; work="$(scratch)"
+  mkdir "$work/b"
+  pg pg_dump -Fc --no-owner -d "$(db_name)" >"$work/b/database.dump" || die "pg_dump failed"
+  cp "$ENV_FILE" "$work/b/api.env"
+  [ -f "$ANCHOR_DIR/anchors.jsonl" ] && cp "$ANCHOR_DIR/anchors.jsonl" "$work/b/anchors.jsonl"
+  local rel; rel="$(basename "$(readlink -f "$APP_DIR")")"
+  local migrations; migrations="$(pg psql -qtAX -d "$(db_name)" -c 'select count(*) from drizzle.__drizzle_migrations' 2>/dev/null || echo 0)"
+  {
+    echo "format=1"
+    echo "created=$(date -u +%FT%TZ)"
+    echo "host=$(hostname)"
+    echo "release=$rel"
+    echo "migrations=$migrations"
+    echo "tag=$tag"
+    (cd "$work/b" && sha256sum database.dump api.env $( [ -f anchors.jsonl ] && echo anchors.jsonl ))
+  } >"$work/b/MANIFEST"
+  tar -C "$work/b" -cf "$work/payload.tar" .
+  openssl enc -aes-256-ctr -pbkdf2 -iter 200000 -salt -pass "file:$BACKUP_KEY" -in "$work/payload.tar" -out "$work/payload.enc"
+  hmac_of "$work/payload.enc" >"$work/payload.hmac"
+  local name; name="nexoradc-$(date -u +%Y%m%d-%H%M%S)-$tag.cdcim-backup"
+  tar -C "$work" -cf "$BACKUP_DIR/$name.partial" payload.enc payload.hmac
+  mv "$BACKUP_DIR/$name.partial" "$BACKUP_DIR/$name"
+  chmod 0600 "$BACKUP_DIR/$name"
+  # Keep the newest KEEP_BACKUPS scheduled/manual backups; pre-upgrade backups are kept for the last 3 upgrades.
+  { ls -1t "$BACKUP_DIR"/*.cdcim-backup 2>/dev/null | grep -v -- '-pre-upgrade\.' | tail -n +"$((KEEP_BACKUPS + 1))" | xargs -r rm -f; } || true
+  { ls -1t "$BACKUP_DIR"/*-pre-upgrade.cdcim-backup 2>/dev/null | tail -n +4 | xargs -r rm -f; } || true
+  echo "$BACKUP_DIR/$name"
+}
+
+open_backup() { # open_backup FILE DIR — verify, decrypt and check the manifest into DIR
+  local f=$1 d=$2
+  [ -f "$f" ] || die "No such file: $f"
+  mkdir -p "$d/o" "$d/p"
+  tar -C "$d/o" -xf "$f" payload.enc payload.hmac 2>/dev/null || die "Not a NexoraDC backup: $f"
+  [ "$(hmac_of "$d/o/payload.enc")" = "$(cat "$d/o/payload.hmac")" ] || die "The backup was changed or damaged, or was made with a different backup key: refusing to use it"
+  openssl enc -d -aes-256-ctr -pbkdf2 -iter 200000 -pass "file:$BACKUP_KEY" -in "$d/o/payload.enc" -out "$d/payload.tar"
+  tar -C "$d/p" -xf "$d/payload.tar"
+  (cd "$d/p" && sed -n '/  /p' MANIFEST | sha256sum -c --quiet -) || die "Backup contents do not match their checksums"
+}
+
+cmd_backups() {
+  need_root backups
+  ls -1lht "$BACKUP_DIR"/*.cdcim-backup 2>/dev/null | awk '{print $5"\t"$6" "$7" "$8"\t"$9}' || echo "No backups in $BACKUP_DIR"
+}
+
+cmd_restore() {
+  need_root restore
+  local file="" yes=0 keep=0
+  while [ $# -gt 0 ]; do case "$1" in --yes) yes=1 ;; --keep-config) keep=1 ;; *) file="$1" ;; esac; shift; done
+  [ -n "$file" ] || die "Usage: crapplet-dcim restore FILE [--yes] [--keep-config]"
+  local work; work="$(scratch)"
+  open_backup "$file" "$work"
+  ok "Backup verified and decrypted"
+  sed -n 's/^\(created\|host\|release\|migrations\|tag\)=/  \1: /p' "$work/p/MANIFEST"
+  if [ "$yes" -ne 1 ]; then
+    local reply=''
+    read -r -p "This replaces the current database$( [ "$keep" -eq 1 ] || echo ' and configuration'). Type RESTORE to continue: " reply </dev/tty || true
+    [ "$reply" = "RESTORE" ] || die "Cancelled"
+  fi
+  local safety; safety="$(cmd_backup --tag pre-restore)" && ok "Current state saved first: $safety"
+  local name user pass; name="$(db_name)"
+  if [ "$keep" -ne 1 ]; then
+    user="$(sed -n 's/^DATABASE_URL=//p' "$work/p/api.env" | tail -1)"; user="${user#*://}"; pass="${user#*:}"; pass="${pass%%@*}"; user="${user%%:*}"
+  else
+    user="$(db_user)"; pass="$(db_pass)"
+  fi
+  # Restore into a separate database while the service keeps running; switch only when it succeeded.
+  local tmpdb="${name}__restoring" olddb; olddb="${name}__before_restore_$(date -u +%Y%m%d%H%M%S)"
+  pg psql -v ON_ERROR_STOP=1 -qtAX -c "SELECT 1 FROM pg_roles WHERE rolname='$user'" | grep -q 1 || pg psql -v ON_ERROR_STOP=1 -qX -c "CREATE ROLE \"$user\" LOGIN" >/dev/null
+  pg psql -v ON_ERROR_STOP=1 -qX -c "DROP DATABASE IF EXISTS \"$tmpdb\" WITH (FORCE)" >/dev/null
+  pg psql -v ON_ERROR_STOP=1 -qX -c "CREATE DATABASE \"$tmpdb\" OWNER \"$user\"" >/dev/null
+  # Objects are re-created as the application role so it owns them as before. The archive is passed on
+  # standard input: the decrypted copy stays readable by root only.
+  if ! pg pg_restore --no-owner --role="$user" --exit-on-error -d "$tmpdb" <"$work/p/database.dump"; then
+    pg psql -qX -c "DROP DATABASE IF EXISTS \"$tmpdb\" WITH (FORCE)" >/dev/null 2>&1 || true
+    die "pg_restore failed; nothing was changed (the current database is still in use)"
+  fi
+  ok "Backup loaded into a new database"
+  svc stop || true
+  pg psql -qX -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$name' AND pid <> pg_backend_pid()" >/dev/null
+  if [ "$(pg psql -qtAX -c "SELECT 1 FROM pg_database WHERE datname='$name'")" = 1 ]; then
+    pg psql -v ON_ERROR_STOP=1 -qX -c "ALTER DATABASE \"$name\" RENAME TO \"$olddb\"" >/dev/null || { svc start || true; die "Could not switch databases (still in use?); nothing was changed"; }
+  else
+    olddb=""
+  fi
+  pg psql -v ON_ERROR_STOP=1 -qX -c "ALTER DATABASE \"$tmpdb\" RENAME TO \"$name\"" >/dev/null
+  pg psql -v ON_ERROR_STOP=1 -qX -c "ALTER ROLE \"$user\" LOGIN PASSWORD '$pass'" >/dev/null
+  if [ "$keep" -ne 1 ]; then
+    install -m 0640 -o root -g "$RUN_USER" "$work/p/api.env" "$ENV_FILE"
+    ok "Configuration restored (database password and encryption keys from the backup)"
+  fi
+  ok "Database switched to the restored copy"
+  # The restored audit log ends at the backup; anchors recorded after it would (correctly) report
+  # the later events as removed. They are kept for reference, and the backup's anchors are used.
+  install -d -m 0700 "$ANCHOR_DIR"
+  [ -f "$ANCHOR_DIR/anchors.jsonl" ] && mv "$ANCHOR_DIR/anchors.jsonl" "$ANCHOR_DIR/anchors-before-restore-$(date -u +%Y%m%d-%H%M%S).jsonl"
+  [ -f "$work/p/anchors.jsonl" ] && install -m 0600 "$work/p/anchors.jsonl" "$ANCHOR_DIR/anchors.jsonl"
+  echo "$(date -u +%FT%TZ) restored $(basename "$file")" >>"$STATE_DIR/restores.log"
+  as_app "node dist/cli/migrate.js" >/dev/null && ok "Migrations applied (the backup may be older than this release)"
+  svc start
+  if wait_ready 60; then
+    ok "Service is running"
+    [ -n "$olddb" ] && pg psql -qX -c "DROP DATABASE IF EXISTS \"$olddb\" WITH (FORCE)" >/dev/null 2>&1 || true
+  else
+    die "The service did not become ready after the restore; the previous database is kept as $olddb (check: crapplet-dcim logs)"
+  fi
+  echo
+  cmd_doctor || true
+}
+
+# ----------------------------------------------------------------- releases
+cmd_releases() {
+  local cur; cur="$(readlink -f "$APP_DIR")"
+  for r in $(ls -1dt "$PREFIX"/releases/*/ 2>/dev/null); do
+    r="${r%/}"; printf '%s %s\n' "$( [ "$r" = "$cur" ] && echo '*' || echo ' ')" "$(basename "$r")"
+  done
+}
+
+cmd_rollback() {
+  need_root rollback
+  local yes=0; [ "${1:-}" = "--yes" ] && yes=1
+  local log="$STATE_DIR/deploys.log"
+  [ -s "$log" ] || die "No upgrade recorded; nothing to roll back to"
+  local line; line="$(tail -1 "$log")"
+  # time<TAB>new<TAB>previous<TAB>backup<TAB>migrations-before<TAB>migrations-after
+  IFS=$'\t' read -r _ new prev backup mbefore mafter <<<"$line"
+  [ -d "$PREFIX/releases/$prev" ] || die "The previous release $prev is no longer installed"
+  [ "$(basename "$(readlink -f "$APP_DIR")")" = "$new" ] || die "The current release is not the last upgrade ($new); roll back manually with 'crapplet-dcim releases'"
+  echo "Roll back from $new to $prev."
+  local restore=0
+  if [ "${mafter:-0}" != "${mbefore:-0}" ]; then
+    restore=1
+    echo "The upgrade changed the database ($mbefore → $mafter migrations): the database will be restored from"
+    echo "  $backup"
+    echo "Changes made since the upgrade will be lost (they are kept in a pre-restore backup)."
+  fi
+  if [ "$yes" -ne 1 ]; then
+    local reply=''; read -r -p "Type ROLLBACK to continue: " reply </dev/tty || true
+    [ "$reply" = "ROLLBACK" ] || die "Cancelled"
+  fi
+  ln -sfn "$PREFIX/releases/$prev" "$APP_DIR.next" && mv -T "$APP_DIR.next" "$APP_DIR"
+  if [ "$restore" -eq 1 ]; then
+    cmd_restore "$backup" --yes --keep-config
+  else
+    svc restart
+    wait_ready 60 || die "The previous release did not start; check: crapplet-dcim logs"
+  fi
+  printf '%s\trollback\t%s\t%s\n' "$(date -u +%FT%TZ)" "$prev" "$new" >>"$STATE_DIR/rollbacks.log"
+  ok "Now running $prev"
+}
+
+# ----------------------------------------------------------------- audit anchors
+cmd_anchor() {
+  need_root anchor
+  install -d -m 0700 "$ANCHOR_DIR"
+  local out; out="$(as_app "node dist/cli/audit-anchor.js heads")" || die "Could not read the audit log"
+  # Only well-formed lines are appended (the file is append-only for the service account's output).
+  printf '%s\n' "$out" | grep -E '^\{"at":"[^"]+","orgId":"[0-9a-f-]{36}","id":[0-9]+,"hash":"[0-9a-f]{64}","count":[0-9]+\}$' >>"$ANCHOR_DIR/anchors.jsonl" || true
+  chmod 0600 "$ANCHOR_DIR/anchors.jsonl"
+  ok "Audit log heads recorded in $ANCHOR_DIR/anchors.jsonl ($(printf '%s\n' "$out" | grep -c . ) organization(s))"
+}
+
+# ----------------------------------------------------------------- doctor
+cmd_doctor() {
+  need_root doctor
+  local fails=0 warns=0
+  line() { printf '%-5s%-10s%s\n' "$1" "$2" "$3"; [ -n "${4:-}" ] && [ "$1" != PASS ] && printf '%15sfix: %s\n' '' "$4"; [ "$1" = FAIL ] && fails=$((fails+1)); [ "$1" = WARN ] && warns=$((warns+1)); return 0; }
+  echo "NexoraDC install check — $(date -u +%FT%TZ) — release $(basename "$(readlink -f "$APP_DIR")")"
+  echo
+  # Application checks (as the service account). Anchors are copied to a file it may read.
+  local tmp; tmp="$(scratch)"; chmod 0755 "$TMPROOT" "$tmp"
+  [ -f "$ANCHOR_DIR/anchors.jsonl" ] && install -m 0644 "$ANCHOR_DIR/anchors.jsonl" "$tmp/anchors.jsonl"
+  local app; app="$(as_app "node dist/cli/doctor.js --anchor-dir '$tmp'" 2>&1)" || true
+  rm -rf "$tmp"
+  printf '%s\n' "$app"
+  fails=$((fails + $(printf '%s\n' "$app" | grep -c '^FAIL' || true)))
+  warns=$((warns + $(printf '%s\n' "$app" | grep -c '^WARN' || true)))
+
+  # Operating system checks.
+  if has_systemd; then
+    for u in "$SERVICE" "$SERVICE-worker" postgresql redis-server; do
+      systemctl is-active --quiet "$u" && line PASS service "$u active" || line FAIL service "$u is not running" "systemctl start $u; journalctl -u $u"
+    done
+    for t in "$SERVICE-backup.timer" "$SERVICE-anchor.timer"; do
+      systemctl is-enabled --quiet "$t" 2>/dev/null && line PASS service "$t enabled" || line WARN service "$t not enabled" "systemctl enable --now $t"
+    done
+    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then line PASS system "clock synchronized (NTP)"; else line WARN system "clock not NTP-synchronized" "timedatectl set-ntp true"; fi
+  else
+    "$PREFIX/bin/nosystemd" status >/dev/null 2>&1 && line PASS service "API running (no systemd)" || line FAIL service "API not running" "crapplet-dcim start"
+    line WARN service "no systemd: no automatic restart, backups or anchors timers" "Use cron: crapplet-dcim backup and crapplet-dcim anchor daily"
+  fi
+  local perm; perm="$(stat -c '%a %U:%G' "$ENV_FILE")"
+  [ "$perm" = "640 root:$RUN_USER" ] && line PASS files "$ENV_FILE $perm" || line FAIL files "$ENV_FILE is $perm (secrets)" "chown root:$RUN_USER $ENV_FILE; chmod 0640 $ENV_FILE"
+  perm="$(stat -c '%a %U' "$BACKUP_KEY" 2>/dev/null || echo missing)"
+  [ "$perm" = "600 root" ] && line PASS files "backup key $BACKUP_KEY $perm" || line FAIL files "backup key $BACKUP_KEY: $perm" "Restore it from your offline copy; without it backups cannot be read"
+  perm="$(stat -c '%a %U' "$ANCHOR_DIR" 2>/dev/null || echo missing)"
+  [ "$perm" = "700 root" ] && line PASS files "anchor directory $perm" || line WARN files "anchor directory $ANCHOR_DIR: $perm" "crapplet-dcim anchor"
+  if runuser -u "$RUN_USER" -- test -w "$PREFIX/releases" 2>/dev/null || runuser -u "$RUN_USER" -- test -w "$ENV_FILE" 2>/dev/null; then
+    line FAIL files "the service account can modify installed releases or the configuration" "chown -R root:root $PREFIX/releases; re-run the installer"
+  else line PASS files "installed code and configuration are read-only to $RUN_USER"; fi
+
+  local newest; newest="$(ls -1t "$BACKUP_DIR"/*.cdcim-backup 2>/dev/null | grep -v -- '-pre-' | head -1 || true)"
+  if [ -z "$newest" ]; then line WARN backup "no backups in $BACKUP_DIR" "crapplet-dcim backup"
+  else
+    local age=$(( ($(date +%s) - $(stat -c %Y "$newest")) / 3600 ))
+    [ "$age" -le 36 ] && line PASS backup "newest backup ${age} h old: $(basename "$newest")" || line WARN backup "newest backup is ${age} h old" "systemctl status $SERVICE-backup.timer"
+  fi
+
+  local free; free="$(df -Pm "$STATE_DIR" | awk 'NR==2{print $4}')"
+  [ "$free" -ge 2048 ] && line PASS system "disk: ${free} MB free on $(df -P "$STATE_DIR" | awk 'NR==2{print $6}')" || line WARN system "disk: only ${free} MB free" "Free space or grow the disk; PostgreSQL stops writing when full"
+  free="$(df -Pm "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $4}')"
+  [ -n "$free" ] && [ "$free" -lt 2048 ] && line WARN system "backup disk: only ${free} MB free" "Copy backups off the server and prune them"
+
+  # Network exposure.
+  local port bind; port="$(env_get PORT)"; bind="$(env_get HOST)"
+  if ss -Htln "sport = :$port" 2>/dev/null | grep -q .; then line PASS network "listening on ${bind:-127.0.0.1}:$port"; else line FAIL network "nothing listens on port $port" "crapplet-dcim restart"; fi
+  if ss -Htln '( sport = :5432 )' 2>/dev/null | awk '{print $4}' | grep -vqE '^(127\.0\.0\.1|\[::1\]|::1):'; then line WARN network "PostgreSQL listens on a non-loopback address" "Set listen_addresses = 'localhost' unless remote access is intended"; else line PASS network "PostgreSQL on loopback only"; fi
+  if ss -Htln '( sport = :6379 )' 2>/dev/null | awk '{print $4}' | grep -vqE '^(127\.0\.0\.1|\[::1\]|::1):'; then line WARN network "Redis listens on a non-loopback address" "Set bind 127.0.0.1 ::1 in /etc/redis/redis.conf"; else line PASS network "Redis on loopback only"; fi
+  if [ "$bind" = "0.0.0.0" ] || [ "$bind" = "::" ]; then
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+      firewall-cmd --list-ports 2>/dev/null | grep -qw "$port/tcp" && line PASS network "firewalld allows $port/tcp" || line WARN network "firewalld is running and does not allow $port/tcp: browsers cannot connect" "firewall-cmd --permanent --add-port=$port/tcp && firewall-cmd --reload"
+    elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+      ufw status 2>/dev/null | grep -qE "^$port(/tcp)?\s+ALLOW" && line PASS network "ufw allows $port/tcp" || line WARN network "ufw is active and does not allow $port/tcp" "ufw allow $port/tcp"
+    fi
+  fi
+  if command -v nginx >/dev/null 2>&1 && [ -e /etc/nginx/sites-enabled/crapplet-dcim.conf ]; then
+    nginx -t >/dev/null 2>&1 && line PASS tls "nginx configuration valid" || line FAIL tls "nginx configuration invalid" "nginx -t"
+    local cert; cert="$(sed -n 's/^\s*ssl_certificate\s\+\([^;]*\);/\1/p' /etc/nginx/sites-enabled/crapplet-dcim.conf | head -1)"
+    if [ -n "$cert" ] && [ -r "$cert" ]; then
+      local days=$(( ($(date -d "$(openssl x509 -enddate -noout -in "$cert" | cut -d= -f2)" +%s) - $(date +%s)) / 86400 ))
+      [ "$days" -ge 14 ] && line PASS tls "certificate valid for $days more days" || line WARN tls "certificate expires in $days days" "certbot renew"
+    fi
+  fi
+  if dpkg -s unattended-upgrades >/dev/null 2>&1; then line PASS system "unattended security upgrades installed"; else line WARN system "unattended-upgrades not installed" "apt install unattended-upgrades"; fi
+  echo
+  echo "$fails failure(s), $warns warning(s)."
+  [ "$fails" -eq 0 ]
+}
+
+cmd_secrets() {
+  need_root secrets
+  case "${1:-}" in check|rotate) as_app "node dist/cli/secrets.js $1" ;; *) die "Usage: crapplet-dcim secrets check|rotate" ;; esac
+}
+
+case "${1:-}" in
+  start|stop|restart) need_root "$1"; svc "$1" ;;
+  status) if has_systemd; then systemctl status --no-pager "$SERVICE" "$SERVICE-worker"; else "$PREFIX/bin/nosystemd" status; fi ;;
+  logs) if has_systemd; then exec journalctl -u "$SERVICE" -u "$SERVICE-worker" -f; else exec tail -f /var/log/crapplet-dcim/api.log /var/log/crapplet-dcim/worker.log; fi ;;
+  doctor) cmd_doctor ;;
+  backup) shift; cmd_backup "$@" ;;
+  backups) cmd_backups ;;
+  restore) shift; cmd_restore "$@" ;;
+  rollback) shift; cmd_rollback "$@" ;;
+  releases) cmd_releases ;;
+  anchor) cmd_anchor ;;
+  secrets) shift; cmd_secrets "$@" ;;
+  version) basename "$(readlink -f "$APP_DIR")" ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

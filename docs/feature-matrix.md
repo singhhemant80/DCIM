@@ -2,7 +2,7 @@
 
 Updated at the end of every phase. **Done** means it has frontend, backend logic, persistence, access control, error handling and automated tests. Anything less is listed as Partial or Not started, with the reason.
 
-Last updated: Phase 8, 10 October 2026.
+Last updated: Phase 9, 14 October 2026.
 
 ## Navigation sections
 
@@ -58,9 +58,9 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | OpenAPI documentation | Done | `audit-platform.e2e` |
 | Web app shell: responsive, light/dark/auto, keyboard focus, skip link | Done | manual screenshot review; `app.test` |
 | Seed and admin bootstrap CLIs | Done | run manually during verification |
-| Production install script and systemd units | **Partial** | Units and nginx config written; full installer and tested procedure are Phase 9 |
+| Production install script and systemd units | Done (Phase 9) | Installer validated on a clean Ubuntu 24.04 system: fresh install, upgrade, automatic and manual rollback, upgrade from the previous installer; see [acceptance report](acceptance-report.md) |
 | API keys for machine clients | Done (Phase 8) | `automation.e2e` |
-| Distributed rate limiting (Redis store) | Not started | Moved to Phase 9 (the supported install runs a single API process) |
+| Distributed rate limiting (Redis store) | Done (Phase 9) | `production.e2e` (two processes share one budget; in-memory fallback when Redis is down) |
 
 ## Phase 2 capabilities
 
@@ -227,8 +227,27 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Incidents and maintenance notices with tenant isolation | Done | `automation.e2e` |
 | WHMCS module inside a WHMCS installation (admin UI, cron hooks) | Not verified | Module code linted and exercised with PHP 8.3 against the API; WHMCS itself not available here |
 | Usage pushed to WHMCS invoices automatically | Not started | The module shows usage in the client area; turning it into invoice lines is left to WHMCS configuration |
-| Email to customers' contacts (incident and maintenance notices, ticket replies) | Not started | Phase 9 |
+| Email to customers' contacts (incident and maintenance notices, ticket replies) | Not started | Was listed for Phase 9; not delivered (Phase 9 covered production readiness only). Notices are shown in the portal; staff channels are notified |
 | Independent review of Phase 8 (2 high, 7 medium, 4 low) | Done | All fixed; regression tests in `automation.e2e` |
+
+## Phase 9 capabilities
+
+| Capability | Status | Verified by |
+|---|---|---|
+| Installer: system checks (OS, architecture, memory, disk, free port), enables Ubuntu `universe` when missing, builds each release beside the running one, root-owned read-only releases, hardened systemd units, timers, `crapplet-dcim` command, first backup and anchor, install check at the end | Done | `scripts/test-install-container.sh` on a clean Ubuntu 24.04 (debootstrap, systemd): see the acceptance report |
+| Upgrades: pre-upgrade backup, migrations, switch, health check; automatic rollback (and database restore if migrations ran) when the new release is unhealthy; `crapplet-dcim rollback`; keeps three releases; converts installs made by the previous installer | Done | Same run: upgrade, broken upgrade rolled back, manual rollback with database restore, upgrade from the previous installer with data kept |
+| HTTPS with nginx (`CDCIM_DOMAIN`, Let's Encrypt via webroot or self-signed), switching an existing HTTP install to loopback + TLS, CSP hash recomputed per build | Done (self-signed path) | Upgrade of the legacy test install to `https://dcim.test`; acceptance over HTTPS 48/48; headers checked; app loaded in Chromium without CSP errors. Let's Encrypt issuance not exercised (needs public DNS) |
+| Encrypted backups (AES-256-CTR + HMAC-SHA256, root-only key), daily timer with retention, restore into a separate database then switch, damaged/foreign backups refused | Done | Backup/restore drill in the install run; refusal of a damaged backup |
+| Install check `crapplet-dcim doctor` (configuration, database, migrations, Redis, worker heartbeat, secrets, audit chain and anchors, MFA, services, timers, permissions, backups, disk, listening addresses, firewall, TLS certificate) | Done | `production.e2e` (application checks), install run (all checks) |
+| Encryption key rotation for every stored secret (`crapplet-dcim secrets check\|rotate`) | Done | `production.e2e` (rotation, coverage of every encrypted column, tampered row reported) |
+| External audit anchors (daily, root-owned, verified by doctor) | Done | `production.e2e` (removal of newest events and rewritten history detected) |
+| Device network allow-list for the worker (`CDCIM_DEVICE_ALLOW`) | Done | `production.e2e` (every adapter refuses targets outside the list) |
+| Worker heartbeat in readiness (`worker: running \| not_seen`) | Done | `production.e2e` |
+| Acceptance run against any install (`scripts/acceptance.mjs`, read-only or read+write) | Done | Run against the test install after install, restore, upgrade, rollback, legacy upgrade and over HTTPS |
+| Poller load test (`test/load/poller.load.ts`) | Done | Results in the acceptance report |
+| Admin, customer and operations guides | Done | `docs/admin-guide.md`, `docs/customer-guide.md`, `docs/operations.md` |
+| Security review of Phase 9 | Self-review only | Findings fixed (see security.md); an independent review is still recommended |
+| Validation on real hardware / a real VM (not a container) | Not done | The clean system was a debootstrap Ubuntu 24.04 booted with systemd in a container on the build machine; Ubuntu 22.04 and Debian 12 were not run |
 
 ## Integration compatibility matrix
 
@@ -248,6 +267,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | SMTP (notifications) | STARTTLS / TLS / none, optional auth | Yes (local SMTP server in `monitoring.e2e`) | No |
 | Webhook (notifications) | POST JSON, HMAC-SHA256 signature | Yes (`monitoring.e2e`) | No |
 | Slack incoming webhook, Telegram Bot API | POST `{ text }`; `sendMessage` | No (implemented; not exercised against the services) | No |
+| Dell WS-Management (iDRAC 7–9, older firmware) | Enumerate/Pull of `DCIM_MemoryView` only (memory list when Redfish has none) | Yes (`hardware.e2e`) | No (fix shipped for an R640 whose Redfish lacked a memory list; not yet confirmed there) |
 | Redfish (iDRAC 8/9, iLO 5/6, XClarity, Supermicro) | GET `/redfish/v1/Systems`, `/Systems/*`, `/Chassis`, `/Chassis/*`, `…/Power`, `…/EnvironmentMetrics` | Yes (`power.e2e`) | No (Dell R630/R640 pending) |
 | IPMI v2.0 DCMI via ipmitool | `mc info`, `dcmi power reading` | Stand-in ipmitool only (`power.e2e`) | No |
 | APC rack PDU (PowerNet-MIB rPDU2) | SNMP walk of outlet metered status and device status | Yes (`power.e2e`) | No |

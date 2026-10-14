@@ -117,7 +117,7 @@ A separate reviewer audited the physical-DCIM code and found nine defects, all f
 - **Read-only collection.** Adapters issue SNMP GET/GETBULK, HTTP GET, or NX-API `cli_show` with a fixed list of `show` commands. There is no code path that writes to a device. Applying a discovery changes only the DCIM database, never deletes documented ports, and is recorded in the audit log.
 - **Permissions.** Configuring credentials needs `monitoring.configure` (a dangerous, staff-only permission). Starting a discovery and applying it needs `network.write`. Network infrastructure is staff-only; customers see only their own IP subnets and addresses, without infrastructure device names or staff subnets.
 - **TLS.** Certificate verification is on by default for HTTPS adapters. Turning it off is a per-credential choice for self-signed management certificates. Plain HTTP is offered for labs and labelled as sending credentials in clear.
-- **Reach of the worker.** Whoever holds `monitoring.configure` can point a credential at any host and port the worker can reach. Run the worker on a host whose network access is limited to the management network (Phase 9 adds a configurable allow-list).
+- **Reach of the worker.** Whoever holds `monitoring.configure` can point a credential at any host and port the worker can reach. Since Phase 9, `CDCIM_DEVICE_ALLOW` (CIDR list, e.g. the management networks) limits every connection made with stored device, BMC, console and hypervisor credentials; names are resolved and every address must be inside the list (the name is resolved again when connecting, so prefer IP addresses for BMCs and devices). Reachability pings are not credentialed and are not limited by it. The install check warns while it is unset. Still run the worker on a host whose network access is limited to the management network.
 - **Timeouts.** Every SNMP request and HTTP call has a timeout (HTTP is a hard deadline for the whole request); each run has a 120-second ceiling; runs stuck for 15 minutes are marked failed so a device is never blocked.
 
 ## Phase 3 review
@@ -210,14 +210,25 @@ Opening a console issues a one-time ticket (random, stored as a SHA-256 hash, va
 
 The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be off); keep BMCs on a management network. The BMC web console link opens the BMC's own interface in the user's browser, which needs network access to the BMC and has its own login.
 
+## Phase 9: production hardening
+
+- **Shared rate limits.** Request and sign-in limits are counted in Redis, so several API processes share one budget per client. If Redis is unreachable, each process falls back to counting in memory: limits stay on rather than switching off.
+- **Installed code is read-only to the service.** Releases are built as the service account, then owned by root; the `cdcim` account can run but not change the code, the configuration (`api.env`, root:cdcim 0640), the backup key or the audit anchors. Application code never runs as root: the root-owned `crapplet-dcim` command only moves files, runs PostgreSQL tools and openssl, and calls the application as `cdcim`.
+- **systemd sandbox.** API and worker run with `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, kernel and control-group protection, no capabilities, `RestrictNamespaces`, `RestrictAddressFamilies` (unix, inet, inet6, netlink) and memory limits.
+- **Encrypted backups.** AES-256-CTR (key from PBKDF2 over a 256-bit backup key), then HMAC-SHA256 over the ciphertext; the HMAC is checked before anything is decrypted, and a backup made with another key, damaged or altered, is refused. The MAC key is derived inside a process, never placed on a command line. Backups, the key and the anchors are root-only. A restore loads into a separate database and switches only after the load succeeded.
+- **Key rotation.** `crapplet-dcim secrets check|rotate` covers every encrypted column (a test fails if a new one is added without it), re-encrypts with the newest key without ever printing a secret, and reports rows that no longer decrypt.
+- **Audit anchors.** Daily, the newest audit event id and hash of each organization are appended, as root, to a file the service account cannot change; the install check verifies the chain and that every anchored event still exists unchanged. This closes the Phase 1 gap (removal of the newest records). Copy the anchor file off the server to protect against a root compromise.
+- **Install check.** `crapplet-dcim doctor` reports insecure settings (plain HTTP, listening on all addresses, API explorer on, Redis or PostgreSQL reachable from the network, no device allow-list), unreadable secrets, a broken audit chain, staff without MFA, missing backups, stopped services, wrong file permissions and firewall rules that block the web port.
+- **Self-review, not independent.** Phase 9 was reviewed by the same author who wrote it (findings fixed: running application code as root for backups and anchors, the HMAC key visible in the process list, a failed restore leaving no database, pruning that aborted the backup command). An independent review is still recommended before production use.
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.
 
 ## Known limitations (Phase 1)
 
-- The audit hash chain detects edits and deletions in the middle of the log, but not removal of the newest records, because the verifier has no external anchor. Phase 9 adds periodic export of the chain head (to object storage or email) as that anchor.
+- ~~The audit hash chain does not detect removal of the newest records~~: closed in Phase 9 by daily anchors outside the database (see above).
 
-- Rate limiting is per API process (in memory). With multiple API processes, move the throttler storage to Redis (not done in Phase 4; the supported install runs one API process; moved to Phase 9).
+- ~~Rate limiting is per API process~~: shared through Redis since Phase 9.
 - `@nestjs/swagger` 11 pulls in a `js-yaml` version with a moderate CPU-exhaustion advisory. It is reachable only through the Swagger UI, which is **disabled in production by default** (`ENABLE_SWAGGER`). The fix requires `@nestjs/swagger` 12 (breaking change) and is scheduled for the next dependency update.
-- Backup encryption, credential rotation tooling and management-network isolation checks are Phase 9 items.
+- ~~Backup encryption, credential rotation tooling and management-network isolation checks~~: done in Phase 9.

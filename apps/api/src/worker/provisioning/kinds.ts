@@ -1,3 +1,4 @@
+import { guarded } from '../device-allow';
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import { lookup as dnsLookup } from 'node:dns/promises';
@@ -42,7 +43,7 @@ async function bmcFor(ctx: StepContext): Promise<{ bmc: BmcControl; kind: 'redfi
     throw new PermanentError('The stored control credential could not be decrypted; enter it again');
   }
   const target: AdapterTarget = { host: cred.host, port: cred.port, username: cred.username, params: cred.params, secret: secret as AdapterTarget['secret'] };
-  const bmc = deps.makeBmc ? deps.makeBmc(cred, target) : cred.kind === 'redfish' ? redfishControl(target) : ipmiControl(target);
+  const bmc = deps.makeBmc ? deps.makeBmc(cred, target) : guarded(cred.kind === 'redfish' ? redfishControl(target) : ipmiControl(target), () => target.host);
   // Every BMC error leaving this module is scrubbed of the secret.
   const scrub = (m: string) => redact(m, secret);
   const wrapped = Object.fromEntries(
@@ -496,6 +497,10 @@ export function virtClientFor(deps: ProvisioningDeps, i: VirtIntegration): VirtC
   }
   if (deps.makeVirt) return deps.makeVirt(i, secret);
   const p = i.params as Record<string, string | null>;
+  return guarded(virtClient(i, p, secret), () => new URL(i.url).hostname);
+}
+
+function virtClient(i: VirtIntegration, p: Record<string, string | null>, secret: Record<string, unknown>): VirtClient {
   return i.kind === 'proxmox'
     ? proxmoxClient({ url: i.url, verifyTls: i.verifyTls, tokenId: String(p.tokenId), tokenSecret: String(secret.tokenSecret), actionTokenId: p.actionTokenId ?? null, actionTokenSecret: (secret.actionTokenSecret as string | null) ?? null })
     : virtualizorClient({ url: i.url, verifyTls: i.verifyTls, apiKey: String(secret.apiKey), apiPass: String(secret.apiPass), actionsEnabled: i.actionsEnabled });

@@ -6,6 +6,7 @@ import type Redis from 'ioredis';
 import { DB, type Db } from '../db/db';
 import { REDIS } from '../redis/redis';
 import { Public } from '../auth/decorators';
+import { WORKER_HEARTBEAT_KEY } from './worker-heartbeat';
 import { LOGGER } from '../common/logger';
 import type { Logger } from 'pino';
 
@@ -60,7 +61,10 @@ export class HealthController {
       }),
     ]);
     const ok = Object.values(checks).every((c) => c.ok);
-    const body = { status: ok ? 'ok' : 'degraded', checks };
+    // The worker is reported but does not fail readiness: the API serves without it.
+    let worker: 'running' | 'not_seen' | 'unknown' = 'unknown';
+    if (checks.redis?.ok) worker = (await this.redis.get(WORKER_HEARTBEAT_KEY).catch(() => null)) ? 'running' : 'not_seen';
+    const body = { status: ok ? 'ok' : 'degraded', checks, worker };
     if (!ok) throw new ServiceUnavailableException(body);
     return body;
   }

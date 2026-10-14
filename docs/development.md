@@ -98,15 +98,14 @@ curl -fsSL -H "Authorization: token $GH_TOKEN" https://raw.githubusercontent.com
 
 The token is used in memory for that run only and is not written to the server.
 
-## Production install on Ubuntu Server LTS (manual outline)
+## Production install, backups and upgrades
 
-The full installer, upgrade and rollback scripts, and a tested procedure are Phase 9 deliverables. The files available now:
+See the [operations guide](operations.md). The installer (`scripts/install.sh`) writes the systemd units and timers and
+installs the `crapplet-dcim` management command (`scripts/crapplet-dcim`); `deploy/nginx/crapplet-dcim.conf` is the
+template it fills in for `CDCIM_DOMAIN`, and `deploy/env.example` documents every setting of `/etc/crapplet-dcim/api.env`.
 
-| File | Purpose |
+| Check | Command |
 |---|---|
-| `deploy/env.example` | environment template for `/etc/crapplet-dcim/api.env` |
-| `deploy/systemd/cdcim-api.service` | hardened systemd unit (runs as user `cdcim`, loopback only) |
-| `deploy/nginx/crapplet-dcim.conf` | TLS, security headers and CSP, SPA serving, `/api` proxy with SSE support |
-| `deploy/csp-hash.py` | recomputes the CSP hash for the inline theme script after a UI build |
-
-Manual steps today: install `nodejs` 22, `postgresql-16`, `redis-server` and `nginx`; create the `cdcim` system user and database; copy a release to `/opt/crapplet-dcim/current`; run `npm ci --omit=dev` and the migrations; run `admin:create`; enable the unit and the nginx site; obtain a certificate with certbot.
+| Install validation on a clean Ubuntu 24.04 system (docker and debootstrap; fresh install, backup/restore, upgrade, automatic and manual rollback, restart, upgrade from the previous installer) | `sudo scripts/test-install-container.sh [--legacy-ref REF] OUTDIR` |
+| Acceptance run against any install | `CDCIM_ACCEPT_EMAIL=… CDCIM_ACCEPT_PASSWORD=… node scripts/acceptance.mjs --url http://host:8080 [--write]` |
+| Poller load test (test database) | `cd apps/api && npx tsx test/load/poller-load.ts --devices 100 --ports 48 --interval 60 --duration 180` |

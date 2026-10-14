@@ -22,7 +22,7 @@ export type LoginResult =
   | { kind: 'session'; issued: IssuedSession; user: User }
   | { kind: 'mfa'; challengeToken: string };
 
-const mfaContext = (userId: string) => `users.mfa_secret:${userId}`;
+export const mfaContext = (userId: string) => `users.mfa_secret:${userId}`;
 
 @Injectable()
 export class AuthService {

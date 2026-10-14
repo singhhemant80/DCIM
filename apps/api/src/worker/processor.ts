@@ -1,3 +1,4 @@
+import { assertDeviceHost } from './device-allow';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 import type { CredentialKind } from '@crapplet/shared';
@@ -25,7 +26,7 @@ export interface WorkerDeps {
 }
 
 export function defaultAdapters(): Record<CredentialKind, Adapter> {
-  return {
+  const all: Record<CredentialKind, Adapter> = {
     snmp_v2c: snmpAdapter('snmp_v2c'),
     snmp_v3: snmpAdapter('snmp_v3'),
     routeros_rest: routerOsAdapter(),
@@ -35,6 +36,22 @@ export function defaultAdapters(): Record<CredentialKind, Adapter> {
     redfish: redfishAdapter(),
     ipmi: ipmiAdapter(),
   };
+  // Every adapter call checks the target against CDCIM_DEVICE_ALLOW first.
+  return Object.fromEntries(Object.entries(all).map(([k, a]) => [k, guardAdapter(a)])) as Record<CredentialKind, Adapter>;
+}
+
+function guardAdapter(a: Adapter): Adapter {
+  return Object.fromEntries(
+    Object.entries(a).map(([k, fn]) => [
+      k,
+      typeof fn === 'function'
+        ? async (t: AdapterTarget, ...rest: unknown[]) => {
+            await assertDeviceHost(t.host);
+            return (fn as (...x: unknown[]) => unknown).call(a, t, ...rest);
+          }
+        : fn,
+    ]),
+  ) as unknown as Adapter;
 }
 
 /** Removes any secret value that might have been echoed back in an error message. */
