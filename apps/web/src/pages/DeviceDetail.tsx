@@ -1,9 +1,9 @@
 import { checkText, DOT, MGMT_LABEL, SERVER_LABEL } from '../lib/reachability';
 import { useState, type ReactNode } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { CATEGORY_LABELS, LIFECYCLE_LABELS, RACKED_STATES, type LifecycleState, type RackFace } from '@crapplet/shared';
-import { api } from '../lib/api';
+import { api, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime, relativeTime } from '../lib/format';
 import { daysUntil, STATE_TONE, useRacks, type DeviceT, type EventT } from '../lib/dcim';
@@ -12,22 +12,61 @@ import { AccessoriesPanel, BmcHardwarePanel } from '../components/DeviceHardware
 import { ConsolePanel } from '../components/Console';
 import { Button, Chip, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Textarea } from '../components/ui';
 import { DeviceForm } from './Hardware';
-import { formatWattsShort } from '@crapplet/shared';
-import type { DevicePowerT } from '../lib/power';
+import { formatKwh, formatWattsShort } from '@crapplet/shared';
+import { hours, money, type DevicePowerT, type EnergyT } from '../lib/power';
+import { PeriodPicker, periodParams, periodReady, type PeriodValue } from '../components/DateRange';
 import { QualityChip } from './Power';
 
-/** Current power of this device, labelled measured / estimated / unknown, with a link to its history. */
+const ENERGY_PERIODS = { mtd: 'This month', last_month: 'Last month', '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' } as const;
+
+/** Current power of this device, labelled measured / estimated / unknown, and its energy over a chosen period. */
 function DevicePowerPanel({ id }: { id: string }) {
   const q = useQuery({ queryKey: ['power', 'device', id], queryFn: () => api.get<DevicePowerT & { spec: { typicalW: number | null } | null }>(`/power/devices/${id}`), refetchInterval: 60_000, retry: false });
+  const [period, setPeriod] = useState<PeriodValue<keyof typeof ENERGY_PERIODS>>({ period: 'mtd', from: '', to: '' });
+  const e = useQuery({
+    queryKey: ['power', 'device-energy', id, periodParams(period)],
+    queryFn: () => api.get<{ items: (DevicePowerT & { energy: EnergyT | null })[] }>(`/power/devices${qs({ deviceId: id, ...periodParams(period), pageSize: 1 })}`),
+    enabled: periodReady(period),
+    placeholderData: keepPreviousData,
+  });
   if (q.isLoading || q.error || !q.data) return null;
   const d = q.data;
+  const en = e.data?.items[0]?.energy ?? null;
+  const total = en ? en.measuredKwh + en.estimatedKwh : 0;
   return (
-    <Panel title="Power" actions={<Link to={`/power?device=${id}`} className="text-[13px] text-accent hover:underline">History</Link>}>
+    <Panel title="Power and energy" actions={<Link to={`/power?device=${id}`} className="text-[13px] text-accent hover:underline">History</Link>}>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[24px] font-semibold tracking-[-0.02em]">{formatWattsShort(d.watts)}</span>
         <QualityChip d={d} />
       </div>
       {d.quality === 'unknown' && <p className="mt-2 text-[13px] text-ink-3">No measurement and no estimate. Set the model's typical draw, a per-device estimate, or collect from the BMC.</p>}
+      <div className="mt-4 border-t border-rule pt-3">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[13px] font-semibold">Energy</p>
+          <PeriodPicker value={period} onChange={setPeriod} options={Object.keys(ENERGY_PERIODS) as (keyof typeof ENERGY_PERIODS)[]} labels={ENERGY_PERIODS} className="w-40" />
+        </div>
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+          <div>
+            <dt className="text-[12.5px] text-ink-3">Total</dt>
+            <dd className="text-[18px] font-semibold">{formatKwh(total)}</dd>
+          </div>
+          <div>
+            <dt className="text-[12.5px] text-ink-3">Measured</dt>
+            <dd>{formatKwh(en?.measuredKwh ?? 0)}</dd>
+          </div>
+          <div>
+            <dt className="text-[12.5px] text-ink-3">Estimated</dt>
+            <dd className={en?.estimatedKwh ? 'text-est' : ''}>{formatKwh(en?.estimatedKwh ?? 0)}</dd>
+          </div>
+          {!!en?.cost.length && (
+            <div>
+              <dt className="text-[12.5px] text-ink-3">Amount</dt>
+              <dd className="text-[18px] font-semibold">{money(en.cost)}</dd>
+            </div>
+          )}
+        </dl>
+        {!!en?.unknownHours && <p className="mt-2 text-[12.5px] text-ink-3">{hours(en.unknownHours)} of this period had neither a measurement nor an estimate.</p>}
+      </div>
     </Panel>
   );
 }
@@ -306,12 +345,12 @@ export function DeviceDetailPage() {
                   ),
                 ],
                 ['Customer', d.customerName],
-                ...(d.reachability
+                ...(d.reachability && (staff || d.reachability.state !== 'unknown')
                   ? ([
                       [
                         'Reachability',
                         <span className="flex flex-col gap-0.5">
-                          {([['mgmt', MGMT_LABEL], ['server', SERVER_LABEL]] as const).map(([k, label]) => (
+                          {([['mgmt', MGMT_LABEL], ['server', SERVER_LABEL]] as const).filter(([k]) => staff || d.reachability![k].state !== 'unknown').map(([k, label]) => (
                             <span key={k} className="flex items-start gap-1.5 text-[13px]">
                               <span className={`mt-1.5 size-2 shrink-0 rounded-full ${DOT[d.reachability![k].state]}`} />
                               <span>

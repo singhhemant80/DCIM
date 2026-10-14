@@ -54,6 +54,8 @@ export const outletMappingSchema = z.object({
 export const powerSettingsSchema = z.object({
   rawDays: z.number().int().min(7).max(365).default(35),
   hourlyDays: z.number().int().min(90).max(3650).default(1095),
+  /** Show energy amounts (priced with the tariffs) to customer portal users for their own equipment. */
+  customerCost: z.boolean().default(false),
 });
 
 /** 'custom' uses from / to (whole days in the organization's time zone, both included). */
@@ -74,6 +76,7 @@ export const powerDeviceListQuerySchema = paginationSchema.extend({
   datacenterId: z.string().uuid().optional(),
   rackId: z.string().uuid().optional(),
   quality: z.enum(['measured', 'estimated', 'unknown']).optional(),
+  deviceId: z.string().uuid().optional(),
   sort: z.enum(['power', 'energy', 'name']).default('power'),
 });
 

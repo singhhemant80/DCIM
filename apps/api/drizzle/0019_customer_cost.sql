@@ -1,0 +1,1 @@
+ALTER TABLE "power_settings" ADD COLUMN "customer_cost" boolean DEFAULT false NOT NULL;

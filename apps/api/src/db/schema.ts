@@ -1626,6 +1626,8 @@ export const powerSettings = pgTable('power_settings', {
     .references(() => organizations.id, { onDelete: 'cascade' }),
   rawDays: integer('raw_days').notNull().default(35),
   hourlyDays: integer('hourly_days').notNull().default(1095),
+  /** Customers see energy amounts for their own equipment. */
+  customerCost: boolean('customer_cost').notNull().default(false),
   updatedAt: updatedAt(),
 });
 

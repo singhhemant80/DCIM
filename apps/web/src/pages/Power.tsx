@@ -974,8 +974,8 @@ function TariffsTab() {
 function RetentionTab() {
   const { can } = useAuth();
   const qc = useQueryClient();
-  const q = useQuery({ queryKey: ['power', 'settings'], queryFn: () => api.get<{ rawDays: number; hourlyDays: number }>('/power/settings') });
-  const [v, setV] = useState<{ rawDays: number; hourlyDays: number } | null>(null);
+  const q = useQuery({ queryKey: ['power', 'settings'], queryFn: () => api.get<{ rawDays: number; hourlyDays: number; customerCost: boolean }>('/power/settings') });
+  const [v, setV] = useState<{ rawDays: number; hourlyDays: number; customerCost: boolean } | null>(null);
   useEffect(() => {
     if (q.data && !v) setV(q.data);
   }, [q.data, v]);
@@ -983,7 +983,7 @@ function RetentionTab() {
   if (!v) return <Loading />;
   const manage = can('power.configure');
   return (
-    <Panel title="How long power data is kept">
+    <Panel title="Data retention and customer view">
       <form className="grid max-w-lg gap-3" onSubmit={(e) => (e.preventDefault(), save.mutate())}>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Readings (days)" hint="7–365">
@@ -993,6 +993,13 @@ function RetentionTab() {
             {(id, h) => <Input id={id} aria-describedby={h} type="number" min={90} max={3650} disabled={!manage} value={v.hourlyDays} onChange={(e) => setV({ ...v, hourlyDays: Number(e.target.value) })} />}
           </Field>
         </div>
+        <label className="flex items-start gap-2 text-[13px]">
+          <input type="checkbox" className="mt-0.5 accent-[var(--accent)]" disabled={!manage} checked={v.customerCost} onChange={(e) => setV({ ...v, customerCost: e.target.checked })} />
+          <span>
+            Show energy amounts to customers
+            <span className="block text-ink-3">Customer portal users then see the cost of their own servers' energy, priced with your tariffs. Off: they see kWh only.</span>
+          </span>
+        </label>
         <ErrorNote error={save.error} />
         {save.isSuccess && <p className="text-[13px] text-ok">Saved.</p>}
         {manage && (

@@ -606,6 +606,8 @@ export function AccessoriesPanel({ deviceId, canWrite }: { deviceId: string; can
     },
   });
   const items = q.data ?? [];
+  // Read-only viewers (customers) only see the panel when something is recorded.
+  if (!canWrite && q.data && !items.length) return null;
   const totals = ACCESSORY_KINDS.map((k) => [k, items.filter((a) => a.kind === k).reduce((s, a) => s + a.quantity, 0)] as const).filter(([, n]) => n > 0);
   return (
     <Panel

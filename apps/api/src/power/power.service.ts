@@ -233,6 +233,8 @@ export class PowerService {
        where ${scope} and h.hour >= ${from.toISOString()}::timestamptz and h.hour < ${to.toISOString()}::timestamptz
          and ${countedOnly ? sql`h.counted` : sql`true`} and ${where}
        group by 1, 2`);
+    // Customers see amounts only when the datacenter turned that on.
+    const priced = p.userType === 'staff' || (await this.customerCost(p));
     const out = new Map<string, EnergyRow>();
     for (const x of r.rows) {
       const e = out.get(x.k) ?? { key: x.k, measuredKwh: 0, estimatedKwh: 0, unknownHours: 0, measuredHours: 0, estimatedHours: 0, cost: [], unpricedKwh: 0 };
@@ -241,8 +243,8 @@ export class PowerService {
       e.unknownHours += Number(x.unknown_s) / 3600;
       e.measuredHours += Number(x.measured_s) / 3600;
       e.estimatedHours += Number(x.estimated_s) / 3600;
-      if (x.currency && p.userType === 'staff') e.cost.push({ currency: x.currency, amount: Number(x.cost ?? 0), estimatedPart: Number(x.ecost ?? 0) });
-      else if (!x.currency && p.userType === 'staff') e.unpricedKwh += (Number(x.mwh) + Number(x.ewh)) / 1000;
+      if (x.currency && priced) e.cost.push({ currency: x.currency, amount: Number(x.cost ?? 0), estimatedPart: Number(x.ecost ?? 0) });
+      else if (!x.currency && priced) e.unpricedKwh += (Number(x.mwh) + Number(x.ewh)) / 1000;
       out.set(x.k, e);
     }
     return out;
@@ -289,6 +291,7 @@ export class PowerService {
     if (q.q) conds.push(sql`(d.hostname ilike ${'%' + q.q + '%'} or d.asset_tag ilike ${'%' + q.q + '%'})`);
     if (q.datacenterId) conds.push(sql`b.datacenter_id = ${q.datacenterId}`);
     if (q.rackId) conds.push(sql`d.rack_id = ${q.rackId}`);
+    if (q.deviceId) conds.push(sql`d.id = ${q.deviceId}`);
     let list = await this.current(p, sql.join(conds, sql` and `));
     if (q.quality) list = list.filter((d) => d.quality === q.quality);
     const per = await this.period(p, q.period, q);
@@ -586,9 +589,14 @@ export class PowerService {
     });
   }
 
+  private async customerCost(p: Principal): Promise<boolean> {
+    const [s] = await this.db.select({ c: powerSettings.customerCost }).from(powerSettings).where(eq(powerSettings.orgId, p.orgId));
+    return !!s?.c;
+  }
+
   async settings(p: Principal) {
     const [s] = await this.db.select().from(powerSettings).where(eq(powerSettings.orgId, p.orgId));
-    return { rawDays: s?.rawDays ?? 35, hourlyDays: s?.hourlyDays ?? 1095 };
+    return { rawDays: s?.rawDays ?? 35, hourlyDays: s?.hourlyDays ?? 1095, customerCost: s?.customerCost ?? false };
   }
 
   async updateSettings(p: Principal, input: z.infer<typeof powerSettingsSchema>, meta: RequestMeta) {

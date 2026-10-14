@@ -488,10 +488,10 @@ function TotalsBar({ t, period }: { t: ListTotals; period: string }) {
   const cells: [string, React.ReactNode, string?][] = [
     ['Power now', formatWattsShort(t.measuredW + t.estimatedW), t.estimatedW ? `${formatWattsShort(t.measuredW)} measured, ${formatWattsShort(t.estimatedW)} estimated` : 'all measured'],
     [`Energy, ${period.toLowerCase()}`, `${kwh(t.energyKwh)} kWh`, t.estimatedKwh > 0.0005 ? `${kwh(t.estimatedKwh)} kWh estimated` : 'all measured'],
-    [`Amount, ${period.toLowerCase()}`, t.cost.length ? money(t.cost) : '—', t.unpricedKwh ? `${kwh(t.unpricedKwh)} kWh without a tariff` : 'from the power tariffs'],
+    ...(t.cost.length || t.unpricedKwh ? ([[`Amount, ${period.toLowerCase()}`, t.cost.length ? money(t.cost) : '—', t.unpricedKwh ? `${kwh(t.unpricedKwh)} kWh without a tariff` : 'from the power tariffs']] as [string, React.ReactNode, string?][]) : []),
   ];
   return (
-    <div className="grid grid-cols-1 gap-px border-b border-rule bg-rule sm:grid-cols-3">
+    <div className={cx('grid grid-cols-1 gap-px border-b border-rule bg-rule', cells.length === 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
       {cells.map(([label, value, note]) => (
         <div key={label} className="bg-panel px-4 py-2.5">
           <p className="text-[12.5px] text-ink-2">{label}</p>
@@ -507,7 +507,7 @@ function TotalsBar({ t, period }: { t: ListTotals; period: string }) {
 }
 
 /** BMC and OS checks, each with its address (staff) and a coloured dot. */
-function ReachCell({ r }: { r: DeviceReachabilityT }) {
+function ReachCell({ r, customer }: { r: DeviceReachabilityT; customer?: boolean }) {
   return (
     <span className="flex flex-col gap-0.5 text-[12.5px]">
       {(
@@ -521,7 +521,7 @@ function ReachCell({ r }: { r: DeviceReachabilityT }) {
           <span key={k} className="flex items-center gap-1.5 whitespace-nowrap" title={`${k === 'mgmt' ? MGMT_LABEL : SERVER_LABEL}: ${checkText(c)}`}>
             <span className={cx('size-2 shrink-0 rounded-full', DOT[c.state])} aria-hidden />
             <span className="w-7 text-ink-3">{label}</span>
-            {c.target ? <span className="font-mono">{c.target}</span> : <span className="text-ink-3">{c.reason?.startsWith('Not checked: no') ? 'no address' : '—'}</span>}
+            {c.target ? <span className="font-mono">{c.target}</span> : <span className="text-ink-3">{c.reason?.startsWith('Not checked: no') ? (customer ? 'not monitored' : 'no address') : customer ? (c.state === 'up' ? 'reachable' : c.state === 'down' ? '' : '—') : '—'}</span>}
             {c.state === 'up' && c.rttMs !== null && <span className="text-ink-3">{c.rttMs < 10 ? c.rttMs.toFixed(1) : Math.round(c.rttMs)} ms</span>}
             {c.state === 'down' && <span className="text-crit">down</span>}
           </span>
@@ -1311,28 +1311,53 @@ export function HardwarePage() {
   );
 }
 
-/** Customer portal view: only their own equipment, no internal data. */
+/** Customer portal view: only their own equipment, no internal data; power and energy per server. */
 export function CustomerEquipment({ embedded }: { embedded?: boolean }) {
-  const list = useQuery({ queryKey: ['dcim', 'devices', 'mine'], queryFn: () => api.get<Paginated<DeviceT>>('/dcim/devices?pageSize=200') });
+  const { can } = useAuth();
+  const power = can('power.read');
+  const [period, setPeriod] = useState<PeriodValue<keyof typeof PERIOD_LABELS>>({ period: 'mtd', from: '', to: '' });
+  const list = useQuery({
+    queryKey: ['dcim', 'devices', 'mine', periodParams(period)],
+    queryFn: () => api.get<Paginated<DeviceT> & { totals?: ListTotals | null }>(`/dcim/devices${qs({ pageSize: 200, withStatus: 'true', ...periodParams(period) })}`),
+    enabled: periodReady(period),
+    placeholderData: keepPreviousData,
+    refetchInterval: 60_000,
+  });
+  const items = list.data?.items ?? [];
+  const priced = items.some((d) => (d.status?.power?.cost.length ?? 0) > 0);
   const body = (
-    <Panel title={embedded ? 'Your equipment' : undefined} flush>
+    <Panel
+      title={embedded ? 'Your equipment' : undefined}
+      flush
+      actions={power && <PeriodPicker value={period} onChange={setPeriod} options={Object.keys(PERIOD_LABELS) as (keyof typeof PERIOD_LABELS)[]} labels={PERIOD_LABELS} prefix="Energy: " className="w-52" />}
+    >
       {list.isLoading && <Loading />}
       <ErrorNote error={list.error} className="m-4" />
       {list.data?.items.length === 0 && <EmptyState title="No equipment yet">Servers and colocated equipment assigned to your account appear here.</EmptyState>}
-      {!!list.data?.items.length && (
+      {power && !embedded && items.length > 0 && list.data?.totals && <TotalsBar t={list.data.totals} period={periodLabel(period, PERIOD_LABELS)} />}
+      {!!items.length && (
         <Table label="Your equipment">
           <thead>
             <tr>
               <th>Device</th>
               <th>Model</th>
               <th>Location</th>
+              <th>Reachability</th>
+              {power && (
+                <>
+                  <th className="text-right">Power now</th>
+                  <th className="text-right">
+                    Energy{priced ? ' · amount' : ''} <span className="font-normal text-ink-3">({periodLabel(period, PERIOD_LABELS).toLowerCase()})</span>
+                  </th>
+                </>
+              )}
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            {list.data.items.map((d) => (
+            {items.map((d) => (
               <tr key={d.id}>
-                <td>
+                <td className="whitespace-nowrap">
                   <Link to={`/hardware/${d.id}`} className="font-medium text-accent hover:underline">
                     {d.hostname || d.assetTag}
                   </Link>
@@ -1341,7 +1366,14 @@ export function CustomerEquipment({ embedded }: { embedded?: boolean }) {
                 <td className="text-ink-2">
                   {d.model.manufacturer} {d.model.name}
                 </td>
-                <td className="text-ink-2">{d.location ? `${d.location.datacenterCode}, rack ${d.location.rackName}${d.location.positionU ? ` U${d.location.positionU}` : ''}` : 'Not installed'}</td>
+                <td className="whitespace-nowrap text-ink-2">{d.location ? `${d.location.datacenterCode}, rack ${d.location.rackName}${d.location.positionU ? ` U${d.location.positionU}` : ''}` : 'Not installed'}</td>
+                <td>{d.status ? <ReachCell r={d.status.reachability} customer /> : '—'}</td>
+                {power && (
+                  <>
+                    <td className="text-right whitespace-nowrap">{d.status?.power ? <PowerNowCell p={d.status.power} /> : '—'}</td>
+                    <td className="text-right whitespace-nowrap">{d.status?.power ? <EnergyCell p={d.status.power} /> : '—'}</td>
+                  </>
+                )}
                 <td>
                   <Chip tone={STATE_TONE[d.lifecycleState as LifecycleState]}>{LIFECYCLE_LABELS[d.lifecycleState]}</Chip>
                 </td>
@@ -1350,6 +1382,7 @@ export function CustomerEquipment({ embedded }: { embedded?: boolean }) {
           </tbody>
         </Table>
       )}
+      {power && !!items.length && <p className="px-4 py-2.5 text-[12px] text-ink-3">Energy is measured where your server's power is read (BMC or metered PDU outlet) and estimated otherwise; * marks estimated energy.</p>}
     </Panel>
   );
   if (embedded) return body;

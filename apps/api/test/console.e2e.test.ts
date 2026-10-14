@@ -34,7 +34,7 @@ async function ok<T = any>(res: Promise<import('supertest').Response> | import('
 
 /** A WebSocket client that collects bytes and can wait for a number of them. */
 function open(path: string, origin?: string) {
-  const port = (ctx.server.address() as AddressInfo).port;
+  const port = ((ctx.server as unknown as import('node:http').Server).address() as AddressInfo).port;
   const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`, ['binary'], origin ? { headers: { Origin: origin } } : {});
   let buf = Buffer.alloc(0);
   let wake: (() => void) | null = null;
