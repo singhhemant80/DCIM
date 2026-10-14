@@ -13,7 +13,7 @@ const W = 760;
 const H = 240;
 const PAD = { l: 78, r: 12, t: 12, b: 26 };
 
-function niceMax(v: number): number {
+export function niceMax(v: number): number {
   if (v <= 0) return 1000;
   const p = 10 ** Math.floor(Math.log10(v));
   for (const m of [1, 2, 2.5, 5, 10]) if (v <= m * p) return m * p;
@@ -21,13 +21,13 @@ function niceMax(v: number): number {
 }
 
 /** "500 Mbps", "1.5 Gbps": no decimals unless the value needs one. */
-function tickLabel(v: number): string {
+export function tickLabel(v: number): string {
   if (v <= 0) return '0';
   const scaled = v / 1000 ** Math.min(4, Math.floor(Math.log10(v) / 3));
   return formatBitRate(v, Math.abs(scaled - Math.round(scaled)) < 0.001 ? 0 : 1);
 }
 
-function timeLabel(t: number, spanMs: number): string {
+export function timeLabel(t: number, spanMs: number): string {
   const d = new Date(t);
   if (spanMs > 2 * 86400_000) return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { NAV_SECTIONS } from '@crapplet/shared';
 import { api } from '../lib/api';
@@ -12,8 +12,9 @@ import { CustomerEquipment } from './Hardware';
 import { OccupancyBar } from './Racks';
 import { formatBps } from '../lib/network';
 import { useEffect, useMemo, useState } from 'react';
-import { bps, latestLive, useLiveWatchMany, useMonitoringStream, withLive, type AlertSummaryT, type LiveSample, type PortRateT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
+import { bps, latestLive, useLiveWatchMany, useMonitoringStream, withLive, type AlertSummaryT, type LiveSample, type PortHistoryT, type PortRateT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
 import { RateChart } from '../components/RateChart';
+import { MultiRateChart, uplinkColors, type Series } from '../components/MultiRateChart';
 import { formatKwh, formatWattsShort } from '@crapplet/shared';
 import type { EnergyT, PowerNowT } from '../lib/power';
 
@@ -143,17 +144,66 @@ function BandwidthPanel() {
             <Stat label="Alerts firing" value={d.alerts.firing} tone={d.alerts.critical ? 'crit' : d.alerts.firing ? 'warn' : 'ok'} note={d.alerts.firing ? `${d.alerts.critical} critical` : 'All clear'} />
           </dl>
           <LiveUplinks />
-          {d.history.points.length > 1 && <RateChart label="Total traffic, last 24 hours" points={d.history.points.map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps }))} stepSeconds={d.history.stepSeconds} from={now - 86400_000} to={now} p95={d.history.p95} />}
+          <UplinkHistory total={d.history} now={now} />
         </>
       )}
     </Panel>
   );
 }
 
+/**
+ * Last 24 hours: each uplink's download and upload in its own colour (same
+ * colours as the live rows above), or the total of all uplinks.
+ */
+function UplinkHistory({ total, now }: { total: TotalsHistoryT; now: number }) {
+  const [view, setView] = useState<'each' | 'total'>('each');
+  const ports = useQuery({ queryKey: ['monitoring', 'ports', 'uplinks'], queryFn: () => api.get<{ items: PortRateT[] }>('/monitoring/ports?totalsOnly=true&pageSize=50&sort=name'), refetchInterval: 30_000 });
+  const items = ports.data?.items ?? [];
+  const hist = useQueries({
+    queries: items.slice(0, 5).map((p) => ({ queryKey: ['monitoring', 'history', p.interfaceId, { range: '24h' }], queryFn: () => api.get<PortHistoryT>(`/monitoring/ports/${p.interfaceId}/history?range=24h`), refetchInterval: 120_000 })),
+  });
+  const series: Series[] = items.slice(0, 5).flatMap((p, i) => {
+    const h = hist[i]?.data;
+    if (!h) return [];
+    const c = uplinkColors(i);
+    const name = p.description || p.name;
+    const pts = h.points.map((x) => ({ t: new Date(x.t).getTime(), in: x.inBps, out: x.outBps }));
+    return [
+      { key: `${p.interfaceId}-in`, label: `${name} download`, color: c.in, points: pts.map((x) => ({ t: x.t, v: x.in })) },
+      { key: `${p.interfaceId}-out`, label: `${name} upload`, color: c.out, points: pts.map((x) => ({ t: x.t, v: x.out })) },
+    ];
+  });
+  const step = hist.find((h) => h.data)?.data?.stepSeconds ?? total.stepSeconds;
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-[13px] font-medium">Last 24 hours</p>
+        <span className="inline-flex rounded-lg border border-rule p-0.5 text-[12.5px]" role="group" aria-label="Chart">
+          {(
+            [
+              ['each', 'Each uplink'],
+              ['total', 'Total'],
+            ] as const
+          ).map(([k, l]) => (
+            <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)} className={view === k ? 'rounded-md bg-field px-2 py-0.5 font-medium' : 'rounded-md px-2 py-0.5 text-ink-3 hover:text-ink'}>
+              {l}
+            </button>
+          ))}
+        </span>
+      </div>
+      {view === 'each' && series.length > 0 && <MultiRateChart label="Each uplink, last 24 hours" series={series} stepSeconds={step} from={now - 86400_000} to={now} />}
+      {view === 'each' && !series.length && <p className="text-[13px] text-ink-3">{hist.some((h) => h.isLoading) ? 'Loading…' : 'No history yet.'}</p>}
+      {view === 'total' && total.points.length > 1 && (
+        <RateChart label="Total traffic, last 24 hours" points={total.points.map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps }))} stepSeconds={total.stepSeconds} from={now - 86400_000} to={now} p95={total.p95} />
+      )}
+    </div>
+  );
+}
+
 /** A tiny in/out line chart of the last two minutes of per-second samples. */
-function Sparkline({ samples, max }: { samples: LiveSample[]; max: number }) {
+function Sparkline({ samples, max, colors }: { samples: LiveSample[]; max: number; colors: { in: string; out: string } }) {
   const W = 220;
-  const H = 44;
+  const H = 56;
   const now = Date.now();
   const from = now - 120_000;
   const pts = samples.filter((s) => s.t >= from);
@@ -174,10 +224,10 @@ function Sparkline({ samples, max }: { samples: LiveSample[]; max: number }) {
     return d;
   };
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="h-11 w-full" role="img" aria-label="Last two minutes, every second">
+    <svg viewBox={`0 0 ${W} ${H}`} className="h-14 w-full" role="img" aria-label="Last two minutes, every second">
       <line x1={0} x2={W} y1={H - 1} y2={H - 1} stroke="var(--rule)" />
-      <path d={path('outBps')} fill="none" strokeWidth={1.5} style={{ stroke: 'var(--tx)' }} />
-      <path d={path('inBps')} fill="none" strokeWidth={1.5} style={{ stroke: 'var(--rx)' }} />
+      <path d={path('outBps')} fill="none" strokeWidth={1.6} style={{ stroke: colors.out }} />
+      <path d={path('inBps')} fill="none" strokeWidth={1.6} style={{ stroke: colors.in }} />
     </svg>
   );
 }
@@ -214,7 +264,8 @@ function LiveUplinks() {
         </span>
       </div>
       <ul className="divide-y divide-rule">
-        {items.map((raw) => {
+        {items.map((raw, idx) => {
+          const c = uplinkColors(idx);
           const p = withLive(raw, stream.live);
           const samples = stream.fast.get(p.interfaceId) ?? [];
           const l = latestLive(samples);
@@ -235,20 +286,20 @@ function LiveUplinks() {
                 </div>
               </Link>
               <div>
-                <div className="text-[11.5px] text-ink-3">In</div>
-                <div className="text-[17px] font-semibold whitespace-nowrap tabular-nums" style={{ color: 'var(--rx)' }}>
+                <div className="text-[11.5px] text-ink-3">Download (in)</div>
+                <div className="text-[17px] font-semibold whitespace-nowrap tabular-nums" style={{ color: c.in }}>
                   {bps(inBps)}
                 </div>
                 {pctOf(inBps) && <div className="text-[11.5px] text-ink-3">{pctOf(inBps)} of link</div>}
               </div>
               <div>
-                <div className="text-[11.5px] text-ink-3">Out</div>
-                <div className="text-[17px] font-semibold whitespace-nowrap tabular-nums" style={{ color: 'var(--tx)' }}>
+                <div className="text-[11.5px] text-ink-3">Upload (out)</div>
+                <div className="text-[17px] font-semibold whitespace-nowrap tabular-nums" style={{ color: c.out }}>
                   {bps(outBps)}
                 </div>
                 {pctOf(outBps) && <div className="text-[11.5px] text-ink-3">{pctOf(outBps)} of link</div>}
               </div>
-              {samples.length > 1 ? <Sparkline samples={samples} max={peak * 1.1} /> : <div className="text-[12px] text-ink-3">{l ? '' : 'waiting for live samples…'}</div>}
+              {samples.length > 1 ? <Sparkline samples={samples} max={peak * 1.1} colors={c} /> : <div className="text-[12px] text-ink-3">{l ? '' : 'waiting for live samples…'}</div>}
             </li>
           );
         })}
