@@ -1,6 +1,7 @@
 import { formatWattsShort } from '@crapplet/shared';
 import { checkText, DOT, MGMT_LABEL, SERVER_LABEL } from '../lib/reachability';
 import { money, sourceLabel } from '../lib/power';
+import { PeriodPicker, periodLabel, periodParams, periodReady, type PeriodValue } from '../components/DateRange';
 import { useState, type FormEvent } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
@@ -582,13 +583,14 @@ function DevicesTab() {
   const get = (k: string) => params.get(k) ?? '';
   const page = Number(get('page') || 1);
   const query = { q: get('q'), state: get('state'), category: get('category'), datacenterId: get('datacenterId'), unracked: get('unracked'), warrantyWithinDays: get('warranty') };
-  const period = (get('period') || 'mtd') as keyof typeof PERIOD_LABELS;
+  const period: PeriodValue<keyof typeof PERIOD_LABELS> = { period: (get('period') || 'mtd') as keyof typeof PERIOD_LABELS, from: get('from'), to: get('to') };
   const [search, setSearch] = useState(query.q);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [dialog, setDialog] = useState<null | 'add' | 'import' | 'bulk'>(null);
   const list = useQuery({
-    queryKey: ['dcim', 'devices', { page, ...query, period }],
-    queryFn: () => api.get<Paginated<DeviceT> & { totals?: ListTotals | null }>(`/dcim/devices${qs({ page, pageSize: 50, ...query, withStatus: 'true', period })}`),
+    queryKey: ['dcim', 'devices', { page, ...query, ...periodParams(period) }],
+    queryFn: () => api.get<Paginated<DeviceT> & { totals?: ListTotals | null }>(`/dcim/devices${qs({ page, pageSize: 50, ...query, withStatus: 'true', ...periodParams(period) })}`),
+    enabled: periodReady(period),
     placeholderData: keepPreviousData,
     // Power and reachability move on their own.
     refetchInterval: 60_000,
@@ -668,13 +670,14 @@ function DevicesTab() {
             <option value="90">Expires within 90 days</option>
           </Select>
           {can('power.read') && (
-            <Select aria-label="Energy period" className="w-52" value={period} onChange={(e) => update({ period: e.target.value === 'mtd' ? '' : e.target.value })}>
-              {Object.entries(PERIOD_LABELS).map(([k, label]) => (
-                <option key={k} value={k}>
-                  Energy: {label}
-                </option>
-              ))}
-            </Select>
+            <PeriodPicker
+              value={period}
+              onChange={(v) => update({ period: v.period === 'mtd' ? '' : v.period, from: v.period === 'custom' ? v.from : '', to: v.period === 'custom' ? v.to : '' })}
+              options={Object.keys(PERIOD_LABELS) as (keyof typeof PERIOD_LABELS)[]}
+              labels={PERIOD_LABELS}
+              prefix="Energy: "
+              className="w-52"
+            />
           )}
           <Button type="submit">Search</Button>
         </form>
@@ -685,7 +688,7 @@ function DevicesTab() {
             {params.toString() ? 'Try clearing a filter.' : 'Add devices one by one or import your existing inventory from CSV.'}
           </EmptyState>
         )}
-        {items.length > 0 && list.data?.totals && can('power.read') && <TotalsBar t={list.data.totals} period={PERIOD_LABELS[period]} />}
+        {items.length > 0 && list.data?.totals && can('power.read') && <TotalsBar t={list.data.totals} period={periodLabel(period, PERIOD_LABELS)} />}
         {items.length > 0 && (
           <>
             <Table label="Devices">
@@ -711,7 +714,7 @@ function DevicesTab() {
                     <>
                       <th className="text-right">Power now</th>
                       <th className="text-right">
-                        Energy · cost <span className="font-normal text-ink-3">({PERIOD_LABELS[period].toLowerCase()})</span>
+                        Energy · cost <span className="font-normal text-ink-3">({periodLabel(period, PERIOD_LABELS).toLowerCase()})</span>
                       </th>
                     </>
                   )}

@@ -37,7 +37,7 @@ export class PowerController {
   @ApiOperation({ summary: 'Current draw (measured and estimated kept apart, unknown devices counted), energy and cost for a period, by datacenter and category.' })
   @ApiZodQuery(powerSummaryQuerySchema)
   summary(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(powerSummaryQuerySchema)) q: Infer<typeof powerSummaryQuerySchema>) {
-    return this.svc.summary(p, q.period, q.datacenterId);
+    return this.svc.summary(p, q.period, q.datacenterId, q);
   }
 
   @Get('devices')
@@ -57,7 +57,7 @@ export class PowerController {
   @RequirePermissions('power.read')
   @ApiZodQuery(powerHistoryQuerySchema)
   history(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Query(new ZodPipe(powerHistoryQuerySchema)) q: Infer<typeof powerHistoryQuerySchema>) {
-    return this.svc.history(p, id, q.range);
+    return this.svc.history(p, id, q.range, q);
   }
 
   @Put('devices/:id/profile')

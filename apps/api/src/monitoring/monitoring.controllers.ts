@@ -27,7 +27,7 @@ import { REDIS } from '../redis/redis';
 
 type Infer<T extends z.ZodTypeAny> = z.infer<T>;
 const UUID = new ParseUUIDPipe();
-const totalsQuery = z.object({ datacenterId: z.string().uuid().optional(), range: z.enum(RATE_RANGES).default('24h') });
+const totalsQuery = z.object({ datacenterId: z.string().uuid().optional(), range: z.enum([...RATE_RANGES, 'custom']).default('24h'), from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() });
 const deliveriesQuery = z.object({ channelId: z.string().uuid().optional() });
 
 /* ------------------------------------------------------------ monitoring */
@@ -83,7 +83,7 @@ export class MonitoringController {
   @ApiOperation({ summary: 'Rate history (raw up to 6 h, 5-minute up to 7 d, hourly for 30 d) and the 95th percentile of 5-minute averages.' })
   @ApiZodQuery(rateHistoryQuerySchema)
   history(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Query(new ZodPipe(rateHistoryQuerySchema)) q: Infer<typeof rateHistoryQuerySchema>) {
-    return this.svc.history(p, id, q.range);
+    return this.svc.history(p, id, q.range, q);
   }
 
   @Get('totals')
@@ -100,7 +100,7 @@ export class MonitoringController {
   @RequirePermissions('monitoring.read')
   @ApiZodQuery(totalsQuery)
   totalsHistory(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(totalsQuery)) q: Infer<typeof totalsQuery>) {
-    return this.svc.totalsHistory(p, q.range, q.datacenterId);
+    return this.svc.totalsHistory(p, q.range, q.datacenterId, q);
   }
 
   @Get('devices')

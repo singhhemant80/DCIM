@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { dateFilter } from '../common/date-range';
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type { z } from 'zod';
@@ -37,6 +38,7 @@ export class AlertsService {
     if (q.status !== 'all') conds.push(sql`a.status = ${q.status}`);
     if (q.severity) conds.push(sql`a.severity = ${q.severity}`);
     if (q.deviceId) conds.push(sql`a.device_id = ${q.deviceId}`);
+    conds.push(...dateFilter(sql`a.started_at`, p.orgId, q));
     const where = sql.join(conds, sql` and `);
     const [rows, total] = await Promise.all([
       this.db.execute(sql`

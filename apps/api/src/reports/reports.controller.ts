@@ -33,7 +33,7 @@ export class ReportsController {
   @ApiOperation({ summary: 'Generate a report. format=csv or pdf returns a file download.' })
   @ApiZodQuery(reportQuerySchema)
   async report(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(reportQuerySchema)) q: Infer<typeof reportQuerySchema>, @Res({ passthrough: true }) res: Response) {
-    const out = await this.svc.render(p, q.type, q.period, q.format);
+    const out = await this.svc.render(p, q.type, q.period, q.format, q);
     if (!out.body) return out.report;
     res.setHeader('Cache-Control', 'no-store');
     return new StreamableFile(out.body, { type: out.contentType, disposition: `attachment; filename="${out.filename}"`, length: out.body.length });

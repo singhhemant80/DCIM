@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from './schemas';
+import { dateRangeFields, paginationSchema } from './schemas';
 import type { CredentialKind } from './network';
 
 /** Access methods that can read power. */
@@ -56,17 +56,20 @@ export const powerSettingsSchema = z.object({
   hourlyDays: z.number().int().min(90).max(3650).default(1095),
 });
 
-export const POWER_PERIODS = ['24h', '7d', '30d', 'mtd', 'last_month'] as const;
+/** 'custom' uses from / to (whole days in the organization's time zone, both included). */
+export const POWER_PERIODS = ['24h', '7d', '30d', 'mtd', 'last_month', 'custom'] as const;
 export type PowerPeriod = (typeof POWER_PERIODS)[number];
-export const POWER_PERIOD_LABELS: Record<PowerPeriod, string> = { '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days', mtd: 'This month', last_month: 'Last month' };
+export const POWER_PERIOD_LABELS: Record<PowerPeriod, string> = { '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days', mtd: 'This month', last_month: 'Last month', custom: 'Custom dates' };
 
 export const powerSummaryQuerySchema = z.object({
   period: z.enum(POWER_PERIODS).default('24h'),
+  ...dateRangeFields,
   datacenterId: z.string().uuid().optional(),
 });
 
 export const powerDeviceListQuerySchema = paginationSchema.extend({
   period: z.enum(POWER_PERIODS).default('24h'),
+  ...dateRangeFields,
   q: z.string().trim().max(100).optional(),
   datacenterId: z.string().uuid().optional(),
   rackId: z.string().uuid().optional(),
@@ -74,7 +77,8 @@ export const powerDeviceListQuerySchema = paginationSchema.extend({
   sort: z.enum(['power', 'energy', 'name']).default('power'),
 });
 
-export const powerHistoryQuerySchema = z.object({ range: z.enum(['24h', '7d', '30d']).default('24h') });
+/** 'custom' uses from / to (days); up to 2 days of raw readings, otherwise hourly averages. */
+export const powerHistoryQuerySchema = z.object({ range: z.enum(['24h', '7d', '30d', 'custom']).default('24h'), ...dateRangeFields });
 
 /** 1234.5 → "1.23 kW"; null → "—". */
 export function formatWattsShort(w: number | null | undefined): string {
@@ -93,6 +97,7 @@ export function formatKwh(kwh: number | null | undefined): string {
 export const POWER_GROUPS = ['device', 'rack', 'datacenter', 'customer', 'category'] as const;
 export const powerExportQuerySchema = z.object({
   period: z.enum(POWER_PERIODS).default('last_month'),
+  ...dateRangeFields,
   groupBy: z.enum(POWER_GROUPS).default('device'),
 });
 

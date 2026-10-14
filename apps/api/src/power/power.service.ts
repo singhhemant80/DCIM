@@ -4,6 +4,7 @@ import { DISTRIBUTION_CATEGORIES, POWERED_STATES, POWER_KINDS, type PowerPeriod,
 import type { z } from 'zod';
 import type { outletMappingSchema, powerDeviceListQuerySchema, powerExportQuerySchema, powerPollingSchema, powerProfileSchema, powerSettingsSchema, tariffSchema } from '@crapplet/shared';
 import { DB, type Db } from '../db/db';
+import { dayRange } from '../common/date-range';
 import { deviceCredentials, devices, pduOutlets, powerMonitoring, powerProfiles, powerSettings, powerTariffs } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import type { Principal, RequestMeta } from '../auth/principal';
@@ -84,7 +85,15 @@ export class PowerService {
    * as Asia/Kolkata a month therefore starts at 18:00 UTC instead of 18:30.
    * Consecutive months still add up exactly.
    */
-  async period(p: Principal, period: PowerPeriod): Promise<{ from: Date; to: Date; timezone: string; rounded: boolean }> {
+  async period(p: Principal, period: PowerPeriod, custom: { from?: string; to?: string } = {}): Promise<{ from: Date; to: Date; timezone: string; rounded: boolean }> {
+    if (period === 'custom') {
+      const d = await dayRange(this.db, p.orgId, custom.from, custom.to);
+      const fromR = Math.floor(d.from.getTime() / HOUR) * HOUR;
+      // Whole hours; a period ending now keeps the current hour.
+      const end = d.to.getTime();
+      const toR = end >= Date.now() - 1000 ? end : Math.floor(end / HOUR) * HOUR;
+      return { from: new Date(fromR), to: new Date(toR), timezone: d.timezone, rounded: fromR !== d.from.getTime() || toR !== end };
+    }
     const r = await this.db.execute<{ tz: string; mstart: string; pstart: string }>(sql`
       with o as (select coalesce(nullif(settings->>'timezone', ''), 'Asia/Kolkata') as tz from organizations where id = ${p.orgId})
       select tz,
@@ -113,6 +122,8 @@ export class PowerService {
         from = new Date(row.pstart).getTime();
         to = new Date(row.mstart).getTime();
         break;
+      default:
+        throw new BadRequestException({ error: 'invalid_period', message: 'Unknown period' });
     }
     const fromR = floor(from);
     const toR = period === 'last_month' ? floor(to) : to;
@@ -239,11 +250,11 @@ export class PowerService {
 
   /* ---------------------------------------------------------------- views */
 
-  async summary(p: Principal, period: PowerPeriod, datacenterId?: string) {
+  async summary(p: Principal, period: PowerPeriod, datacenterId?: string, custom: { from?: string; to?: string } = {}) {
     if (datacenterId) await ownDatacenter(this.db, p, datacenterId);
     const dcFilter = datacenterId ? sql`b.datacenter_id = ${datacenterId}` : sql`true`;
     const list = await this.current(p, dcFilter);
-    const per = await this.period(p, period);
+    const per = await this.period(p, period, custom);
     const hFilter = datacenterId ? sql`h.datacenter_id = ${datacenterId}` : sql`true`;
     const [all, byDc, byCat] = await Promise.all([
       this.energy(p, per.from, per.to, 'all', hFilter),
@@ -280,7 +291,7 @@ export class PowerService {
     if (q.rackId) conds.push(sql`d.rack_id = ${q.rackId}`);
     let list = await this.current(p, sql.join(conds, sql` and `));
     if (q.quality) list = list.filter((d) => d.quality === q.quality);
-    const per = await this.period(p, q.period);
+    const per = await this.period(p, q.period, q);
     const energy = await this.energy(p, per.from, per.to, 'device', sql`true`, false);
     const kwh = (id: string) => {
       const e = energy.get(id);
@@ -324,27 +335,37 @@ export class PowerService {
   }
 
   /** History: raw readings per source (24 h) or hourly averages split by quality (7 d, 30 d). */
-  async history(p: Principal, id: string, range: '24h' | '7d' | '30d') {
+  async history(p: Principal, id: string, range: '24h' | '7d' | '30d' | 'custom', custom: { from?: string; to?: string } = {}) {
     const [d] = await this.current(p, sql`d.id = ${id}`);
     if (!d) throw notFound('Device');
-    const since = new Date(Date.now() - { '24h': 24, '7d': 168, '30d': 720 }[range] * HOUR);
+    let since = new Date(Date.now() - (range === 'custom' ? 0 : { '24h': 24, '7d': 168, '30d': 720 }[range]) * HOUR);
+    let until = new Date(Date.now() + 60_000);
+    if (range === 'custom') {
+      const r = await dayRange(this.db, p.orgId, custom.from, custom.to, 3660);
+      since = r.from;
+      until = r.to;
+    }
+    // Raw readings for spans up to two days; longer spans use the hourly rows.
+    const withRaw = until.getTime() - since.getTime() <= 2 * 24 * HOUR + 60_000;
     // Customers only see hours in which the device was theirs (it may have had another customer before).
     const mine = p.userType === 'staff' ? sql`true` : sql`customer_id = ${p.customerId}`;
     const hourly = await this.db.execute<Record<string, unknown>>(sql`
       select hour, source::text as source, measured_wh, measured_seconds, estimated_wh, estimated_seconds, estimate_kind, unknown_seconds, avg_measured_w, max_measured_w
-        from power_hourly where device_id = ${id} and hour >= ${since.toISOString()}::timestamptz and ${mine} order by hour`);
+        from power_hourly where device_id = ${id} and hour >= ${since.toISOString()}::timestamptz and hour < ${until.toISOString()}::timestamptz and ${mine} order by hour`);
     const raw =
-      range === '24h'
+      withRaw
         ? (
             await this.db.execute<{ source: string; at: string; watts: number }>(sql`
               select r.source::text as source, r.at, r.watts from power_readings r
-               where r.device_id = ${id} and r.at >= ${since.toISOString()}::timestamptz
+               where r.device_id = ${id} and r.at >= ${since.toISOString()}::timestamptz and r.at < ${until.toISOString()}::timestamptz
                  and ${p.userType === 'staff' ? sql`true` : sql`exists (select 1 from power_hourly h where h.device_id = r.device_id and h.hour = date_trunc('hour', r.at) and h.customer_id = ${p.customerId})`}
                order by r.at`)
           ).rows.map((r) => ({ source: r.source, at: r.at, watts: Number(r.watts) }))
         : [];
     return {
       range,
+      from: since,
+      to: until,
       device: d,
       raw,
       hourly: hourly.rows.map((h) => ({
@@ -583,7 +604,7 @@ export class PowerService {
   /** Energy grouped by device, rack, datacenter, customer or category, with names, largest first. */
   async energyReport(p: Principal, q: z.infer<typeof powerExportQuerySchema>) {
     if (p.userType !== 'staff' && q.groupBy !== 'device' && q.groupBy !== 'category') throw new BadRequestException({ error: 'not_applicable', message: 'Group your energy by device or category' });
-    const per = await this.period(p, q.period);
+    const per = await this.period(p, q.period, q);
     const energy = await this.energy(p, per.from, per.to, q.groupBy, sql`true`, q.groupBy !== 'device');
     const names = new Map<string, string>();
     const table = {

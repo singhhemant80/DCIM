@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { dateFilter } from '../common/date-range';
 import { isIP } from 'node:net';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
@@ -148,6 +149,7 @@ export class ProvisioningService {
     if (q.status === 'finished') conds.push(sql`j.status in ('completed','failed','cancelled')`);
     if (q.kind) conds.push(sql`j.kind = ${q.kind}`);
     if (q.deviceId) conds.push(sql`j.device_id = ${q.deviceId}`);
+    conds.push(...dateFilter(sql`j.created_at`, p.orgId, q));
     const where = sql.join(conds, sql` and `);
     const [rows, total] = await Promise.all([
       this.db.execute(sql`

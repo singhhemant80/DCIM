@@ -94,13 +94,19 @@ export const paginationSchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
 });
 
+/** A calendar day, YYYY-MM-DD, read in the organization's time zone. */
+export const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-10-14');
+/** Date filter for lists: from and to are whole days (both included), in the organization's time zone. */
+export const dateRangeFields = { from: isoDay.optional(), to: isoDay.optional() };
+
 export const auditQuerySchema = paginationSchema.extend({
   action: z.string().max(100).optional(),
   actorId: z.string().uuid().optional(),
   targetType: z.string().max(60).optional(),
   outcome: z.enum(['success', 'failure', 'denied']).optional(),
-  from: z.string().datetime().optional(),
-  to: z.string().datetime().optional(),
+  /** A day (YYYY-MM-DD, organization time zone, both days included) or an exact time. */
+  from: z.union([isoDay, z.string().datetime()]).optional(),
+  to: z.union([isoDay, z.string().datetime()]).optional(),
 });
 
 export interface Paginated<T> {

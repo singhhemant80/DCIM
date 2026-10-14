@@ -22,6 +22,7 @@ import { hours, money, sourceLabel, type DevicePowerT, type EnergyT, type PowerN
 import { PowerHourlyChart, PowerReadingsChart, type HourT } from '../components/PowerChart';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Stat, Table, Textarea, cx } from '../components/ui';
 import { Tabs } from './Network';
+import { PeriodPicker, periodLabel, periodParams, periodReady, today, type PeriodValue } from '../components/DateRange';
 
 const STAFF_TABS = [
   { key: 'overview', label: 'Overview' },
@@ -108,16 +109,11 @@ function EnergyStats({ e, staff, period }: { e: EnergyT | null; staff: boolean; 
   );
 }
 
-function PeriodSelect({ value, onChange }: { value: PowerPeriod; onChange: (p: PowerPeriod) => void }) {
-  return (
-    <Select className="w-40" value={value} onChange={(e) => onChange(e.target.value as PowerPeriod)} aria-label="Period">
-      {POWER_PERIODS.map((p) => (
-        <option key={p} value={p}>
-          {POWER_PERIOD_LABELS[p]}
-        </option>
-      ))}
-    </Select>
-  );
+const PRESETS = POWER_PERIODS.filter((p): p is Exclude<PowerPeriod, 'custom'> => p !== 'custom');
+type Preset = (typeof PRESETS)[number];
+
+function PeriodSelect({ value, onChange }: { value: PeriodValue<Preset>; onChange: (p: PeriodValue<Preset>) => void }) {
+  return <PeriodPicker value={value} onChange={onChange} options={PRESETS} labels={POWER_PERIOD_LABELS} className="w-40" />;
 }
 
 /* ------------------------------------------------------------------ overview */
@@ -125,8 +121,14 @@ function PeriodSelect({ value, onChange }: { value: PowerPeriod; onChange: (p: P
 function OverviewTab({ onDevice }: { onDevice: (id: string) => void }) {
   const { me } = useAuth();
   const staff = me?.user.userType === 'staff';
-  const [period, setPeriod] = useState<PowerPeriod>('24h');
-  const q = useQuery({ queryKey: ['power', 'summary', period], queryFn: () => api.get<PowerSummaryT>(`/power/summary${qs({ period })}`), refetchInterval: 60_000, placeholderData: keepPreviousData });
+  const [period, setPeriod] = useState<PeriodValue<Preset>>({ period: '24h', from: '', to: '' });
+  const q = useQuery({
+    queryKey: ['power', 'summary', periodParams(period)],
+    queryFn: () => api.get<PowerSummaryT>(`/power/summary${qs(periodParams(period))}`),
+    enabled: periodReady(period),
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  });
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorNote error={q.error} />;
   const s = q.data!;
@@ -135,7 +137,7 @@ function OverviewTab({ onDevice }: { onDevice: (id: string) => void }) {
       <Panel title={staff ? 'Equipment power' : 'Your equipment'} actions={<PeriodSelect value={period} onChange={setPeriod} />}>
         <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
           <NowStats now={s.now} />
-          <EnergyStats e={s.energy} staff={staff} period={POWER_PERIOD_LABELS[period]} />
+          <EnergyStats e={s.energy} staff={staff} period={periodLabel(period, POWER_PERIOD_LABELS)} />
         </dl>
         <p className="mt-4 text-[12.5px] text-ink-3">
           Measured figures come from BMCs (Redfish, IPMI), metered PDU outlets and switch/router power supplies. When a device has no recent measurement, its estimate (admin figure, else the model's typical draw) is used and labelled. PDUs and UPSs are not counted as load.
@@ -270,12 +272,21 @@ function ProfileForm({ d, onDone }: { d: DeviceDetailT; onDone: () => void }) {
 function DeviceDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const { can, me } = useAuth();
   const staff = me?.user.userType === 'staff';
-  const [range, setRange] = useState<'24h' | '7d' | '30d'>('24h');
+  const [range, setRange] = useState<'24h' | '7d' | '30d' | 'custom'>('24h');
+  const [days, setDays] = useState({ from: today(-6), to: today() });
   const [editing, setEditing] = useState(false);
   const d = useQuery({ queryKey: ['power', 'device', id], queryFn: () => api.get<DeviceDetailT>(`/power/devices/${id}`), refetchInterval: 30_000 });
-  const h = useQuery({ queryKey: ['power', 'device', id, 'history', range], queryFn: () => api.get<{ raw: { source: string; at: string; watts: number }[]; hourly: HourT[] }>(`/power/devices/${id}/history${qs({ range })}`), placeholderData: keepPreviousData });
-  const now = Date.now();
-  const span = { '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 }[range];
+  const hp = range === 'custom' ? { range, ...days } : { range };
+  const h = useQuery({
+    queryKey: ['power', 'device', id, 'history', hp],
+    queryFn: () => api.get<{ raw: { source: string; at: string; watts: number }[]; hourly: HourT[]; from: string; to: string }>(`/power/devices/${id}/history${qs(hp)}`),
+    enabled: range !== 'custom' || periodReady({ period: 'custom', ...days }),
+    placeholderData: keepPreviousData,
+  });
+  // The window the server used (custom days in the organization's time zone).
+  const winFrom = h.data?.from ? new Date(h.data.from).getTime() : Date.now() - 86400e3;
+  const winTo = h.data?.to ? Math.min(new Date(h.data.to).getTime(), Date.now()) : Date.now();
+  const showRaw = winTo - winFrom <= 2 * 86400e3 + 60_000;
   const x = d.data;
   return (
     <Modal open onOpenChange={(o) => !o && onClose()} title={x ? `Power: ${x.name}` : 'Power'} wide>
@@ -329,16 +340,18 @@ function DeviceDetail({ id, onClose }: { id: string; onClose: () => void }) {
             </p>
           )}
           <div>
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-[13px] font-semibold">{range === '24h' ? 'Readings' : 'Hourly energy'}</p>
-              <Select className="w-32" value={range} onChange={(e) => setRange(e.target.value as typeof range)} aria-label="Range">
-                <option value="24h">24 hours</option>
-                <option value="7d">7 days</option>
-                <option value="30d">30 days</option>
-              </Select>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[13px] font-semibold">{showRaw ? 'Readings' : 'Hourly energy'}</p>
+              <PeriodPicker
+                value={{ period: range, ...days }}
+                onChange={(v) => (setRange(v.period as typeof range), setDays({ from: v.from, to: v.to }))}
+                options={['24h', '7d', '30d'] as const}
+                labels={{ '24h': '24 hours', '7d': '7 days', '30d': '30 days' }}
+                className="w-36"
+              />
             </div>
-            {h.data && range === '24h' && (h.data.raw.length ? <PowerReadingsChart raw={h.data.raw} from={now - span} to={now} /> : <p className="text-[13px] text-ink-3">No measurements in the last 24 hours{x.estimateW !== null ? '; the estimate is used instead.' : '.'}</p>)}
-            {h.data && range !== '24h' && (h.data.hourly.length ? <PowerHourlyChart hours={h.data.hourly} from={now - span} to={now} /> : <p className="text-[13px] text-ink-3">No hourly energy yet.</p>)}
+            {h.data && showRaw && (h.data.raw.length ? <PowerReadingsChart raw={h.data.raw} from={winFrom} to={winTo} /> : <p className="text-[13px] text-ink-3">No measurements in this period{x.estimateW !== null ? '; the estimate is used instead.' : '.'}</p>)}
+            {h.data && !showRaw && (h.data.hourly.length ? <PowerHourlyChart hours={h.data.hourly} from={winFrom} to={winTo} /> : <p className="text-[13px] text-ink-3">No hourly energy in this period.</p>)}
           </div>
           {staff && can('power.configure') && (
             <div className="flex flex-wrap gap-2 border-t border-rule pt-3">
@@ -364,14 +377,15 @@ function DeviceDetail({ id, onClose }: { id: string; onClose: () => void }) {
 function DevicesTab({ onDevice }: { onDevice: (id: string) => void }) {
   const { me } = useAuth();
   const staff = me?.user.userType === 'staff';
-  const [period, setPeriod] = useState<PowerPeriod>('24h');
+  const [period, setPeriod] = useState<PeriodValue<Preset>>({ period: '24h', from: '', to: '' });
   const [quality, setQuality] = useState('');
   const [sort, setSort] = useState<'power' | 'energy' | 'name'>('power');
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const list = useQuery({
-    queryKey: ['power', 'devices', period, quality, sort, q, page],
-    queryFn: () => api.get<Paginated<DevicePowerT>>(`/power/devices${qs({ period, quality, sort, q, page, pageSize: 50 })}`),
+    queryKey: ['power', 'devices', periodParams(period), quality, sort, q, page],
+    queryFn: () => api.get<Paginated<DevicePowerT>>(`/power/devices${qs({ ...periodParams(period), quality, sort, q, page, pageSize: 50 })}`),
+    enabled: periodReady(period),
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   });
@@ -408,7 +422,7 @@ function DevicesTab({ onDevice }: { onDevice: (id: string) => void }) {
               {staff && <th>Location</th>}
               <th className="text-right">Now</th>
               <th>Figure</th>
-              <th className="text-right">Energy ({POWER_PERIOD_LABELS[period].toLowerCase()})</th>
+              <th className="text-right">Energy ({periodLabel(period, POWER_PERIOD_LABELS).toLowerCase()})</th>
               {staff && <th className="text-right">Cost</th>}
               {staff && <th>Collection</th>}
             </tr>
@@ -469,11 +483,12 @@ function DevicesTab({ onDevice }: { onDevice: (id: string) => void }) {
 function EnergyTab() {
   const { me } = useAuth();
   const staff = me?.user.userType === 'staff';
-  const [period, setPeriod] = useState<PowerPeriod>('last_month');
+  const [period, setPeriod] = useState<PeriodValue<Preset>>({ period: 'last_month', from: '', to: '' });
   const [groupBy, setGroupBy] = useState<(typeof POWER_GROUPS)[number]>(staff ? 'datacenter' : 'device');
   const r = useQuery({
-    queryKey: ['power', 'energy', period, groupBy],
-    queryFn: () => api.get<{ period: PowerSummaryT['period']; rows: (EnergyT & { name: string | null; totalKwh: number })[] }>(`/power/energy${qs({ period, groupBy })}`),
+    queryKey: ['power', 'energy', periodParams(period), groupBy],
+    queryFn: () => api.get<{ period: PowerSummaryT['period']; rows: (EnergyT & { name: string | null; totalKwh: number })[] }>(`/power/energy${qs({ ...periodParams(period), groupBy })}`),
+    enabled: periodReady(period),
     placeholderData: keepPreviousData,
   });
   const groups = staff ? POWER_GROUPS : (['device', 'category'] as const);
@@ -491,7 +506,7 @@ function EnergyTab() {
             ))}
           </Select>
           <PeriodSelect value={period} onChange={setPeriod} />
-          <a href={`/api/v1/power/energy.csv${qs({ period, groupBy })}`} download>
+          <a href={`/api/v1/power/energy.csv${qs({ ...periodParams(period), groupBy })}`} download>
             <Button size="sm">CSV</Button>
           </a>
         </div>

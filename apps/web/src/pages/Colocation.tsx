@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DateFilter, dateParams } from '../components/DateRange';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -15,7 +16,7 @@ import {
   type AllocationKind,
   type CrossConnectStatus,
 } from '@crapplet/shared';
-import { api } from '../lib/api';
+import { api, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
 import { useCustomerDevices, useCustomerOptions, useSites, watts, type AllocationT, type CrossConnectT, type OverviewT, type ShipmentT, type VisitT } from '../lib/colocation';
@@ -347,7 +348,8 @@ function EndAllocationDialog({ a, onClose }: { a: AllocationT; onClose: () => vo
 function AllocationsTab() {
   const { staff, manage } = useRole();
   const [status, setStatus] = useState('active');
-  const q = useQuery({ queryKey: ['colo', 'allocations', status], queryFn: () => api.get<AllocationT[]>(`/colocation/allocations?status=${status}`), refetchInterval: 60_000 });
+  const [dates, setDates] = useState({ from: '', to: '' });
+  const q = useQuery({ queryKey: ['colo', 'allocations', status, dateParams(dates.from, dates.to)], queryFn: () => api.get<AllocationT[]>(`/colocation/allocations${qs({ status, ...dateParams(dates.from, dates.to) })}`), refetchInterval: 60_000 });
   const [edit, setEdit] = useState<AllocationT | 'new' | null>(null);
   const [ending, setEnding] = useState<AllocationT | null>(null);
   return (
@@ -355,7 +357,8 @@ function AllocationsTab() {
       flush
       title={staff ? 'Rack space' : 'Your space'}
       actions={
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <DateFilter label="Starts" from={dates.from} to={dates.to} onChange={setDates} />
           <Select className="w-32" aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="active">Active</option>
             <option value="ended">Ended</option>
@@ -584,7 +587,8 @@ function XcStatusDialog({ x, onClose }: { x: CrossConnectT; onClose: () => void 
 
 function CrossConnectsTab() {
   const { staff, manage, request } = useRole();
-  const q = useQuery({ queryKey: ['colo', 'xc'], queryFn: () => api.get<CrossConnectT[]>('/colocation/cross-connects') });
+  const [dates, setDates] = useState({ from: '', to: '' });
+  const q = useQuery({ queryKey: ['colo', 'xc', dateParams(dates.from, dates.to)], queryFn: () => api.get<CrossConnectT[]>(`/colocation/cross-connects${qs(dateParams(dates.from, dates.to))}`) });
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<CrossConnectT | null>(null);
   return (
@@ -592,11 +596,14 @@ function CrossConnectsTab() {
       flush
       title="Cross-connects"
       actions={
-        request && (
-          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
-            Request cross-connect
-          </Button>
-        )
+        <div className="flex flex-wrap items-center gap-2">
+          <DateFilter label="Requested" from={dates.from} to={dates.to} onChange={setDates} />
+          {request && (
+            <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+              Request cross-connect
+            </Button>
+          )}
+        </div>
       }
     >
       {q.isLoading ? (
@@ -790,7 +797,8 @@ function ShipmentUpdateDialog({ s, onClose }: { s: ShipmentT; onClose: () => voi
 
 function ShipmentsTab() {
   const { staff, manage, request } = useRole();
-  const q = useQuery({ queryKey: ['colo', 'shipments'], queryFn: () => api.get<ShipmentT[]>('/colocation/shipments') });
+  const [dates, setDates] = useState({ from: '', to: '' });
+  const q = useQuery({ queryKey: ['colo', 'shipments', dateParams(dates.from, dates.to)], queryFn: () => api.get<ShipmentT[]>(`/colocation/shipments${qs(dateParams(dates.from, dates.to))}`) });
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ShipmentT | null>(null);
   return (
@@ -798,11 +806,14 @@ function ShipmentsTab() {
       flush
       title="Shipments"
       actions={
-        request && (
-          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
-            Announce shipment
-          </Button>
-        )
+        <div className="flex flex-wrap items-center gap-2">
+          <DateFilter label="Logged" from={dates.from} to={dates.to} onChange={setDates} />
+          {request && (
+            <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+              Announce shipment
+            </Button>
+          )}
+        </div>
       }
     >
       {q.isLoading ? (
@@ -1005,7 +1016,8 @@ function VisitUpdateDialog({ v, onClose }: { v: VisitT; onClose: () => void }) {
 
 function VisitsTab() {
   const { staff, manage, request } = useRole();
-  const q = useQuery({ queryKey: ['colo', 'visits'], queryFn: () => api.get<VisitT[]>('/colocation/visits') });
+  const [dates, setDates] = useState({ from: '', to: '' });
+  const q = useQuery({ queryKey: ['colo', 'visits', dateParams(dates.from, dates.to)], queryFn: () => api.get<VisitT[]>(`/colocation/visits${qs(dateParams(dates.from, dates.to))}`) });
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<VisitT | null>(null);
   return (
@@ -1013,11 +1025,14 @@ function VisitsTab() {
       flush
       title="Site visits"
       actions={
-        request && (
-          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
-            Request access
-          </Button>
-        )
+        <div className="flex flex-wrap items-center gap-2">
+          <DateFilter label="Visit date" from={dates.from} to={dates.to} onChange={setDates} />
+          {request && (
+            <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+              Request access
+            </Button>
+          )}
+        </div>
       }
     >
       {q.isLoading ? (

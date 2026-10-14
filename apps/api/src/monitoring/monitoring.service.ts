@@ -2,6 +2,7 @@ import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { RANGE_RESOLUTION, type DeviceMonitoringInput, type RateRange } from '@crapplet/shared';
 import { z } from 'zod';
+import { dayRange } from '../common/date-range';
 import { DB, type Db } from '../db/db';
 import { deviceCredentials, deviceMonitoring, monitoringSettings } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
@@ -129,29 +130,45 @@ export class MonitoringService {
   }
 
   /** Rate history for one port, with the 95th percentile of 5-minute averages over the range. */
-  async history(p: Principal, interfaceId: string, range: RateRange) {
+  /**
+   * The window and resolution for a preset range, or for custom whole days:
+   * 5-minute aggregates up to 8 days (while they are kept), hourly beyond.
+   */
+  private async window(p: Principal, range: RateRange | 'custom', custom: { from?: string; to?: string }) {
+    if (range !== 'custom') {
+      const res = RANGE_RESOLUTION[range];
+      // Presets end at the newest data (no upper bound).
+      return { res, since: new Date(Date.now() - res.seconds * 1000).toISOString(), until: '9999-12-31T00:00:00Z' };
+    }
+    const d = await dayRange(this.db, p.orgId, custom.from, custom.to);
+    const span = d.to.getTime() - d.from.getTime();
+    const fiveMinKept = d.from.getTime() > Date.now() - 89 * 86_400_000;
+    const table: '5m' | '1h' = span <= 8 * 86_400_000 && fiveMinKept ? '5m' : '1h';
+    return { res: { seconds: span / 1000, table } as const, since: d.from.toISOString(), until: d.to.toISOString() };
+  }
+
+  async history(p: Principal, interfaceId: string, range: RateRange | 'custom', custom: { from?: string; to?: string } = {}) {
     const port = await this.port(p, interfaceId);
-    const res = RANGE_RESOLUTION[range];
-    const since = new Date(Date.now() - res.seconds * 1000).toISOString();
+    const { res, since, until } = await this.window(p, range, custom);
     let points: Record<string, unknown>[];
     let stepSeconds: number;
     if (res.table === 'raw') {
       stepSeconds = port.intervalSeconds;
       const r = await this.db.execute(sql`
         select at as t, in_bps, out_bps, in_bps as in_max, out_bps as out_max, util_in, util_out, errors_ps, discards_ps, flags
-          from interface_rates where interface_id = ${interfaceId} and at > ${since}::timestamptz order by at`);
+          from interface_rates where interface_id = ${interfaceId} and at > ${since}::timestamptz and at <= ${until}::timestamptz order by at`);
       points = r.rows as Record<string, unknown>[];
     } else {
       stepSeconds = res.table === '5m' ? 300 : 3600;
       const table = sql.raw(res.table === '5m' ? 'interface_rates_5m' : 'interface_rates_1h');
       const r = await this.db.execute(sql`
         select bucket as t, in_bps, out_bps, in_max, out_max, util_in_max as util_in, util_out_max as util_out, errors_ps, discards_ps, covered_seconds
-          from ${table} where interface_id = ${interfaceId} and bucket > ${since}::timestamptz order by bucket`);
+          from ${table} where interface_id = ${interfaceId} and bucket >= ${since}::timestamptz and bucket < ${until}::timestamptz order by bucket`);
       points = r.rows as Record<string, unknown>[];
     }
     const p95rows = await this.db.execute<{ in_bps: number; out_bps: number }>(
       // Complete buckets only: the one still filling would skew the percentile.
-      sql`select in_bps, out_bps from interface_rates_5m where interface_id = ${interfaceId} and bucket > ${since}::timestamptz and bucket <= now() - interval '5 minutes'`,
+      sql`select in_bps, out_bps from interface_rates_5m where interface_id = ${interfaceId} and bucket >= ${since}::timestamptz and bucket < ${until}::timestamptz and bucket <= now() - interval '5 minutes'`,
     );
     const ins = p95rows.rows.map((r) => Number(r.in_bps));
     const outs = p95rows.rows.map((r) => Number(r.out_bps));
@@ -159,6 +176,8 @@ export class MonitoringService {
     return {
       port,
       range,
+      from: since,
+      to: until,
       resolution: res.table,
       stepSeconds,
       points: points.map((r) => ({
@@ -205,19 +224,18 @@ export class MonitoringService {
   }
 
   /** Total traffic over time from the aggregates (5-minute buckets up to 7 days, hourly for 30 days). */
-  async totalsHistory(p: Principal, range: RateRange, datacenterId?: string) {
+  async totalsHistory(p: Principal, range: RateRange | 'custom', datacenterId?: string, custom: { from?: string; to?: string } = {}) {
     if (datacenterId) await ownDatacenter(this.db, p, datacenterId);
     const { ports } = await this.countedPorts(p, datacenterId);
     const ids = ports.map((x) => x.interfaceId);
-    const res = RANGE_RESOLUTION[range];
+    const { res, since, until } = await this.window(p, range, custom);
     const hourly = res.table === '1h';
-    const since = new Date(Date.now() - res.seconds * 1000).toISOString();
     if (!ids.length) return { range, stepSeconds: hourly ? 3600 : 300, ports: 0, points: [], p95: { inBps: null, outBps: null, samples: 0 } };
     const table = sql.raw(hourly ? 'interface_rates_1h' : 'interface_rates_5m');
     const r = await this.db.execute<{ t: string; in_bps: number; out_bps: number; ports: number }>(sql`
       select bucket as t, sum(in_bps) as in_bps, sum(out_bps) as out_bps, count(*)::int as ports
         from ${table}
-       where interface_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}) and bucket > ${since}::timestamptz
+       where interface_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}) and bucket >= ${since}::timestamptz and bucket < ${until}::timestamptz
        group by bucket order by bucket`);
     const points = r.rows.map((x) => ({ t: new Date(x.t), inBps: Number(x.in_bps), outBps: Number(x.out_bps), ports: x.ports }));
     return {

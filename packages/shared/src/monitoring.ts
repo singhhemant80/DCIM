@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from './schemas';
+import { dateRangeFields, paginationSchema } from './schemas';
 
 /* ------------------------------------------------------------------ polling */
 
@@ -35,7 +35,8 @@ export const RANGE_RESOLUTION: Record<RateRange, { seconds: number; table: 'raw'
   '30d': { seconds: 30 * 86400, table: '1h' },
 };
 
-export const rateHistoryQuerySchema = z.object({ range: z.enum(RATE_RANGES).default('1h') });
+/** 'custom' uses from / to (whole days in the organization's time zone): 5-minute data up to 8 days, hourly beyond. */
+export const rateHistoryQuerySchema = z.object({ range: z.enum([...RATE_RANGES, 'custom']).default('1h'), ...dateRangeFields });
 
 export const portListQuerySchema = paginationSchema.extend({
   q: z.string().trim().max(100).optional(),
@@ -112,6 +113,8 @@ export type AlertRuleInput = z.infer<typeof alertRuleSchema>;
 
 export const alertListQuerySchema = paginationSchema.extend({
   status: z.enum(['firing', 'resolved', 'all']).default('firing'),
+  /** Alerts that started on these days. */
+  ...dateRangeFields,
   severity: z.enum(ALERT_SEVERITIES).optional(),
   deviceId: uuid.optional(),
 });

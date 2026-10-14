@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DateFilter, dateParams } from '../components/DateRange';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { TICKET_KINDS, TICKET_KIND_LABELS, TICKET_PRIORITIES, TICKET_STATUSES, TICKET_STATUS_LABELS, type TicketKind, type TicketStatus } from '@crapplet/shared';
@@ -120,11 +121,12 @@ export function TicketsPage() {
   const navigate = useNavigate();
   const customers = useCustomerOptions();
   const [f, setF] = useState({ status: 'open', kind: '', customerId: '', q: '', mine: '' });
+  const [dates, setDates] = useState({ from: '', to: '' });
   const [page, setPage] = useState(1);
   const [creating, setCreating] = useState(false);
   const q = useQuery({
-    queryKey: ['tickets', 'list', f, page],
-    queryFn: () => api.get<Paginated<TicketT>>(`/tickets${qs({ ...f, page, pageSize: 50 })}`),
+    queryKey: ['tickets', 'list', f, page, dateParams(dates.from, dates.to)],
+    queryFn: () => api.get<Paginated<TicketT>>(`/tickets${qs({ ...f, page, pageSize: 50, ...dateParams(dates.from, dates.to) })}`),
     placeholderData: keepPreviousData,
     refetchInterval: 30_000,
   });
@@ -146,7 +148,8 @@ export function TicketsPage() {
         flush
         title="Tickets"
         actions={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <DateFilter label="Opened" from={dates.from} to={dates.to} onChange={(r) => (setDates(r), setPage(1))} />
             <Input className="w-40" aria-label="Search" placeholder="Subject or #number" value={f.q} onChange={set('q')} />
             {staff && (
               <Select className="w-40" aria-label="Customer" value={f.customerId} onChange={set('customerId')}>

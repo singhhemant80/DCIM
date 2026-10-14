@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { dateFilter } from '../common/date-range';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import type { z } from 'zod';
 import type { incidentListQuerySchema, incidentSchema, incidentUpdateSchema, maintenanceNoticeSchema } from '@crapplet/shared';
@@ -38,7 +39,7 @@ export class IncidentsService {
 
   async list(p: Principal, q: z.infer<typeof incidentListQuerySchema>) {
     const st = q.status === 'open' ? sql`i.status <> 'resolved'` : q.status === 'resolved' ? sql`i.status = 'resolved'` : sql`true`;
-    const where = sql`${this.visible(p)} and ${st}`;
+    const where = sql.join([sql`${this.visible(p)} and ${st}`, ...dateFilter(sql`i.started_at`, p.orgId, q)], sql` and `);
     const total = (await this.db.execute<{ n: number }>(sql`select count(*)::int as n from incidents i where ${where}`)).rows[0]?.n ?? 0;
     const rows = await this.db.execute<Record<string, unknown>>(sql`
       select i.id, i.title, i.severity, i.status, i.datacenter_id, dc.code as datacenter_code, dc.name as datacenter_name, i.public, i.started_at, i.resolved_at, i.updated_at,

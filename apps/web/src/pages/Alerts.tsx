@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { DateFilter, dateParams } from '../components/DateRange';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -163,12 +164,13 @@ function AlertsTab() {
   const [status, setStatus] = useState<'firing' | 'resolved' | 'all'>('firing');
   const [severity, setSeverity] = useState('');
   const [page, setPage] = useState(1);
+  const [dates, setDates] = useState({ from: '', to: '' });
   const [ack, setAck] = useState<AlertT | null>(null);
   const [note, setNote] = useState('');
   const stream = useMonitoringStream();
   const list = useQuery({
-    queryKey: ['alerts', 'list', status, severity, page],
-    queryFn: () => api.get<Paginated<AlertT>>(`/alerts${qs({ status, severity, page, pageSize: 50 })}`),
+    queryKey: ['alerts', 'list', status, severity, page, dateParams(dates.from, dates.to)],
+    queryFn: () => api.get<Paginated<AlertT>>(`/alerts${qs({ status, severity, page, pageSize: 50, ...dateParams(dates.from, dates.to) })}`),
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   });
@@ -188,7 +190,8 @@ function AlertsTab() {
       flush
       title="Alerts"
       actions={
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <DateFilter label="Started" from={dates.from} to={dates.to} onChange={(r) => (setDates(r), setPage(1))} />
           <Select className="w-32" value={status} onChange={(e) => (setStatus(e.target.value as typeof status), setPage(1))} aria-label="Status">
             <option value="firing">Firing</option>
             <option value="resolved">Resolved</option>

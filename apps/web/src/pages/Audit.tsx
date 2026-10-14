@@ -1,4 +1,5 @@
 import { Fragment, useState } from 'react';
+import { DateFilter, dateParams } from '../components/DateRange';
 import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { api, qs, type Paginated } from '../lib/api';
@@ -17,12 +18,14 @@ export function AuditPage() {
   const page = Number(params.get('page') ?? 1);
   const action = params.get('action') ?? '';
   const outcome = params.get('outcome') ?? '';
+  const from = params.get('from') ?? '';
+  const to = params.get('to') ?? '';
   const [actionInput, setActionInput] = useState(action);
   const [open, setOpen] = useState<number | null>(null);
 
   const list = useQuery({
-    queryKey: ['audit', { page, action, outcome }],
-    queryFn: () => api.get<Paginated<AuditEvent>>(`/audit${qs({ page, pageSize: 50, action, outcome })}`),
+    queryKey: ['audit', { page, action, outcome, from, to }],
+    queryFn: () => api.get<Paginated<AuditEvent>>(`/audit${qs({ page, pageSize: 50, action, outcome, ...dateParams(from, to) })}`),
     placeholderData: keepPreviousData,
   });
   const verify = useMutation({ mutationFn: () => api.get<{ ok: boolean; checked: number; brokenAtId: number | null }>('/audit/verify') });
@@ -67,6 +70,7 @@ export function AuditPage() {
             <option value="failure">Failed</option>
             <option value="denied">Denied</option>
           </Select>
+          <DateFilter label="Date" from={from} to={to} onChange={(r) => update({ from: r.from, to: r.to, page: '' })} />
           <Button type="submit">Filter</Button>
         </form>
         {list.isLoading && <Loading />}

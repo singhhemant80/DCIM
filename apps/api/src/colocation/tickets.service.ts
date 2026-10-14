@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { dateFilter } from '../common/date-range';
 import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import type { z } from 'zod';
 import { TICKET_STATUS_LABELS, type TicketInput, type TicketStatus, ticketListQuerySchema, ticketMessageSchema, ticketTimeSchema, ticketUpdateSchema } from '@crapplet/shared';
@@ -121,6 +122,7 @@ export class TicketsService {
     if (q.kind) conds.push(sql`t.kind = ${q.kind}`);
     if (q.customerId && staff(p)) conds.push(sql`t.customer_id = ${q.customerId}`);
     if (q.mine === 'true' && staff(p)) conds.push(sql`t.assignee_user_id = ${p.userId}`);
+    conds.push(...dateFilter(sql`t.created_at`, p.orgId, q));
     if (q.q) {
       const n = /^#?(\d{1,9})$/.exec(q.q);
       conds.push(n ? sql`t.number = ${Number(n[1])}` : sql`t.subject ilike ${'%' + q.q.replace(/[\\%_]/g, (m) => `\\${m}`) + '%'}`);

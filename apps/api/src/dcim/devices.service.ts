@@ -156,8 +156,8 @@ export class DevicesService {
     ]);
     const items = rows.map((r) => this.view(p, r));
     if (q.withStatus !== 'true' || !rows.length) return { items, page: q.page, pageSize: q.pageSize, total };
-    const status = await this.status(p, rows.map((r) => r.device), q.period);
-    const totals = await this.totals(p, where, q.period);
+    const status = await this.status(p, rows.map((r) => r.device), q.period, q);
+    const totals = await this.totals(p, where, q.period, q);
     return { items: items.map((d) => ({ ...d, status: status.byId.get(d.id)! })), page: q.page, pageSize: q.pageSize, total, period: status.period, totals };
   }
 
@@ -173,7 +173,7 @@ export class DevicesService {
    * counted the way the power module counts equipment: PDUs and UPSes, and
    * devices excluded from totals, are left out so nothing is counted twice.
    */
-  private async totals(p: Principal, where: SQL, period: PowerPeriod) {
+  private async totals(p: Principal, where: SQL, period: PowerPeriod, custom: { from?: string; to?: string }) {
     if (!p.permissions.has('power.read')) return null;
     const matched = await this.db
       .select({ id: devices.id })
@@ -187,7 +187,7 @@ export class DevicesService {
       .limit(10_000);
     if (!matched.length) return null;
     const inIds = (col: SQL) => sql`${col} in (${sql.join(matched.map((m) => sql`${m.id}::uuid`), sql`, `)})`;
-    const per = await this.power.period(p, period);
+    const per = await this.power.period(p, period, custom);
     const [now, energy] = await Promise.all([this.power.current(p, inIds(sql`d.id`)), this.power.energy(p, per.from, per.to, 'all', inIds(sql`h.device_id`), true)]);
     const t = PowerService.totalsOf(now);
     const e = energy.get('all');
@@ -236,10 +236,10 @@ export class DevicesService {
    * energy and cost over the period (cost for staff only, from the tariffs),
    * and reachability. Power figures come from the power module unchanged.
    */
-  private async status(p: Principal, list: Device[], period: PowerPeriod) {
+  private async status(p: Principal, list: Device[], period: PowerPeriod, custom: { from?: string; to?: string }) {
     const ids = list.map((d) => d.id);
     const inIds = (col: SQL) => sql`${col} in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)})`;
-    const per = await this.power.period(p, period);
+    const per = await this.power.period(p, period, custom);
     // Power figures only for those allowed to see power.
     const canPower = p.permissions.has('power.read');
     const [now, energy, reach] = await Promise.all([

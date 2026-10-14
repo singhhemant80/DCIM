@@ -72,6 +72,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Full-depth vs half-depth mounting, multi-unit and 0U equipment | Done | `dcim.e2e`, `dcim-regressions.e2e` |
 | Front and rear elevation with drag-and-drop placement | Done | browser drag test during verification |
 | Elevation reachability colours (BMC and server address pings, every minute, in-service devices) | Done | `device-reachability.e2e` |
+| Date-wise filters: custom periods of whole days (organization time zone, both days included) for power overview/devices/energy & cost/CSV, device power history, port and total traffic charts, reports and the hardware list; from/to day filters on tickets, alerts, incidents, provisioning jobs, colocation lists and the audit log | Done | `date-filters.e2e` |
 | Device list: BMC and OS address with reachability, power now (measured/estimated), energy and cost per period, totals for all matching devices | Done | `device-reachability.e2e` |
 | Rack reservations (customer or internal, expiry) and dedicated racks | Done | `dcim.e2e`, `dcim-regressions.e2e` |
 | Rack relocation, device movement history, rack history | Done | `dcim.e2e` |

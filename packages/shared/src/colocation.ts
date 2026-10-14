@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from './schemas';
+import { dateRangeFields, paginationSchema } from './schemas';
 
 const uuid = z.string().uuid();
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -309,10 +309,14 @@ export const ticketListQuerySchema = paginationSchema.extend({
   kind: z.enum(TICKET_KINDS).optional(),
   customerId: uuid.optional(),
   mine: z.enum(['true', 'false']).optional(),
+  /** Tickets opened on these days. */
+  ...dateRangeFields,
 });
 
 export const coloListQuerySchema = paginationSchema.extend({
   customerId: uuid.optional(),
   datacenterId: uuid.optional(),
   status: z.string().trim().max(30).optional(),
+  /** Allocations by start date, cross-connects by request date, shipments by logged date, visits by visit date. */
+  ...dateRangeFields,
 });

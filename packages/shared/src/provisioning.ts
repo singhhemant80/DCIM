@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from './schemas';
+import { dateRangeFields, paginationSchema } from './schemas';
 
 /* ------------------------------------------------------------------ jobs */
 
@@ -30,6 +30,8 @@ export const jobListQuerySchema = paginationSchema.extend({
   status: z.enum(['active', 'finished', 'all']).default('all'),
   kind: z.enum(JOB_KINDS).optional(),
   deviceId: z.string().uuid().optional(),
+  /** Jobs created on these days. */
+  ...dateRangeFields,
 });
 
 export const recoveryDecisionSchema = z.object({

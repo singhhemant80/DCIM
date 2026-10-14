@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DateFilter, dateParams } from '../components/DateRange';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { INCIDENT_STATUSES, INCIDENT_STATUS_LABELS, type IncidentStatus } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
@@ -239,10 +240,15 @@ export function MaintenancePage() {
   const manage = staff && can('alerts.manage');
   const [status, setStatus] = useState('open');
   const [page, setPage] = useState(1);
+  const [dates, setDates] = useState({ from: '', to: '' });
   const [open, setOpen] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState<WindowT | null>(null);
-  const inc = useQuery({ queryKey: ['status', 'incidents', status, page], queryFn: () => api.get<Paginated<IncidentT>>(`/status/incidents${qs({ status, page, pageSize: 25 })}`), refetchInterval: 30_000 });
+  const inc = useQuery({
+    queryKey: ['status', 'incidents', status, page, dateParams(dates.from, dates.to)],
+    queryFn: () => api.get<Paginated<IncidentT>>(`/status/incidents${qs({ status, page, pageSize: 25, ...dateParams(dates.from, dates.to) })}`),
+    refetchInterval: 30_000,
+  });
   const win = useQuery({ queryKey: ['status', 'maintenance'], queryFn: () => api.get<WindowT[]>('/status/maintenance') });
   return (
     <>
@@ -261,6 +267,8 @@ export function MaintenancePage() {
         title="Incidents"
         flush
         actions={
+          <div className="flex flex-wrap items-center gap-2">
+          <DateFilter label="Started" from={dates.from} to={dates.to} onChange={(r) => (setDates(r), setPage(1))} />
           <Select
             aria-label="Show"
             value={status}
@@ -274,6 +282,7 @@ export function MaintenancePage() {
             <option value="resolved">Resolved</option>
             <option value="all">All</option>
           </Select>
+          </div>
         }
       >
         {inc.isLoading && <Loading />}

@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { dateFilter } from '../common/date-range';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import type { z } from 'zod';
 import {
@@ -77,6 +78,10 @@ export class ColocationService {
     if (q.datacenterId) conds.push(sql`b.datacenter_id = ${q.datacenterId}`);
     if (q.status === 'active' || q.active) conds.push(sql`a.ended_at is null`);
     if (q.status === 'ended') conds.push(sql`a.ended_at is not null`);
+    // Start date is a calendar date already.
+    if (q.from || q.to) dateFilter(sql`now()`, p.orgId, { from: q.from, to: q.to });
+    if (q.from) conds.push(sql`a.start_date >= ${q.from}::date`);
+    if (q.to) conds.push(sql`a.start_date <= ${q.to}::date`);
     const r = await this.db.execute<Record<string, unknown>>(sql`
       select a.*, c.name as customer_name, k.name as rack_name, k.u_height as rack_height, rm.name as room_name, dc.id as datacenter_id, dc.code as datacenter_code, dc.name as datacenter_name,
              s.name as service_name, s.status as service_status
@@ -300,6 +305,7 @@ export class ColocationService {
     if (q.customerId && staff(p)) conds.push(sql`x.customer_id = ${q.customerId}`);
     if (q.status === 'open') conds.push(sql`x.status in ('requested','approved','in_progress')`);
     else if (q.status) conds.push(sql`x.status::text = ${q.status}`);
+    conds.push(...dateFilter(sql`x.requested_at`, p.orgId, q));
     const r = await this.db.execute<Record<string, unknown>>(sql`
       select x.*, c.name as customer_name, coalesce(d.hostname, d.asset_tag) as a_device_name, i.name as a_interface_name, s.name as service_name, cb.label as cable_label,
              (select u.user_type::text from users u where u.org_id = x.org_id and lower(u.email) = lower(x.requested_by) limit 1) as requester_type
@@ -431,6 +437,7 @@ export class ColocationService {
     if (q.datacenterId) conds.push(sql`s.datacenter_id = ${q.datacenterId}`);
     if (q.status === 'open') conds.push(sql`s.status in ('expected','received')`);
     else if (q.status) conds.push(sql`s.status::text = ${q.status}`);
+    conds.push(...dateFilter(sql`s.created_at`, p.orgId, q));
     const r = await this.db.execute<Record<string, unknown>>(sql`
       select s.*, c.name as customer_name, dc.code as datacenter_code,
              (select u.user_type::text from users u where u.org_id = s.org_id and lower(u.email) = lower(s.created_by) limit 1) as requester_type
@@ -521,6 +528,7 @@ export class ColocationService {
     if (q.datacenterId) conds.push(sql`v.datacenter_id = ${q.datacenterId}`);
     if (q.status === 'open') conds.push(sql`v.status in ('requested','approved','checked_in')`);
     else if (q.status) conds.push(sql`v.status::text = ${q.status}`);
+    conds.push(...dateFilter(sql`v.starts_at`, p.orgId, q));
     const r = await this.db.execute<Record<string, unknown>>(sql`
       select v.*, c.name as customer_name, dc.code as datacenter_code,
              (select u.user_type::text from users u where u.org_id = v.org_id and lower(u.email) = lower(v.requested_by) limit 1) as requester_type

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PeriodPicker, periodParams, periodReady, type PeriodValue } from '../components/DateRange';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { REPORT_LABELS, type ReportType } from '@crapplet/shared';
 import { api, qs } from '../lib/api';
@@ -284,10 +285,11 @@ export function ReportsPage() {
   const staff = me?.user.userType === 'staff';
   const meta = useQuery({ queryKey: ['reports', 'types'], queryFn: () => api.get<{ types: { key: string; label: string }[]; periods: string[] }>('/reports/types') });
   const [type, setType] = useState<string>('energy');
-  const [period, setPeriod] = useState('last_month');
-  const q = useQuery({ queryKey: ['reports', type, period], queryFn: () => api.get<ReportT>(`/reports${qs({ type, period, format: 'json' })}`) });
+  const [period, setPeriod] = useState<PeriodValue<string>>({ period: 'last_month', from: '', to: '' });
+  const pp = periodParams(period);
+  const q = useQuery({ queryKey: ['reports', type, pp], queryFn: () => api.get<ReportT>(`/reports${qs({ type, ...pp, format: 'json' })}`), enabled: periodReady(period) });
   const r = q.data;
-  const href = (format: 'csv' | 'pdf') => `/api/v1/reports${qs({ type, period, format })}`;
+  const href = (format: 'csv' | 'pdf') => `/api/v1/reports${qs({ type, ...pp, format })}`;
   return (
     <>
       <PageHeader
@@ -312,13 +314,7 @@ export function ReportsPage() {
             </option>
           ))}
         </Select>
-        <Select aria-label="Period" value={period} onChange={(e) => setPeriod(e.target.value)} className="w-44" disabled={SNAPSHOT.includes(type)}>
-          {Object.entries(PERIOD_LABEL).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </Select>
+        {!SNAPSHOT.includes(type) && <PeriodPicker value={period} onChange={setPeriod} options={Object.keys(PERIOD_LABEL)} labels={PERIOD_LABEL} className="w-44" />}
       </div>
       <Panel
         title={r ? r.title : 'Report'}

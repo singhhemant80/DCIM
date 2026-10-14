@@ -10,8 +10,8 @@ import { PowerService } from '../power/power.service';
 import { customerP95 } from './bandwidth';
 import { type Report, toCsv, toPdf } from './render';
 
-type Period = 'last_7d' | 'last_30d' | 'this_month' | 'last_month';
-const POWER_PERIOD = { last_7d: '7d', last_30d: '30d', this_month: 'mtd', last_month: 'last_month' } as const;
+type Period = 'last_7d' | 'last_30d' | 'this_month' | 'last_month' | 'custom';
+const POWER_PERIOD = { last_7d: '7d', last_30d: '30d', this_month: 'mtd', last_month: 'last_month', custom: 'custom' } as const;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
 const mbps = (bps: number | null) => (bps === null ? null : Math.round(bps / 10_000) / 100);
 
@@ -46,10 +46,10 @@ export class ReportsService {
     private readonly audit: AuditService,
   ) {}
 
-  async build(p: Principal, type: ReportType, period: Period): Promise<Report> {
+  async build(p: Principal, type: ReportType, period: Period, custom: { from?: string; to?: string } = {}): Promise<Report> {
     if (type === 'capacity' && p.userType !== 'staff') throw new ForbiddenException({ error: 'forbidden', message: 'The capacity report is for datacenter staff' });
     if (p.userType === 'customer' && !p.customerId) throw new ForbiddenException({ error: 'forbidden', message: 'No customer account' });
-    const per = await this.power.period(p, POWER_PERIOD[period]);
+    const per = await this.power.period(p, POWER_PERIOD[period], custom);
     const scope = p.userType === 'staff' ? 'All customers' : ((await this.db.execute<{ name: string }>(sql`select name from customers where id = ${p.customerId}`)).rows[0]?.name ?? 'Your account');
     const base = { type, title: REPORT_LABELS[type], period: { name: period, from: per.from.toISOString(), to: per.to.toISOString(), timezone: per.timezone }, generatedAt: new Date().toISOString(), scope };
     switch (type) {
@@ -66,8 +66,8 @@ export class ReportsService {
     }
   }
 
-  async render(p: Principal, type: ReportType, period: Period, format: 'json' | 'csv' | 'pdf') {
-    const r = await this.build(p, type, period);
+  async render(p: Principal, type: ReportType, period: Period, format: 'json' | 'csv' | 'pdf', custom: { from?: string; to?: string } = {}) {
+    const r = await this.build(p, type, period, custom);
     const name = `nexoradc-${type}-${r.period.from.slice(0, 10)}-${r.period.to.slice(0, 10)}`;
     if (format === 'csv') return { report: r, filename: `${name}.csv`, contentType: 'text/csv; charset=utf-8', body: Buffer.from(`﻿${toCsv(r)}`, 'utf8') };
     if (format === 'pdf') return { report: r, filename: `${name}.pdf`, contentType: 'application/pdf', body: await toPdf(r) };

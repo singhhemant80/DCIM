@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { RATE_RANGES, type RateRange } from '@crapplet/shared';
+import { PeriodPicker, periodLabel, periodReady, type PeriodValue } from '../components/DateRange';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { relativeTime } from '../lib/format';
@@ -50,10 +51,30 @@ function UpdatedCell({ p }: { p: PortRateT }) {
   return <span className="text-ink-3">{relativeTime(p.sampledAt)}</span>;
 }
 
+/** Query for a rate range: a preset, or custom days. */
+function rangeParams(v: PeriodValue<RateRange>) {
+  return v.period === 'custom' ? { range: 'custom', from: v.from, to: v.to } : { range: v.period };
+}
+
+/** Chart window: the server's window for custom days, else the preset ending now. */
+function windowOf(v: PeriodValue<RateRange>, d?: { from?: string; to?: string }): [number, number] {
+  const now = Date.now();
+  if (v.period === 'custom') return d?.from && d.to ? [new Date(d.from).getTime(), Math.min(new Date(d.to).getTime(), now)] : [now - 86_400_000, now];
+  return [now - RANGE_MS[v.period], now];
+}
+
 function TotalsPanel() {
-  const [range, setRange] = useState<RateRange>('24h');
+  const [range, setRange] = useState<PeriodValue<RateRange>>({ period: '24h', from: '', to: '' });
+  const rp = rangeParams(range);
   const totals = useQuery({ queryKey: ['monitoring', 'totals'], queryFn: () => api.get<TotalsT>('/monitoring/totals'), refetchInterval: 30_000 });
-  const hist = useQuery({ queryKey: ['monitoring', 'totals', 'history', range], queryFn: () => api.get<TotalsHistoryT>(`/monitoring/totals/history${qs({ range })}`), refetchInterval: 60_000, placeholderData: keepPreviousData });
+  const hist = useQuery({
+    queryKey: ['monitoring', 'totals', 'history', rp],
+    queryFn: () => api.get<TotalsHistoryT & { from?: string; to?: string }>(`/monitoring/totals/history${qs(rp)}`),
+    enabled: periodReady(range),
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  });
+  const [wFrom, wTo] = windowOf(range, hist.data);
   const t = totals.data;
   if (totals.isLoading) return <Loading />;
   if (totals.error) return <ErrorNote error={totals.error} />;
@@ -71,13 +92,7 @@ function TotalsPanel() {
     <Panel
       title="Total traffic (uplinks and transit)"
       actions={
-        <Select className="w-32" value={range} onChange={(e) => setRange(e.target.value as RateRange)} aria-label="Chart range">
-          {RATE_RANGES.filter((r) => r !== '1h' && r !== '6h').map((r) => (
-            <option key={r} value={r}>
-              {RANGE_LABELS[r]}
-            </option>
-          ))}
-        </Select>
+        <PeriodPicker value={range} onChange={setRange} options={RATE_RANGES.filter((r) => r !== '1h' && r !== '6h')} labels={RANGE_LABELS} className="w-36" />
       }
     >
       <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
@@ -88,9 +103,9 @@ function TotalsPanel() {
       </dl>
       {hist.data && hist.data.points.length > 0 ? (
         <>
-          <RateChart label="Total traffic" points={hist.data.points.map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps }))} stepSeconds={hist.data.stepSeconds} from={now - RANGE_MS[range]} to={now} p95={hist.data.p95} />
+          <RateChart label="Total traffic" points={hist.data.points.map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps }))} stepSeconds={hist.data.stepSeconds} from={wFrom} to={wTo} p95={hist.data.p95} />
           <p className="mt-2 text-[12.5px] text-ink-3">
-            95th percentile over {RANGE_LABELS[range].toLowerCase()}: in {bps(hist.data.p95.inBps)}, out {bps(hist.data.p95.outBps)} ({hist.data.p95.samples} {hist.data.stepSeconds === 300 ? '5-minute' : 'hourly'} samples). Sums cover the ports that had data in each interval.
+            95th percentile over {periodLabel(range, RANGE_LABELS).toLowerCase()}: in {bps(hist.data.p95.inBps)}, out {bps(hist.data.p95.outBps)} ({hist.data.p95.samples} {hist.data.stepSeconds === 300 ? '5-minute' : 'hourly'} samples). Sums cover the ports that had data in each interval.
           </p>
         </>
       ) : (
@@ -101,7 +116,8 @@ function TotalsPanel() {
 }
 
 function PortDetail({ port, liveSamples, onClose }: { port: PortRateT; liveSamples?: LiveSample[]; onClose: () => void }) {
-  const [range, setRange] = useState<RateRange>('1h');
+  const [range, setRange] = useState<PeriodValue<RateRange>>({ period: '1h', from: '', to: '' });
+  const rp = rangeParams(range);
   // Live view: keep the worker reading this device every second while the chart is open.
   const [watch, setWatch] = useState<{ live: boolean; reason?: string } | null>(null);
   useEffect(() => {
@@ -126,8 +142,14 @@ function PortDetail({ port, liveSamples, onClose }: { port: PortRateT; liveSampl
   const lastLive = liveSamples?.length ? liveSamples[liveSamples.length - 1]! : null;
   const liveNow = !!lastLive && Date.now() - lastLive.t < 4000 && lastLive.inBps !== null;
   void tick;
-  const h = useQuery({ queryKey: ['monitoring', 'history', port.interfaceId, range], queryFn: () => api.get<PortHistoryT>(`/monitoring/ports/${port.interfaceId}/history${qs({ range })}`), refetchInterval: range === '1h' ? 30_000 : 120_000, placeholderData: keepPreviousData });
-  const now = Date.now();
+  const h = useQuery({
+    queryKey: ['monitoring', 'history', port.interfaceId, rp],
+    queryFn: () => api.get<PortHistoryT & { from?: string; to?: string }>(`/monitoring/ports/${port.interfaceId}/history${qs(rp)}`),
+    enabled: periodReady(range),
+    refetchInterval: range.period === '1h' ? 30_000 : 120_000,
+    placeholderData: keepPreviousData,
+  });
+  const [wFrom, wTo] = windowOf(range, h.data);
   const d = h.data;
   // Live samples arriving over the event stream are drawn at once, between history refetches.
   const [livePts, setLivePts] = useState<{ t: number; inBps: number | null; outBps: number | null }[]>([]);
@@ -150,13 +172,7 @@ function PortDetail({ port, liveSamples, onClose }: { port: PortRateT; liveSampl
       }
       actions={
         <div className="flex items-center gap-2">
-          <Select className="w-32" value={range} onChange={(e) => setRange(e.target.value as RateRange)} aria-label="Chart range">
-            {RATE_RANGES.map((r) => (
-              <option key={r} value={r}>
-                {RANGE_LABELS[r]}
-              </option>
-            ))}
-          </Select>
+          <PeriodPicker value={range} onChange={setRange} options={RATE_RANGES} labels={RANGE_LABELS} className="w-36" />
           <button className="rounded-md px-2 py-1 text-[13px] text-ink-2 hover:bg-sunken" onClick={onClose} aria-label="Close chart">
             ✕
           </button>
@@ -185,15 +201,15 @@ function PortDetail({ port, liveSamples, onClose }: { port: PortRateT; liveSampl
       <div className="mb-1 text-[13px] font-medium">History</div>
       <ErrorNote error={h.error} />
       {h.isLoading && <Loading />}
-      {d && chartPoints.length === 0 && <EmptyState title="No measurements in this range">{range === '1h' || range === '6h' ? 'Rates appear after two polls of the device.' : 'Longer ranges use 5-minute and hourly aggregates, built every minute from the raw readings.'}</EmptyState>}
+      {d && chartPoints.length === 0 && <EmptyState title="No measurements in this range">{range.period === '1h' || range.period === '6h' ? 'Rates appear after two polls of the device.' : 'Longer ranges use 5-minute and hourly aggregates, built every minute from the raw readings.'}</EmptyState>}
       {d && chartPoints.length > 0 && (
         <>
           <RateChart
             label={`Traffic on ${port.deviceName} ${port.name}`}
             points={chartPoints}
             stepSeconds={d.stepSeconds}
-            from={now - RANGE_MS[range]}
-            to={now}
+            from={wFrom}
+            to={wTo}
             p95={d.p95}
           />
           <p className="mt-2 text-[12.5px] text-ink-3">

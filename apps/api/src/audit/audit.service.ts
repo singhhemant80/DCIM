@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { dateFilter } from '../common/date-range';
 import { and, asc, count, desc, eq, gt, gte, isNull, lte, sql, type SQL } from 'drizzle-orm';
 import type { z } from 'zod';
 import type { auditQuerySchema, Paginated } from '@crapplet/shared';
@@ -79,8 +80,7 @@ export class AuditService {
     if (q.actorId) conds.push(eq(auditEvents.actorId, q.actorId));
     if (q.targetType) conds.push(eq(auditEvents.targetType, q.targetType));
     if (q.outcome) conds.push(eq(auditEvents.outcome, q.outcome));
-    if (q.from) conds.push(gte(auditEvents.occurredAt, new Date(q.from)));
-    if (q.to) conds.push(lte(auditEvents.occurredAt, new Date(q.to)));
+    conds.push(...dateFilter(auditEvents.occurredAt, principal.orgId, q));
     const where = and(...conds);
 
     const [items, [{ total } = { total: 0 }]] = await Promise.all([

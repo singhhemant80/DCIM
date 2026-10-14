@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DateFilter, dateParams } from '../components/DateRange';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { INSTALL_METHOD_LABELS, JOB_KINDS, OS_FAMILIES, TEMPLATE_KIND_LABELS, TEMPLATE_KINDS, type InstallMethod, type JobKind } from '@crapplet/shared';
@@ -25,9 +26,10 @@ function JobsTab({ onOpen }: { onOpen: (id: string) => void }) {
   const [status, setStatus] = useState<'all' | 'active' | 'finished'>('all');
   const [kind, setKind] = useState<JobKind | ''>('');
   const [page, setPage] = useState(1);
+  const [dates, setDates] = useState({ from: '', to: '' });
   const q = useQuery({
-    queryKey: ['provisioning', 'jobs', status, kind, page],
-    queryFn: () => api.get<Paginated<JobT>>(`/provisioning/jobs${qs({ status, kind, page, pageSize: 25 })}`),
+    queryKey: ['provisioning', 'jobs', status, kind, page, dateParams(dates.from, dates.to)],
+    queryFn: () => api.get<Paginated<JobT>>(`/provisioning/jobs${qs({ status, kind, page, pageSize: 25, ...dateParams(dates.from, dates.to) })}`),
     refetchInterval: (query) => (query.state.data?.items.some((j) => isActive(j.status)) ? 4000 : 30_000),
     placeholderData: keepPreviousData,
   });
@@ -36,7 +38,8 @@ function JobsTab({ onOpen }: { onOpen: (id: string) => void }) {
       flush
       title="Jobs"
       actions={
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <DateFilter label="Created" from={dates.from} to={dates.to} onChange={(r) => (setDates(r), setPage(1))} />
           <Select className="w-28 sm:w-36" aria-label="Status" value={status} onChange={(e) => (setStatus(e.target.value as typeof status), setPage(1))}>
             <option value="all">All</option>
             <option value="active">Active</option>

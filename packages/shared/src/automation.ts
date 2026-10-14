@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { PERMISSION_KEYS } from './permissions';
-import { paginationSchema } from './schemas';
+import { dateRangeFields, paginationSchema } from './schemas';
 
 const uuid = z.string().uuid();
 const text = (max: number) => z.string().trim().min(1).max(max);
@@ -187,7 +187,9 @@ export const REPORT_LABELS: Record<ReportType, string> = {
 export const REPORT_PERIODS = ['last_7d', 'last_30d', 'this_month', 'last_month'] as const;
 export const reportQuerySchema = z.object({
   type: z.enum(REPORT_TYPES),
-  period: z.enum(REPORT_PERIODS).default('last_month'),
+  /** 'custom' uses from / to (whole days in the organization's time zone, both included). */
+  period: z.enum([...REPORT_PERIODS, 'custom']).default('last_month'),
+  ...dateRangeFields,
   format: z.enum(['json', 'csv', 'pdf']).default('json'),
 });
 export const reportScheduleSchema = z
@@ -238,4 +240,4 @@ export const maintenanceNoticeSchema = z.object({
   customerVisible: z.boolean(),
   description: optText(2000),
 });
-export const incidentListQuerySchema = paginationSchema.extend({ status: z.enum(['open', 'resolved', 'all']).default('open') });
+export const incidentListQuerySchema = paginationSchema.extend({ status: z.enum(['open', 'resolved', 'all']).default('open'), ...dateRangeFields });

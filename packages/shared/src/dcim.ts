@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationSchema } from './schemas';
+import { dateRangeFields, paginationSchema } from './schemas';
 
 /* ------------------------------------------------------------------ */
 /* Enumerations                                                        */
@@ -264,7 +264,8 @@ export const deviceListQuerySchema = paginationSchema.extend({
   sort: z.enum(['assetTag', 'hostname', 'state', 'warranty', 'updated']).default('assetTag'),
   /** Adds current power, energy and cost over `period`, and BMC / server reachability, to each item. */
   withStatus: z.enum(['true', 'false']).optional(),
-  period: z.enum(['24h', '7d', '30d', 'mtd', 'last_month']).default('mtd'),
+  period: z.enum(['24h', '7d', '30d', 'mtd', 'last_month', 'custom']).default('mtd'),
+  ...dateRangeFields,
 });
 
 export const bulkDeviceSchema = z.object({
