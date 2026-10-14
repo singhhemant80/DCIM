@@ -262,6 +262,9 @@ export const deviceListQuerySchema = paginationSchema.extend({
   unracked: z.enum(['true', 'false']).optional(),
   warrantyWithinDays: z.coerce.number().int().min(0).max(3650).optional(),
   sort: z.enum(['assetTag', 'hostname', 'state', 'warranty', 'updated']).default('assetTag'),
+  /** Adds current power, energy and cost over `period`, and BMC / server reachability, to each item. */
+  withStatus: z.enum(['true', 'false']).optional(),
+  period: z.enum(['24h', '7d', '30d', 'mtd', 'last_month']).default('mtd'),
 });
 
 export const bulkDeviceSchema = z.object({

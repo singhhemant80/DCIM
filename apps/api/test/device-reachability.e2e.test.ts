@@ -5,7 +5,7 @@
  */
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { deviceReachability, devices } from '../src/db/schema';
+import { deviceReachability, devices, powerHourly, powerTariffs } from '../src/db/schema';
 import { checkDueDevices, pingTarget } from '../src/worker/monitoring/device-ping';
 import type { Pinger } from '../src/worker/monitoring/ping';
 import { Client, setupTestApp, type TestContext } from './helpers';
@@ -92,6 +92,22 @@ describe('rack elevation reachability', () => {
   it('the device page shows both checks', async () => {
     const d = await ok(admin.get(`${V}/devices/${ids.half}`));
     expect(d.reachability).toMatchObject({ state: 'partial', mgmt: { state: 'up' }, server: { state: 'down' } });
+  });
+
+  it('the device list shows both checks, power now, and energy with cost for the period', async () => {
+    const hour = new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000 - 3_600_000);
+    await ctx.db.insert(powerHourly).values({ deviceId: ids.half!, hour, orgId: ctx.org.id, category: 'server', counted: true, source: 'redfish', measuredWh: 250, measuredSeconds: 3600 });
+    await ctx.db.insert(powerTariffs).values({ orgId: ctx.org.id, name: 'Grid', currency: 'INR', pricePerKwh: '10', validFrom: new Date('2020-01-01') });
+    const list = await ok(admin.get(`${V}/devices?withStatus=true&period=24h&q=HALF-1`));
+    expect(list.period.name).toBe('24h');
+    expect(list.items[0].status).toMatchObject({
+      reachability: { state: 'partial', mgmt: { state: 'up', target: '198.51.100.30' }, server: { state: 'down', target: 'srv5.example.net' } },
+      power: { energyKwh: 0.25, estimatedKwh: 0, cost: [{ currency: 'INR', amount: 2.5 }] },
+    });
+    // Totals over everything the filters match (counted equipment).
+    expect(list.totals).toMatchObject({ energyKwh: 0.25, cost: [{ currency: 'INR', amount: 2.5 }] });
+    // Without the flag the list stays as it was.
+    expect((await ok(admin.get(`${V}/devices?q=HALF-1`))).items[0].status).toBeUndefined();
   });
 
   it('a lost first echo does not flip a device to down', async () => {

@@ -10,6 +10,7 @@ import {
   type DeviceInput,
   type LifecycleState,
   type Paginated,
+  type PowerPeriod,
   deviceCreateSchema,
   placementSchema as placementSchemaValue,
   type bulkDeviceSchema,
@@ -38,6 +39,7 @@ import {
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { deviceReachabilityView, type ReachabilityKind } from './reachability';
 import { rethrowDbError } from '../common/pg-errors';
+import { PowerService, type EnergyRow } from '../power/power.service';
 import { tenantFilter } from '../tenancy/tenant-scope';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { parseCsvObjects, toCsv } from './csv';
@@ -81,6 +83,7 @@ export class DevicesService {
     @Inject(DB) private readonly db: Db,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly audit: AuditService,
+    private readonly power: PowerService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -107,7 +110,7 @@ export class DevicesService {
       const like = `%${q.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
       // Management addresses are staff-only data, so customers can't search by them either.
       const fields = [ilike(devices.assetTag, like), ilike(devices.hostname, like), ilike(devices.serial, like), ilike(deviceModels.name, like)];
-      if (p.userType === 'staff') fields.push(ilike(devices.mgmtAddress, like));
+      if (p.userType === 'staff') fields.push(ilike(devices.mgmtAddress, like), ilike(devices.serverAddress, like));
       conds.push(or(...fields)!);
     }
     if (q.state) conds.push(eq(devices.lifecycleState, q.state));
@@ -124,7 +127,7 @@ export class DevicesService {
     return and(...conds)!;
   }
 
-  async list(p: Principal, q: ListQuery): Promise<Paginated<ReturnType<DevicesService['view']>>> {
+  async list(p: Principal, q: ListQuery): Promise<Paginated<ReturnType<DevicesService['view']>> & { period?: { name: PowerPeriod; from: Date; to: Date }; totals?: Awaited<ReturnType<DevicesService['totals']>> }> {
     const where = this.conditions(p, q);
     const order =
       q.sort === 'hostname'
@@ -151,20 +154,122 @@ export class DevicesService {
         .leftJoin(datacenters, eq(datacenters.id, buildings.datacenterId))
         .where(where),
     ]);
-    return { items: rows.map((r) => this.view(p, r)), page: q.page, pageSize: q.pageSize, total };
+    const items = rows.map((r) => this.view(p, r));
+    if (q.withStatus !== 'true' || !rows.length) return { items, page: q.page, pageSize: q.pageSize, total };
+    const status = await this.status(p, rows.map((r) => r.device), q.period);
+    const totals = await this.totals(p, where, q.period);
+    return { items: items.map((d) => ({ ...d, status: status.byId.get(d.id)! })), page: q.page, pageSize: q.pageSize, total, period: status.period, totals };
   }
 
   async get(p: Principal, id: string) {
     const [row] = await this.baseQuery(and(eq(devices.id, id), tenantFilter(p, scopeCols)));
     if (!row) throw NOT_FOUND();
-    const d = row.device;
+    const reach = await this.reachability(p, [row.device]);
+    return { ...this.view(p, row), reachability: reach.get(row.device.id)! };
+  }
+
+  /**
+   * Power and energy of every device matching the list filters (all pages),
+   * counted the way the power module counts equipment: PDUs and UPSes, and
+   * devices excluded from totals, are left out so nothing is counted twice.
+   */
+  private async totals(p: Principal, where: SQL, period: PowerPeriod) {
+    if (!p.permissions.has('power.read')) return null;
+    const matched = await this.db
+      .select({ id: devices.id })
+      .from(devices)
+      .innerJoin(deviceModels, eq(deviceModels.id, devices.modelId))
+      .leftJoin(racks, eq(racks.id, devices.rackId))
+      .leftJoin(rooms, eq(rooms.id, racks.roomId))
+      .leftJoin(buildings, eq(buildings.id, rooms.buildingId))
+      .leftJoin(datacenters, eq(datacenters.id, buildings.datacenterId))
+      .where(where)
+      .limit(10_000);
+    if (!matched.length) return null;
+    const inIds = (col: SQL) => sql`${col} in (${sql.join(matched.map((m) => sql`${m.id}::uuid`), sql`, `)})`;
+    const per = await this.power.period(p, period);
+    const [now, energy] = await Promise.all([this.power.current(p, inIds(sql`d.id`)), this.power.energy(p, per.from, per.to, 'all', inIds(sql`h.device_id`), true)]);
+    const t = PowerService.totalsOf(now);
+    const e = energy.get('all');
+    return {
+      devices: t.devices,
+      measuredW: t.measuredW,
+      estimatedW: t.estimatedW,
+      unknownDevices: t.unknownDevices,
+      energyKwh: e ? e.measuredKwh + e.estimatedKwh : 0,
+      estimatedKwh: e?.estimatedKwh ?? 0,
+      cost: e?.cost ?? [],
+      unpricedKwh: e?.unpricedKwh ?? 0,
+    };
+  }
+
+  /** BMC and server reachability of these devices. */
+  private async reachability(p: Principal, list: Device[]) {
+    const ids = list.map((d) => d.id);
     const [reach, creds] = await Promise.all([
-      this.db.select().from(deviceReachability).where(and(eq(deviceReachability.deviceId, id), eq(deviceReachability.orgId, p.orgId))),
-      this.db.select({ n: count() }).from(deviceCredentials).where(and(eq(deviceCredentials.deviceId, id), sql`nullif(trim(${deviceCredentials.host}), '') is not null`)),
+      this.db.select().from(deviceReachability).where(and(eq(deviceReachability.orgId, p.orgId), inArray(deviceReachability.deviceId, ids))),
+      this.db
+        .selectDistinct({ deviceId: deviceCredentials.deviceId })
+        .from(deviceCredentials)
+        .where(and(inArray(deviceCredentials.deviceId, ids), sql`nullif(trim(${deviceCredentials.host}), '') is not null`)),
     ]);
-    const rows = Object.fromEntries(reach.map((r) => [r.kind, r])) as Partial<Record<ReachabilityKind, (typeof reach)[number]>>;
-    const has = { mgmt: !!d.mgmtAddress?.trim() || (creds[0]?.n ?? 0) > 0, server: !!d.serverAddress?.trim() || !!d.hostname?.trim().includes('.') };
-    return { ...this.view(p, row), reachability: deviceReachabilityView(d.lifecycleState, has, rows, p.userType === 'staff') };
+    const withCred = new Set(creds.map((c) => c.deviceId));
+    const rows = new Map<string, Partial<Record<ReachabilityKind, (typeof reach)[number]>>>();
+    for (const r of reach) rows.set(r.deviceId, { ...rows.get(r.deviceId), [r.kind as ReachabilityKind]: r });
+    const now = Date.now();
+    return new Map(
+      list.map((d) => [
+        d.id,
+        deviceReachabilityView(
+          d.lifecycleState,
+          { mgmt: !!d.mgmtAddress?.trim() || withCred.has(d.id), server: !!d.serverAddress?.trim() || !!d.hostname?.trim().includes('.') },
+          rows.get(d.id) ?? {},
+          p.userType === 'staff',
+          now,
+        ),
+      ]),
+    );
+  }
+
+  /**
+   * For the device list: current draw (measured or estimated, labelled),
+   * energy and cost over the period (cost for staff only, from the tariffs),
+   * and reachability. Power figures come from the power module unchanged.
+   */
+  private async status(p: Principal, list: Device[], period: PowerPeriod) {
+    const ids = list.map((d) => d.id);
+    const inIds = (col: SQL) => sql`${col} in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)})`;
+    const per = await this.power.period(p, period);
+    // Power figures only for those allowed to see power.
+    const canPower = p.permissions.has('power.read');
+    const [now, energy, reach] = await Promise.all([
+      canPower ? this.power.current(p, inIds(sql`d.id`)) : Promise.resolve([]),
+      canPower ? this.power.energy(p, per.from, per.to, 'device', inIds(sql`h.device_id`), false) : Promise.resolve(new Map<string, EnergyRow>()),
+      this.reachability(p, list),
+    ]);
+    const nowById = new Map(now.map((d) => [d.deviceId, d]));
+    const byId = new Map(
+      list.map((d) => {
+        const n = nowById.get(d.id);
+        const e = energy.get(d.id);
+        return [
+          d.id,
+          {
+            power: !canPower ? null : {
+              watts: n?.watts ?? null,
+              quality: n?.quality ?? 'unknown',
+              source: n?.source ?? null,
+              energyKwh: e ? e.measuredKwh + e.estimatedKwh : 0,
+              estimatedKwh: e?.estimatedKwh ?? 0,
+              cost: e?.cost ?? [],
+              unpricedKwh: e?.unpricedKwh ?? 0,
+            },
+            reachability: reach.get(d.id)!,
+          },
+        ] as const;
+      }),
+    );
+    return { byId, period: { name: period, from: per.from, to: per.to } };
   }
 
   private async row(p: Principal, id: string, tx: DbOrTx = this.db, lock = false): Promise<Device> {

@@ -1,3 +1,6 @@
+import { formatWattsShort } from '@crapplet/shared';
+import { checkText, DOT, MGMT_LABEL, SERVER_LABEL } from '../lib/reachability';
+import { money, sourceLabel } from '../lib/power';
 import { useState, type FormEvent } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
@@ -14,7 +17,7 @@ import {
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
-import { daysUntil, STATE_TONE, useManufacturers, useModels, useTree, type DeviceT, type ModelT, type SparePartT } from '../lib/dcim';
+import { daysUntil, STATE_TONE, useManufacturers, useModels, useTree, type DeviceReachabilityT, type DeviceT, type ModelT, type SparePartT } from '../lib/dcim';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Table, Textarea, cx } from '../components/ui';
 import { useCustomerOptions } from './Racks';
 
@@ -463,6 +466,106 @@ function BulkDialog({ ids, onClose }: { ids: string[]; onClose: () => void }) {
 
 /* ------------------------------------------------------------------ devices tab */
 
+const PERIOD_LABELS = { mtd: 'This month', last_month: 'Last month', '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' } as const;
+
+type PowerStatus = NonNullable<NonNullable<DeviceT['status']>['power']>;
+
+interface ListTotals {
+  devices: number;
+  measuredW: number;
+  estimatedW: number;
+  unknownDevices: number;
+  energyKwh: number;
+  estimatedKwh: number;
+  cost: { currency: string; amount: number; estimatedPart: number }[];
+  unpricedKwh: number;
+}
+
+/** Totals for every device the filters match (all pages); PDUs and UPSes are not counted as load. */
+function TotalsBar({ t, period }: { t: ListTotals; period: string }) {
+  const kwh = (v: number) => (v < 10 ? v.toFixed(2) : Math.round(v).toLocaleString('en-IN'));
+  const cells: [string, React.ReactNode, string?][] = [
+    ['Power now', formatWattsShort(t.measuredW + t.estimatedW), t.estimatedW ? `${formatWattsShort(t.measuredW)} measured, ${formatWattsShort(t.estimatedW)} estimated` : 'all measured'],
+    [`Energy, ${period.toLowerCase()}`, `${kwh(t.energyKwh)} kWh`, t.estimatedKwh > 0.0005 ? `${kwh(t.estimatedKwh)} kWh estimated` : 'all measured'],
+    [`Amount, ${period.toLowerCase()}`, t.cost.length ? money(t.cost) : '—', t.unpricedKwh ? `${kwh(t.unpricedKwh)} kWh without a tariff` : 'from the power tariffs'],
+  ];
+  return (
+    <div className="grid grid-cols-1 gap-px border-b border-rule bg-rule sm:grid-cols-3">
+      {cells.map(([label, value, note]) => (
+        <div key={label} className="bg-panel px-4 py-2.5">
+          <p className="text-[12.5px] text-ink-2">{label}</p>
+          <p className="text-[19px] font-semibold tracking-[-0.01em]">{value}</p>
+          <p className="text-[12px] text-ink-3">{note}</p>
+        </div>
+      ))}
+      <p className="col-span-full bg-panel px-4 pb-2 text-[12px] text-ink-3">
+        Totals for the {t.devices} device{t.devices === 1 ? '' : 's'} matching these filters{t.unknownDevices ? `, ${t.unknownDevices} without a reading or estimate` : ''}. PDUs, UPSes and devices excluded from power totals are not counted.
+      </p>
+    </div>
+  );
+}
+
+/** BMC and OS checks, each with its address (staff) and a coloured dot. */
+function ReachCell({ r }: { r: DeviceReachabilityT }) {
+  return (
+    <span className="flex flex-col gap-0.5 text-[12.5px]">
+      {(
+        [
+          ['mgmt', 'BMC'],
+          ['server', 'OS'],
+        ] as const
+      ).map(([k, label]) => {
+        const c = r[k];
+        return (
+          <span key={k} className="flex items-center gap-1.5 whitespace-nowrap" title={`${k === 'mgmt' ? MGMT_LABEL : SERVER_LABEL}: ${checkText(c)}`}>
+            <span className={cx('size-2 shrink-0 rounded-full', DOT[c.state])} aria-hidden />
+            <span className="w-7 text-ink-3">{label}</span>
+            {c.target ? <span className="font-mono">{c.target}</span> : <span className="text-ink-3">{c.reason?.startsWith('Not checked: no') ? 'no address' : '—'}</span>}
+            {c.state === 'up' && c.rttMs !== null && <span className="text-ink-3">{c.rttMs < 10 ? c.rttMs.toFixed(1) : Math.round(c.rttMs)} ms</span>}
+            {c.state === 'down' && <span className="text-crit">down</span>}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function PowerNowCell({ p }: { p: PowerStatus }) {
+  if (p.quality === 'off') return <span className="text-ink-3">Not powered</span>;
+  if (p.watts === null) return <span className="text-ink-3" title="No measurement and no estimate">Unknown</span>;
+  return (
+    <span>
+      {formatWattsShort(p.watts)}
+      <span className={cx('block text-[11.5px]', p.quality === 'measured' ? 'text-ok' : 'text-est')}>{p.quality === 'measured' ? `measured${p.source ? ` · ${sourceLabel(p.source)}` : ''}` : 'estimated'}</span>
+    </span>
+  );
+}
+
+function EnergyCell({ p }: { p: PowerStatus }) {
+  if (!p.energyKwh) return <span className="text-ink-3">—</span>;
+  const est = p.estimatedKwh > 0.0005;
+  return (
+    <span>
+      {p.energyKwh < 10 ? p.energyKwh.toFixed(2) : Math.round(p.energyKwh).toLocaleString('en-IN')} kWh
+      {est && (
+        <span className="text-est" title={`${p.estimatedKwh.toFixed(2)} kWh of it is estimated`}>
+          {' '}
+          *
+        </span>
+      )}
+      <span className="block text-[12px] text-ink-2">
+        {p.cost.length ? (
+          money(p.cost)
+        ) : p.unpricedKwh ? (
+          <span className="text-ink-3" title="Add a tariff under Power → Tariffs">
+            no tariff
+          </span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
 function WarrantyCell({ date }: { date: string | null }) {
   const days = daysUntil(date);
   if (days === null) return <span className="text-ink-3">—</span>;
@@ -479,13 +582,16 @@ function DevicesTab() {
   const get = (k: string) => params.get(k) ?? '';
   const page = Number(get('page') || 1);
   const query = { q: get('q'), state: get('state'), category: get('category'), datacenterId: get('datacenterId'), unracked: get('unracked'), warrantyWithinDays: get('warranty') };
+  const period = (get('period') || 'mtd') as keyof typeof PERIOD_LABELS;
   const [search, setSearch] = useState(query.q);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [dialog, setDialog] = useState<null | 'add' | 'import' | 'bulk'>(null);
   const list = useQuery({
-    queryKey: ['dcim', 'devices', { page, ...query }],
-    queryFn: () => api.get<Paginated<DeviceT>>(`/dcim/devices${qs({ page, pageSize: 50, ...query })}`),
+    queryKey: ['dcim', 'devices', { page, ...query, period }],
+    queryFn: () => api.get<Paginated<DeviceT> & { totals?: ListTotals | null }>(`/dcim/devices${qs({ page, pageSize: 50, ...query, withStatus: 'true', period })}`),
     placeholderData: keepPreviousData,
+    // Power and reachability move on their own.
+    refetchInterval: 60_000,
   });
   const update = (patch: Record<string, string>) => {
     const next = new URLSearchParams(params);
@@ -561,6 +667,15 @@ function DevicesTab() {
             <option value="0">Warranty expired</option>
             <option value="90">Expires within 90 days</option>
           </Select>
+          {can('power.read') && (
+            <Select aria-label="Energy period" className="w-52" value={period} onChange={(e) => update({ period: e.target.value === 'mtd' ? '' : e.target.value })}>
+              {Object.entries(PERIOD_LABELS).map(([k, label]) => (
+                <option key={k} value={k}>
+                  Energy: {label}
+                </option>
+              ))}
+            </Select>
+          )}
           <Button type="submit">Search</Button>
         </form>
         {list.isLoading && <Loading />}
@@ -570,6 +685,7 @@ function DevicesTab() {
             {params.toString() ? 'Try clearing a filter.' : 'Add devices one by one or import your existing inventory from CSV.'}
           </EmptyState>
         )}
+        {items.length > 0 && list.data?.totals && can('power.read') && <TotalsBar t={list.data.totals} period={PERIOD_LABELS[period]} />}
         {items.length > 0 && (
           <>
             <Table label="Devices">
@@ -590,6 +706,15 @@ function DevicesTab() {
                   <th>Model</th>
                   <th>Location</th>
                   <th>Customer</th>
+                  <th>Reachability</th>
+                  {can('power.read') && (
+                    <>
+                      <th className="text-right">Power now</th>
+                      <th className="text-right">
+                        Energy · cost <span className="font-normal text-ink-3">({PERIOD_LABELS[period].toLowerCase()})</span>
+                      </th>
+                    </>
+                  )}
                   <th>State</th>
                   <th>Warranty</th>
                 </tr>
@@ -612,7 +737,7 @@ function DevicesTab() {
                         />
                       </td>
                     )}
-                    <td>
+                    <td className="whitespace-nowrap">
                       <Link to={`/hardware/${d.id}`} className="font-medium text-accent hover:underline" onClick={(e) => e.stopPropagation()}>
                         {d.hostname || d.assetTag}
                       </Link>
@@ -622,7 +747,7 @@ function DevicesTab() {
                       {d.model.manufacturer} {d.model.name}
                       <span className="block text-[12px] text-ink-3">{CATEGORY_LABELS[d.category]}</span>
                     </td>
-                    <td className="text-ink-2">
+                    <td className="whitespace-nowrap text-ink-2">
                       {d.location ? (
                         <>
                           <span className="font-mono text-[12.5px]">{d.location.datacenterCode}</span> {d.location.rackName}
@@ -636,6 +761,13 @@ function DevicesTab() {
                       {d.customerName ?? '—'}
                       {d.ownership === 'customer' && <span className="block text-[12px] text-est">Customer-owned</span>}
                     </td>
+                    <td>{d.status ? <ReachCell r={d.status.reachability} /> : '—'}</td>
+                    {can('power.read') && (
+                      <>
+                        <td className="text-right whitespace-nowrap">{d.status?.power ? <PowerNowCell p={d.status.power} /> : '—'}</td>
+                        <td className="text-right whitespace-nowrap">{d.status?.power ? <EnergyCell p={d.status.power} /> : '—'}</td>
+                      </>
+                    )}
                     <td>
                       <Chip tone={STATE_TONE[d.lifecycleState]}>{LIFECYCLE_LABELS[d.lifecycleState]}</Chip>
                     </td>

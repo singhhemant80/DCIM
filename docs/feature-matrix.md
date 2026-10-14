@@ -72,6 +72,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Full-depth vs half-depth mounting, multi-unit and 0U equipment | Done | `dcim.e2e`, `dcim-regressions.e2e` |
 | Front and rear elevation with drag-and-drop placement | Done | browser drag test during verification |
 | Elevation reachability colours (BMC and server address pings, every minute, in-service devices) | Done | `device-reachability.e2e` |
+| Device list: BMC and OS address with reachability, power now (measured/estimated), energy and cost per period, totals for all matching devices | Done | `device-reachability.e2e` |
 | Rack reservations (customer or internal, expiry) and dedicated racks | Done | `dcim.e2e`, `dcim-regressions.e2e` |
 | Rack relocation, device movement history, rack history | Done | `dcim.e2e` |
 | Equipment ownership (company vs customer-owned) | Done | `dcim.e2e` |

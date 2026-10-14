@@ -165,6 +165,20 @@ export interface DeviceT {
   mgmtAddress?: string | null;
   serverAddress?: string | null;
   reachability?: DeviceReachabilityT;
+  /** With ?withStatus=true on the list. */
+  status?: {
+    /** null without power.read. */
+    power: null | {
+      watts: number | null;
+      quality: 'measured' | 'estimated' | 'unknown' | 'off';
+      source: string | null;
+      energyKwh: number;
+      estimatedKwh: number;
+      cost: { currency: string; amount: number; estimatedPart: number }[];
+      unpricedKwh: number;
+    };
+    reachability: DeviceReachabilityT;
+  };
   biosVersion?: string | null;
   bmcFirmware?: string | null;
   purchaseDate?: string | null;
