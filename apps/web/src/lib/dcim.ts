@@ -79,6 +79,15 @@ export interface ElevationDevice {
   customerName: string | null;
   modelName: string;
   manufacturerName: string;
+  /** Ping of the management address; "unknown" (with the reason) whenever there is no recent result. */
+  reachability: {
+    state: 'up' | 'down' | 'unknown';
+    reason: string | null;
+    rttMs: number | null;
+    checkedAt: string | null;
+    lastSeenAt: string | null;
+    changedAt: string | null;
+  };
 }
 export interface ReservationT {
   id: string;

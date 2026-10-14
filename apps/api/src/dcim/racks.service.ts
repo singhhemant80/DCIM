@@ -3,9 +3,10 @@ import { and, asc, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import type { z } from 'zod';
 import type { rackMoveSchema, rackSchema, reservationSchema } from '@crapplet/shared';
 import { DB, type Db, type DbOrTx } from '../db/db';
-import { buildings, customers, datacenters, deviceModels, devices, manufacturers, rackEvents, rackReservations, rackRows, racks, rooms, type Rack } from '../db/schema';
+import { buildings, customers, datacenters, deviceModels, deviceReachability, devices, manufacturers, rackEvents, rackReservations, rackRows, racks, rooms, type Rack } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { rethrowDbError } from '../common/pg-errors';
+import { reachabilityView } from './reachability';
 import type { Principal, RequestMeta } from '../auth/principal';
 
 type RackInput = z.infer<typeof rackSchema>;
@@ -93,11 +94,21 @@ export class RacksService {
           customerName: customers.name,
           modelName: deviceModels.name,
           manufacturerName: manufacturers.name,
+          hasAddress: sql<boolean>`(nullif(trim(${devices.mgmtAddress}), '') is not null or exists (select 1 from device_credentials c where c.device_id = ${devices.id} and nullif(trim(c.host), '') is not null))`,
+          reach: {
+            reachable: deviceReachability.reachable,
+            rttMs: deviceReachability.rttMs,
+            checkedAt: deviceReachability.checkedAt,
+            lastSeenAt: deviceReachability.lastSeenAt,
+            changedAt: deviceReachability.changedAt,
+            error: deviceReachability.error,
+          },
         })
         .from(devices)
         .innerJoin(deviceModels, eq(deviceModels.id, devices.modelId))
         .innerJoin(manufacturers, eq(manufacturers.id, deviceModels.manufacturerId))
         .leftJoin(customers, eq(customers.id, devices.customerId))
+        .leftJoin(deviceReachability, eq(deviceReachability.deviceId, devices.id))
         .where(eq(devices.rackId, id))
         .orderBy(desc(devices.positionU)),
       this.db
@@ -108,10 +119,11 @@ export class RacksService {
         .orderBy(asc(rackReservations.startU)),
     ]);
     const now = Date.now();
+    const shown = placed.map(({ hasAddress, reach, ...d }) => ({ ...d, reachability: reachabilityView(d.lifecycleState, !!hasAddress, reach?.checkedAt ? reach : null, now) }));
     return {
       rack,
-      devices: placed.filter((d) => d.positionU !== null),
-      zeroU: placed.filter((d) => d.positionU === null),
+      devices: shown.filter((d) => d.positionU !== null),
+      zeroU: shown.filter((d) => d.positionU === null),
       reservations: reservations.map(({ r, customerName }) => ({
         id: r.id,
         startU: r.startU,

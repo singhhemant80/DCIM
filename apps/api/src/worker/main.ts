@@ -18,6 +18,7 @@ import { closeUnmonitoredAlerts, evaluateAlerts } from './monitoring/alerts';
 import { deliverDue } from './monitoring/notify';
 import { createLiveLoop } from './monitoring/live';
 import { sweepDuePrefix } from './monitoring/ping';
+import { checkDueDevices } from './monitoring/device-ping';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
@@ -143,6 +144,8 @@ async function main() {
     every('ping-sweep', 15_000, async () => {
       for (let n = 0; n < 4 && (await sweepDuePrefix({ db, logger })); n++);
     }),
+    // Device reachability: ping each in-service device's management address once a minute.
+    every('device-ping', 15_000, () => checkDueDevices({ db, logger })),
     every('events', 2_000, async () => {
       // Fan out, then run the workflows and webhooks that fan-out produced.
       while ((await dispatchEvents(automation)) === 200);

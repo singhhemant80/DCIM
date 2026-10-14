@@ -198,6 +198,10 @@ PowerDNS API keys and Cloudflare tokens follow the device-credential rules: writ
 
 The worker pings addresses only in prefixes where an administrator turned the check on, with the system `ping` (one echo request, 1-second timeout, at most 64 at a time, every 5 minutes). It sends nothing else and changes nothing. Results are stored per address; when ping itself cannot run, the error is shown on the prefix instead of marking addresses down.
 
+## Device reachability
+
+The worker pings the management address (or the host of the device's first stored credential) of devices that are racked, provisioning, active or in maintenance, once a minute, with one echo request and one retry. The address must be an IP literal or a DNS name (a URL or host:port is reduced to its host); anything else is refused before it reaches `ping`, so a stored value can never become a `ping` option. Results show only up / down; a check error or a result older than five minutes is shown as "not checked", never as down. Nothing else is sent to the device.
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.

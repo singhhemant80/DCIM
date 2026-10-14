@@ -955,6 +955,29 @@ export const ipReachability = pgTable(
   (t) => [primaryKey({ columns: [t.orgId, t.address] })],
 );
 
+/**
+ * Whether a device's management address answers ping (worker, every minute).
+ * Only devices that are physically in service are checked; the result is
+ * replaced on each check. `changed_at` is when `reachable` last flipped.
+ */
+export const deviceReachability = pgTable(
+  'device_reachability',
+  {
+    deviceId: uuid('device_id')
+      .primaryKey()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    orgId: orgRef(),
+    target: text('target').notNull(),
+    reachable: boolean('reachable').notNull(),
+    rttMs: real('rtt_ms'),
+    lastSeenAt: ts('last_seen_at'),
+    changedAt: ts('changed_at').notNull(),
+    checkedAt: ts('checked_at').notNull(),
+    error: text('error'),
+  },
+  (t) => [index('device_reachability_org_idx').on(t.orgId)],
+);
+
 export const ipEvents = pgTable(
   'ip_events',
   {

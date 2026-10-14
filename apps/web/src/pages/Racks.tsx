@@ -271,11 +271,31 @@ function unitRow(rack: RackT, u: number) {
 }
 
 /** Solid fills: the rack interior is always dark, so translucent theme tints would wash out. */
-function deviceTone(d: ElevationDevice) {
+function deviceTone(d: ElevationDevice, mode: ColourMode) {
+  if (mode === 'reach') {
+    if (d.reachability.state === 'up') return 'border-[#6fd9a6] bg-[#1f7a52] text-white';
+    if (d.reachability.state === 'down') return 'border-[#ff9a9a] bg-[#b3261e] text-white';
+    return 'border-[#8a96a8] bg-[#4a5566] text-white';
+  }
   if (d.lifecycleState === 'maintenance') return 'border-[#f0c46a] bg-[#a8720f] text-white';
   if (d.ownership === 'customer') return 'border-[#b9adf5] bg-[#5f4fb0] text-white';
   if (d.lifecycleState === 'active') return 'border-[#6fd9a6] bg-[#1f7a52] text-white';
   return 'border-[#9fb0ff] bg-[#3149b8] text-white';
+}
+
+type ColourMode = 'reach' | 'status';
+
+function ago(iso: string | null) {
+  if (!iso) return 'never';
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+}
+
+function reachText(d: ElevationDevice) {
+  const r = d.reachability;
+  if (r.state === 'up') return `Reachable (ping ${r.rttMs !== null ? `${r.rttMs < 10 ? r.rttMs.toFixed(1) : Math.round(r.rttMs)} ms` : 'ok'}, checked ${ago(r.checkedAt)})`;
+  if (r.state === 'down') return `Not reachable since ${ago(r.changedAt)} (last answered ${ago(r.lastSeenAt)})`;
+  return r.reason ?? 'Not checked';
 }
 
 function RackFaceView({
@@ -285,9 +305,11 @@ function RackFaceView({
   dragging,
   onDropDevice,
   onPickUnit,
+  mode,
 }: {
   data: ElevationT;
   face: RackFace;
+  mode: ColourMode;
   canWrite: boolean;
   dragging: { id: string; uHeight: number } | null;
   onDropDevice: (deviceId: string, u: number, face: RackFace) => void;
@@ -383,10 +405,13 @@ function RackFaceView({
                   window.dispatchEvent(new CustomEvent('cdcim-drag', { detail: { id: d.id, uHeight: d.uHeight } }));
                 }}
                 onDragEnd={() => window.dispatchEvent(new CustomEvent('cdcim-drag', { detail: null }))}
-                className={cx('z-10 mx-0.5 my-px flex min-w-0 items-center gap-2 overflow-hidden rounded-[5px] border px-2 text-[12px] shadow-[inset_0_1px_0_rgb(255_255_255/0.18)] hover:brightness-110', deviceTone(d), canWrite && 'cursor-grab active:cursor-grabbing')}
+                className={cx('z-10 mx-0.5 my-px flex min-w-0 items-center gap-2 overflow-hidden rounded-[5px] border px-2 text-[12px] shadow-[inset_0_1px_0_rgb(255_255_255/0.18)] hover:brightness-110', deviceTone(d, mode), canWrite && 'cursor-grab active:cursor-grabbing')}
                 style={{ gridColumn: 2, gridRow: `${Math.min(top, bottom)} / ${Math.max(top, bottom) + 1}` }}
-                title={`${d.assetTag} — ${d.manufacturerName} ${d.modelName}, ${LIFECYCLE_LABELS[d.lifecycleState]}${d.customerName ? `, ${d.customerName}` : ''}`}
+                title={`${d.assetTag} — ${d.manufacturerName} ${d.modelName}, ${LIFECYCLE_LABELS[d.lifecycleState]}${d.customerName ? `, ${d.customerName}` : ''}\n${reachText(d)}`}
               >
+                {mode === 'status' && d.reachability.state !== 'unknown' && (
+                  <span className={cx('size-2 shrink-0 rounded-full ring-1 ring-white/60', d.reachability.state === 'up' ? 'bg-[#4ade80]' : 'bg-[#f87171]')} aria-label={d.reachability.state === 'up' ? 'Reachable' : 'Not reachable'} />
+                )}
                 <span className="truncate font-semibold">{d.hostname || d.assetTag}</span>
                 <span className="hidden truncate text-white/75 sm:inline">{d.modelName}</span>
                 {!d.fullDepth && <span className="ml-auto shrink-0 text-[10.5px] text-white/70" title="Half-depth">½</span>}
@@ -593,7 +618,8 @@ export function RackDetailPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const canWrite = can('dcim.write');
-  const elev = useQuery({ queryKey: ['dcim', 'elevation', id], queryFn: () => api.get<ElevationT>(`/dcim/racks/${id}/elevation`) });
+  // Refreshed every 30 s so reachability colours follow the checks.
+  const elev = useQuery({ queryKey: ['dcim', 'elevation', id], queryFn: () => api.get<ElevationT>(`/dcim/racks/${id}/elevation`), refetchInterval: 30_000 });
   const events = useQuery({ queryKey: ['dcim', 'rack-events', id], queryFn: () => api.get<EventT[]>(`/dcim/racks/${id}/events`) });
   const unracked = useQuery({
     queryKey: ['dcim', 'devices', 'unracked', ''],
@@ -604,6 +630,21 @@ export function RackDetailPage() {
   const [dialog, setDialog] = useState<null | 'edit' | 'move' | 'reserve' | 'delete'>(null);
   const [placing, setPlacing] = useState<{ u: number; face: RackFace; deviceId?: string } | null>(null);
   const [dragging, setDragging] = useState<{ id: string; uHeight: number } | null>(null);
+  const [mode, setMode] = useState<ColourMode>(() => {
+    try {
+      return localStorage.getItem('cdcim.rackColour') === 'status' ? 'status' : 'reach';
+    } catch {
+      return 'reach';
+    }
+  });
+  const pickMode = (m: ColourMode) => {
+    setMode(m);
+    try {
+      localStorage.setItem('cdcim.rackColour', m);
+    } catch {
+      /* per-browser preference only */
+    }
+  };
   const [dropError, setDropError] = useState<unknown>(null);
 
   useEffect(() => {
@@ -680,17 +721,40 @@ export function RackDetailPage() {
           title="Elevation"
           actions={
             <span className="flex flex-wrap items-center gap-3 text-[12px] text-ink-2">
-              <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#6fd9a6] bg-[#1f7a52]" />Active</span>
-              <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#9fb0ff] bg-[#3149b8]" />Company</span>
-              <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#b9adf5] bg-[#5f4fb0]" />Customer-owned</span>
-              <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#f0c46a] bg-[#a8720f]" />Maintenance</span>
+              <span className="inline-flex rounded-lg border border-rule p-0.5" role="group" aria-label="Colour by">
+                {(
+                  [
+                    ['reach', 'Reachability'],
+                    ['status', 'Status'],
+                  ] as const
+                ).map(([m, label]) => (
+                  <button key={m} type="button" aria-pressed={mode === m} onClick={() => pickMode(m)} className={cx('rounded-md px-2 py-0.5', mode === m ? 'bg-field font-medium text-ink' : 'text-ink-3 hover:text-ink')}>
+                    {label}
+                  </button>
+                ))}
+              </span>
+              {mode === 'reach' ? (
+                <>
+                  <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#6fd9a6] bg-[#1f7a52]" />Reachable</span>
+                  <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#ff9a9a] bg-[#b3261e]" />Not reachable</span>
+                  <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#8a96a8] bg-[#4a5566]" />Not checked</span>
+                </>
+              ) : (
+                <>
+                  <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#6fd9a6] bg-[#1f7a52]" />Active</span>
+                  <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#9fb0ff] bg-[#3149b8]" />Company</span>
+                  <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#b9adf5] bg-[#5f4fb0]" />Customer-owned</span>
+                  <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#f0c46a] bg-[#a8720f]" />Maintenance</span>
+                </>
+              )}
             </span>
           }
         >
+          {mode === 'reach' && <p className="mb-3 text-[13px] text-ink-3">Colour shows whether the device's management address answers ping (checked every minute from the NexoraDC server). Hover a device for details.</p>}
           {canWrite && <p className="mb-3 text-[13px] text-ink-3">Drag equipment onto a unit to place or move it, or click an empty unit to choose what goes there. Placements are checked by the server: overlaps, height and depth are refused.</p>}
           <div className="flex flex-col gap-5 overflow-x-auto sm:flex-row">
             {(['front', 'rear'] as const).map((face) => (
-              <RackFaceView key={face} data={data} face={face} canWrite={canWrite} dragging={dragging} onDropDevice={onDrop} onPickUnit={(u, f) => setPlacing({ u, face: f })} />
+              <RackFaceView key={face} data={data} face={face} canWrite={canWrite} dragging={dragging} onDropDevice={onDrop} onPickUnit={(u, f) => setPlacing({ u, face: f })} mode={mode} />
             ))}
           </div>
           {placeMut.isPending && <p className="mt-2 text-[13px] text-ink-3" role="status">Saving placement…</p>}
