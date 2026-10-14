@@ -19,7 +19,7 @@ export interface MockRedfish {
 }
 
 /** Dell-iDRAC-shaped Redfish service with one system and one chassis. */
-export async function startRedfish(user: string, pass: string, opts: { watts?: number; environmentMetricsOnly?: boolean; port?: number; expand?: boolean; maxConcurrent?: number; noMemoryLink?: boolean } = {}): Promise<MockRedfish> {
+export async function startRedfish(user: string, pass: string, opts: { watts?: number; environmentMetricsOnly?: boolean; port?: number; expand?: boolean; maxConcurrent?: number; noMemoryLink?: boolean; /** Like early iDRAC 9 firmware: no Memory or Storage collection, disks only under SimpleStorage. */ oldIdrac?: boolean; wsmanMemory?: boolean } = {}): Promise<MockRedfish> {
   let watts: number | null = opts.watts ?? 312;
   const requests: { method: string; url: string }[] = [];
   const expected = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
@@ -43,8 +43,14 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
       Status: { State: 'Enabled', Health: 'Warning', HealthRollup: 'Warning' },
       ProcessorSummary: { Count: 2, Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', LogicalProcessorCount: 128 },
       MemorySummary: { TotalSystemMemoryGiB: 128 },
-      Processors: link(`${S}/Processors`), ...(opts.noMemoryLink ? {} : { Memory: link(`${S}/Memory`) }), Storage: link(`${S}/Storage`), EthernetInterfaces: link(`${S}/EthernetInterfaces`), LogServices: link(`${S}/LogServices`),
+      Processors: link(`${S}/Processors`), ...(opts.noMemoryLink || opts.oldIdrac ? {} : { Memory: link(`${S}/Memory`) }), ...(opts.oldIdrac ? { SimpleStorage: link(`${S}/SimpleStorage`) } : { Storage: link(`${S}/Storage`) }), EthernetInterfaces: link(`${S}/EthernetInterfaces`), LogServices: link(`${S}/LogServices`),
     },
+    ...(opts.oldIdrac
+      ? {
+          [`${S}/SimpleStorage`]: coll([`${S}/SimpleStorage/RAID.Integrated.1-1`]),
+          [`${S}/SimpleStorage/RAID.Integrated.1-1`]: { Id: 'RAID.Integrated.1-1', Name: 'PERC H730 Mini', Status: ok, Devices: [{ Name: 'Solid State Disk 0:1:0', Model: 'INTEL SSDSC2KB01', CapacityBytes: 1920383410176, Status: ok }] },
+        }
+      : {}),
     [`${S}/Processors`]: coll([`${S}/Processors/CPU.Socket.1`, `${S}/Processors/CPU.Socket.2`]),
     [`${S}/Processors/CPU.Socket.1`]: { Socket: 'CPU.Socket.1', ProcessorType: 'CPU', Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', TotalCores: 32, TotalThreads: 64, MaxSpeedMHz: 4000, Status: ok },
     [`${S}/Processors/CPU.Socket.2`]: { Socket: 'CPU.Socket.2', ProcessorType: 'CPU', Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', TotalCores: 32, TotalThreads: 64, MaxSpeedMHz: 4000, Status: ok },
@@ -105,6 +111,31 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
     };
     // A busy BMC refuses requests beyond what it can handle at once.
     if (opts.maxConcurrent && inFlight > opts.maxConcurrent) return send(503, { error: 'Service unavailable' });
+    if (req.method === 'POST' && req.url === '/wsman' && opts.wsmanMemory) {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString()));
+      req.on('end', () => {
+        const reply = (status: number, xml: string) =>
+          setTimeout(() => {
+            inFlight--;
+            res.writeHead(status, { 'Content-Type': 'application/soap+xml;charset=UTF-8' });
+            res.end(xml);
+          }, 5);
+        if (req.headers.authorization !== expected) return reply(401, '');
+        if (!body.includes('DCIM_MemoryView')) return reply(400, '<fault>unsupported resource</fault>');
+        const dimm = (slot: string, health: string) =>
+          `<n1:DCIM_MemoryView><n1:BankLabel>A</n1:BankLabel><n1:CurrentOperatingSpeed>2666</n1:CurrentOperatingSpeed><n1:DeviceDescription>DIMM ${slot}</n1:DeviceDescription><n1:FQDD>DIMM.Socket.${slot}</n1:FQDD><n1:InstanceID>DIMM.Socket.${slot}</n1:InstanceID><n1:LastSystemInventoryTime xsi:nil="true"/><n1:Manufacturer>Samsung</n1:Manufacturer><n1:MemoryType>26</n1:MemoryType><n1:PartNumber>M393A4K40CB2-CTD</n1:PartNumber><n1:PrimaryStatus>${health}</n1:PrimaryStatus><n1:SerialNumber>SN${slot}</n1:SerialNumber><n1:Size>32768</n1:Size><n1:Speed>2666</n1:Speed></n1:DCIM_MemoryView>`;
+        const wrap = (inner: string) =>
+          `<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:n1="http://schemas.dell.com/wbem/wscim/1/cim-schema/2/DCIM_MemoryView" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><s:Header/><s:Body>${inner}</s:Body></s:Envelope>`;
+        // Two modules in the first answer, the third after a Pull, as a real iDRAC pages them.
+        if (body.includes('enumeration/Enumerate'))
+          return reply(200, wrap(`<wsen:EnumerateResponse><wsen:EnumerationContext>ctx-1</wsen:EnumerationContext><wsman:Items>${dimm('A1', '1')}${dimm('A2', '2')}</wsman:Items></wsen:EnumerateResponse>`));
+        if (body.includes('enumeration/Pull') && body.includes('ctx-1'))
+          return reply(200, wrap(`<wsen:PullResponse><wsen:Items>${dimm('B1', '1')}</wsen:Items><wsen:EndOfSequence/></wsen:PullResponse>`));
+        return reply(400, '<fault>bad request</fault>');
+      });
+      return;
+    }
     if (req.method !== 'GET') return send(405, { error: 'Method not allowed' });
     if (req.headers.authorization !== expected) return send(401, { error: 'Unauthorized' });
     const all = docs();
@@ -113,6 +144,7 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
       const c = all[req.url!.split('?')[0]!] as { Members?: { '@odata.id': string }[] } | undefined;
       if (c && Array.isArray(c.Members)) return send(200, { ...c, Members: c.Members.map((m) => ({ '@odata.id': m['@odata.id'], ...(all[m['@odata.id']] as object) })) });
     }
+    if (opts.oldIdrac && /^\/redfish\/v1\/Systems\/System\.Embedded\.1\/(Memory|Storage)\b/.test(req.url!)) return send(404, { error: 'Not found' });
     const doc = all[req.url!] ?? all[req.url!.split('?')[0]!];
     return doc === undefined ? send(404, { error: 'Not found' }) : send(200, doc);
   });

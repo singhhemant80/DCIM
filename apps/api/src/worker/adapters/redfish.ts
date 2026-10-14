@@ -1,6 +1,7 @@
 import type { Adapter, AdapterTarget, DiscoveryResult, PowerSnapshot, TestResult } from '../../network/discovery/types';
 import { DeviceHttpError, basicAuth, deviceRequest, str } from './http';
 import { collectRedfishInventory } from './redfish-inventory';
+import { dellMemoryViaWsman } from './dell-wsman';
 
 /**
  * DMTF Redfish (Dell iDRAC 8/9, HPE iLO 5/6, Lenovo XClarity, Supermicro…).
@@ -59,6 +60,8 @@ export function redfishAdapter(): Adapter {
       return collectRedfishInventory(
         (path) => get(t, path),
         (e) => e instanceof DeviceHttpError && (e.status === 401 || e.status === 403),
+        // Older iDRAC firmware has no Redfish memory list; its WS-Man service does (read-only enumeration).
+        { applies: (m) => /dell/i.test(m ?? ''), label: 'WS-Man', read: () => dellMemoryViaWsman(t) },
       );
     },
     async power(t): Promise<PowerSnapshot> {

@@ -249,7 +249,7 @@ export function BmcHardwarePanel({ deviceId, canWrite, staff }: { deviceId: stri
               </ul>
             </details>
           )}
-          <p className="mt-3 text-[12px] text-ink-3">Read from the BMC with GET requests only; nothing on the server is changed. Read again automatically once a day.</p>
+          <p className="mt-3 text-[12px] text-ink-3">Read-only: Redfish GET requests (and on older Dell iDRACs a WS-Man read of the memory list); nothing on the server is changed. Read again automatically once a day.</p>
         </>
       )}
       <Modal open={applying} onOpenChange={(o) => !o && setApplying(false)} title="Copy from the BMC to the record" wide>
@@ -271,7 +271,7 @@ function Summary({ inv }: { inv: HardwareInventory }) {
     ['Service tag / serial', [s.sku, s.serial].filter(Boolean).join(' · ') || '—'],
     ['Power', dash(s.powerState)],
     ['CPU', s.cpuCount ? `${inv.processors.length || s.cpuCount} × ${inv.processors[0]?.model ?? s.cpuModel ?? 'CPU'}${s.logicalCpus ? ` (${s.logicalCpus} threads)` : ''}` : '—'],
-    ['Memory', ram ? `${ram} GB in ${inv.memory.length} module${inv.memory.length === 1 ? '' : 's'}` : '—'],
+    ['Memory', ram ? (inv.memory.length ? `${ram} GB in ${inv.memory.length} module${inv.memory.length === 1 ? '' : 's'}` : `${ram} GB (modules not listed by the BMC)`) : '—'],
     ['Drives', inv.drives.length ? `${inv.drives.length} (${[ssd && `${ssd} SSD`, hdd && `${hdd} HDD`].filter(Boolean).join(', ') || 'type not reported'}), ${size(inv.drives.reduce((a, d) => a + (d.capacityGb ?? 0), 0))}` : '—'],
     ['Power supplies', inv.psus.length ? inv.psus.map((p) => `${p.name.replace(/ Status$/, '')}${p.capacityW ? ` ${p.capacityW} W` : ''}`).join(', ') : '—'],
     ['BIOS / BMC firmware', [s.biosVersion && `BIOS ${s.biosVersion}`, inv.bmc?.firmware && `BMC ${inv.bmc.firmware}`].filter(Boolean).join(' · ') || '—'],
@@ -338,6 +338,13 @@ function CpuMemory({ inv }: { inv: HardwareInventory }) {
           </tr>
         </thead>
         <tbody>
+          {!inv.memory.length && (
+            <tr>
+              <td colSpan={7} className="text-ink-3">
+                The BMC did not list the memory modules{inv.system.memoryGb ? ` (it reports ${inv.system.memoryGb} GB in total)` : ''}. See the details below.
+              </td>
+            </tr>
+          )}
           {inv.memory.map((m) => (
             <tr key={m.slot}>
               <td className="font-mono text-[12.5px]">{m.slot}</td>
@@ -356,6 +363,7 @@ function CpuMemory({ inv }: { inv: HardwareInventory }) {
           ))}
         </tbody>
       </Table>
+      {inv.memorySource && <p className="text-[12px] text-ink-3">Memory modules read over {inv.memorySource}: this BMC firmware does not list them in Redfish.</p>}
     </div>
   );
 }

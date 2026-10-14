@@ -116,6 +116,8 @@ export interface HardwareInventory {
   nics: HwNic[];
   logs: HwLogEntry[];
   /** Parts of the walk that failed (the rest is still shown). */
+  /** Where the memory list came from when not Redfish (e.g. "WS-Man"); null = Redfish. */
+  memorySource?: string | null;
   warnings: string[];
 }
 

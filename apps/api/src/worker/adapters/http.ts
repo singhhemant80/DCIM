@@ -23,11 +23,17 @@ export function deviceRequest(
   t: AdapterTarget,
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
-  opts: { headers?: Record<string, string>; body?: unknown; defaultPort: number; /** Resolve error statuses (with the parsed body) instead of rejecting. */ rawErrors?: boolean },
-): Promise<{ status: number; json: unknown }> {
+  opts: {
+    headers?: Record<string, string>;
+    body?: unknown;
+    defaultPort: number;
+    /** Resolve error statuses (with the parsed body) instead of rejecting. */ rawErrors?: boolean;
+    /** A non-JSON body (e.g. a WS-Management SOAP envelope); the answer is returned as `text`. */ raw?: { data: string; contentType: string };
+  },
+): Promise<{ status: number; json: unknown; text?: string }> {
   const scheme = t.params.scheme ?? 'https';
   const lib = scheme === 'https' ? https : http;
-  const payload = opts.body === undefined ? undefined : Buffer.from(JSON.stringify(opts.body));
+  const payload = opts.raw ? Buffer.from(opts.raw.data) : opts.body === undefined ? undefined : Buffer.from(JSON.stringify(opts.body));
   const timeout = t.params.timeoutMs ?? 5000;
   return new Promise((resolve, reject) => {
     const req = lib.request(
@@ -36,7 +42,7 @@ export function deviceRequest(
         port: t.port ?? opts.defaultPort,
         method,
         path,
-        headers: { Accept: 'application/json', ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': String(payload.length) } : {}), ...opts.headers },
+        headers: { Accept: opts.raw ? '*/*' : 'application/json', ...(payload ? { 'Content-Type': opts.raw?.contentType ?? 'application/json', 'Content-Length': String(payload.length) } : {}), ...opts.headers },
         timeout,
         ...(scheme === 'https' ? { rejectUnauthorized: t.params.verifyTls !== false, servername: /^[\d.:[\]]+$/.test(t.host) ? undefined : t.host } : {}),
       },
@@ -66,6 +72,7 @@ export function deviceRequest(
           if (status === 401 || status === 403) return reject(new DeviceHttpError(`Authentication failed (HTTP ${status}); check the username, password or token and its permissions`, status));
           if (status === 404) return reject(new DeviceHttpError(`Not found (HTTP 404): ${path.split('?')[0]}`, status));
           if (status >= 400) return reject(new DeviceHttpError(`HTTP ${status} from ${path.split('?')[0]}`, status));
+          if (opts.raw) return resolve({ status, json: null, text: raw });
           try {
             resolve({ status, json: raw ? JSON.parse(raw) : null });
           } catch {

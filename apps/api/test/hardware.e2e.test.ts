@@ -8,6 +8,7 @@ import { deviceHardware, spareParts } from '../src/db/schema';
 import { SecretBox } from '../src/common/secret-box';
 import { fetchDueHardware } from '../src/worker/hardware/collect';
 import { collectRedfishInventory } from '../src/worker/adapters/redfish-inventory';
+import { dellMemoryViaWsman } from '../src/worker/adapters/dell-wsman';
 import { Client, setupTestApp, type TestContext } from './helpers';
 import { startRedfish, type MockRedfish } from './simulators/power-devices';
 
@@ -162,6 +163,42 @@ describe('BMCs that answer differently (iDRAC 9 and older firmware)', () => {
     const sim = await startRedfish('root', 'pw', { noMemoryLink: true });
     try {
       expect(slots(await collectRedfishInventory(read(sim.port)))).toHaveLength(4);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('older iDRAC firmware without a Redfish memory list: modules are read over WS-Man, disks from SimpleStorage', async () => {
+    const sim = await startRedfish('root', 'pw', { oldIdrac: true, wsmanMemory: true });
+    try {
+      const inv = await collectRedfishInventory(read(sim.port), undefined, {
+        applies: (m) => /dell/i.test(m ?? ''),
+        label: 'WS-Man',
+        read: () => dellMemoryViaWsman({ host: '127.0.0.1', port: sim.port, username: 'root', params: { scheme: 'http' }, secret: { password: 'pw' } } as never),
+      });
+      expect(inv.memorySource).toBe('WS-Man');
+      expect(inv.memory).toEqual([
+        { slot: 'DIMM.Socket.A1', sizeGb: 32, type: 'DDR4', speedMhz: 2666, manufacturer: 'Samsung', partNumber: 'M393A4K40CB2-CTD', serial: 'SNA1', health: 'OK' },
+        { slot: 'DIMM.Socket.A2', sizeGb: 32, type: 'DDR4', speedMhz: 2666, manufacturer: 'Samsung', partNumber: 'M393A4K40CB2-CTD', serial: 'SNA2', health: 'Warning' },
+        { slot: 'DIMM.Socket.B1', sizeGb: 32, type: 'DDR4', speedMhz: 2666, manufacturer: 'Samsung', partNumber: 'M393A4K40CB2-CTD', serial: 'SNB1', health: 'OK' },
+      ]);
+      expect(inv.drives).toHaveLength(1);
+      // Missing collections that older firmware never had are not reported as failures.
+      expect(inv.warnings).toEqual([]);
+      // Only GETs to Redfish, and only the memory view over WS-Man.
+      expect(sim.requests.filter((r) => r.method !== 'GET').every((r) => r.method === 'POST' && r.url === '/wsman')).toBe(true);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('without WS-Man the reason the memory list is missing is shown', async () => {
+    const sim = await startRedfish('root', 'pw', { oldIdrac: true });
+    try {
+      const inv = await collectRedfishInventory(read(sim.port), undefined, { applies: () => true, label: 'WS-Man', read: () => dellMemoryViaWsman({ host: '127.0.0.1', port: sim.port, username: 'root', params: { scheme: 'http' }, secret: { password: 'pw' } } as never) });
+      expect(inv.memory).toEqual([]);
+      expect(inv.warnings.join('\n')).toMatch(/Memory \(WS-Man\): HTTP 405/);
+      expect(inv.warnings.join('\n')).toMatch(/does not list the modules \(no Memory collection/);
     } finally {
       await sim.close();
     }

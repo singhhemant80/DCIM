@@ -1,4 +1,4 @@
-import type { HardwareInventory, HwHealth, HwLogEntry } from '@crapplet/shared';
+import type { HardwareInventory, HwHealth, HwLogEntry, HwMemory } from '@crapplet/shared';
 
 type Row = Record<string, unknown>;
 export type RedfishGet = (path: string) => Promise<Row>;
@@ -42,7 +42,12 @@ const MAX_LOG_ENTRIES = 200;
  * event / fault logs. A part that fails (older firmware, missing resource) is
  * skipped and listed in `warnings`; authentication errors stop the walk.
  */
-export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: unknown) => boolean = () => false): Promise<HardwareInventory> {
+export async function collectRedfishInventory(
+  get: RedfishGet,
+  isAuthError: (e: unknown) => boolean = () => false,
+  /** Another read-only source of the memory list, for BMCs whose Redfish has none (older Dell iDRAC firmware). */
+  memoryFallback?: { applies: (manufacturer: string | null) => boolean; label: string; read: () => Promise<HwMemory[]> },
+): Promise<HardwareInventory> {
   const warnings: string[] = [];
   let requests = 0;
   // BMCs (iDRAC especially) drop or refuse requests when many arrive at once:
@@ -89,12 +94,12 @@ export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: 
    * A collection's members. Tries one expanded request first ($expand, which
    * iDRAC 9 and iLO 5+ support), else reads each member.
    */
-  const list = async (path: string | null, cap: number): Promise<Row[]> => {
+  const list = async (path: string | null, cap: number, quiet = false): Promise<Row[]> => {
     if (!path) return [];
     const expanded = await g(`${path}?$expand=*($levels=1)`, true);
     const full = Array.isArray(expanded?.Members) ? (expanded!.Members as Row[]) : [];
     if (full.length && full.every((m) => m && typeof m === 'object' && Object.keys(m).some((k) => !k.startsWith('@odata')))) return full.slice(0, cap);
-    const coll = expanded && Array.isArray(expanded.Members) ? expanded : await g(path);
+    const coll = expanded && Array.isArray(expanded.Members) ? expanded : await g(path, quiet);
     if (!coll) return [];
     const docs = await Promise.all(members(coll).slice(0, cap).map((m) => g(m)));
     return docs.filter((d): d is Row => !!d);
@@ -111,8 +116,9 @@ export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: 
   const storagePath = odataId(sys.Storage) ?? `${sysPath}/Storage`;
   const [cpus, dimms, storage, nics, chassisPaths, managers] = await Promise.all([
     list(odataId(sys.Processors) ?? `${sysPath}/Processors`, 16),
-    list(memPath, 64),
-    list(storagePath, 16),
+    // A guessed path that is missing is expected on older firmware: not a warning by itself.
+    list(memPath, 64, !odataId(sys.Memory)),
+    list(storagePath, 16, !odataId(sys.Storage)),
     list(odataId(sys.EthernetInterfaces), 32),
     g('/redfish/v1/Chassis').then((c) => (c ? members(c).slice(0, 4) : [])),
     g('/redfish/v1/Managers').then((c) => (c ? members(c).slice(0, 2) : [])),
@@ -238,7 +244,28 @@ export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: 
 
   // Empty slots report State "Absent" or a capacity of 0; a module without a capacity field is kept.
   const dimmsPresent = dimms.filter((d) => !absent(d.Status) && (n(d.CapacityMiB) === null ? n(d.CapacityMB) !== 0 : n(d.CapacityMiB)! > 0));
-  if (!dimmsPresent.length && (n(ms.TotalSystemMemoryGiB) ?? 0) > 0) warnings.push(`Memory: the BMC reports ${ms.TotalSystemMemoryGiB} GiB but listed no modules at ${memPath} (${dimms.length} entries read)`);
+  let memory: HwMemory[] = dimmsPresent.map((d) => ({
+    slot: s(d.DeviceLocator) ?? s(d.Id) ?? 'DIMM',
+    sizeGb: n(d.CapacityMiB) !== null ? Math.round(n(d.CapacityMiB)! / 1024) : n(d.CapacityMB) !== null ? Math.round(n(d.CapacityMB)! / 1024) : null,
+    type: s(d.MemoryDeviceType),
+    speedMhz: n(d.OperatingSpeedMhz) ?? n(d.AllowedSpeedsMHz),
+    manufacturer: s(d.Manufacturer),
+    partNumber: s(d.PartNumber),
+    serial: s(d.SerialNumber),
+    health: health(d.Status),
+  }));
+  let memorySource: string | null = null;
+  if (!memory.length && memoryFallback?.applies(s(sys.Manufacturer))) {
+    try {
+      memory = await memoryFallback.read();
+      if (memory.length) memorySource = memoryFallback.label;
+    } catch (e) {
+      if (isAuthError(e)) warnings.push(`Memory (${memoryFallback.label}): the BMC refused the login: ${(e as Error).message}`.slice(0, 240));
+      else warnings.push(`Memory (${memoryFallback.label}): ${(e as Error).message}`.slice(0, 240));
+    }
+  }
+  if (!memory.length && (n(ms.TotalSystemMemoryGiB) ?? 0) > 0)
+    warnings.push(`Memory: the BMC reports ${ms.TotalSystemMemoryGiB} GiB in total but its Redfish service does not list the modules (${odataId(sys.Memory) ? `${dimms.length} entries at ${memPath}` : 'no Memory collection; usually older BMC firmware'}${bmc?.firmware ? `, firmware ${bmc.firmware}` : ''})`);
   if (!drives.length) warnings.push(`Storage: no drives listed at ${storagePath} (${storage.length} storage resource(s) read)`);
   return {
     system: {
@@ -259,16 +286,8 @@ export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: 
     processors: cpus
       .filter((c) => !absent(c.Status) && (c.ProcessorType === undefined || c.ProcessorType === 'CPU'))
       .map((c) => ({ socket: s(c.Socket) ?? s(c.Id) ?? 'CPU', model: s(c.Model), cores: n(c.TotalCores), threads: n(c.TotalThreads), maxSpeedMhz: n(c.MaxSpeedMHz), health: health(c.Status) })),
-    memory: dimmsPresent.map((d) => ({
-      slot: s(d.DeviceLocator) ?? s(d.Id) ?? 'DIMM',
-      sizeGb: n(d.CapacityMiB) !== null ? Math.round(n(d.CapacityMiB)! / 1024) : n(d.CapacityMB) !== null ? Math.round(n(d.CapacityMB)! / 1024) : null,
-      type: s(d.MemoryDeviceType),
-      speedMhz: n(d.OperatingSpeedMhz) ?? n(d.AllowedSpeedsMHz),
-      manufacturer: s(d.Manufacturer),
-      partNumber: s(d.PartNumber),
-      serial: s(d.SerialNumber),
-      health: health(d.Status),
-    })),
+    memory,
+    memorySource,
     controllers,
     drives,
     volumes,
