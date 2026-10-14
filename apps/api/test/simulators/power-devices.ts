@@ -19,7 +19,7 @@ export interface MockRedfish {
 }
 
 /** Dell-iDRAC-shaped Redfish service with one system and one chassis. */
-export async function startRedfish(user: string, pass: string, opts: { watts?: number; environmentMetricsOnly?: boolean; port?: number } = {}): Promise<MockRedfish> {
+export async function startRedfish(user: string, pass: string, opts: { watts?: number; environmentMetricsOnly?: boolean; port?: number; expand?: boolean; maxConcurrent?: number; noMemoryLink?: boolean } = {}): Promise<MockRedfish> {
   let watts: number | null = opts.watts ?? 312;
   const requests: { method: string; url: string }[] = [];
   const expected = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
@@ -43,7 +43,7 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
       Status: { State: 'Enabled', Health: 'Warning', HealthRollup: 'Warning' },
       ProcessorSummary: { Count: 2, Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', LogicalProcessorCount: 128 },
       MemorySummary: { TotalSystemMemoryGiB: 128 },
-      Processors: link(`${S}/Processors`), Memory: link(`${S}/Memory`), Storage: link(`${S}/Storage`), EthernetInterfaces: link(`${S}/EthernetInterfaces`), LogServices: link(`${S}/LogServices`),
+      Processors: link(`${S}/Processors`), ...(opts.noMemoryLink ? {} : { Memory: link(`${S}/Memory`) }), Storage: link(`${S}/Storage`), EthernetInterfaces: link(`${S}/EthernetInterfaces`), LogServices: link(`${S}/LogServices`),
     },
     [`${S}/Processors`]: coll([`${S}/Processors/CPU.Socket.1`, `${S}/Processors/CPU.Socket.2`]),
     [`${S}/Processors/CPU.Socket.1`]: { Socket: 'CPU.Socket.1', ProcessorType: 'CPU', Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', TotalCores: 32, TotalThreads: 64, MaxSpeedMHz: 4000, Status: ok },
@@ -91,15 +91,28 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
     [`${M}/LogServices/Sel/Entries?$skip=3`]: { Members: sel.slice(3) },
     [`${M}/LogServices/Lclog/Entries`]: { Members: [{ Id: 'lc1', Message: 'Lifecycle noise', Severity: 'OK' }] },
   });
+  let inFlight = 0;
   const server = http.createServer((req, res) => {
     requests.push({ method: req.method!, url: req.url! });
+    inFlight++;
     const send = (status: number, body?: unknown) => {
-      res.writeHead(status, { 'Content-Type': 'application/json' });
-      res.end(body === undefined ? '' : JSON.stringify(body));
+      // Answers are a little delayed so concurrent requests overlap.
+      setTimeout(() => {
+        inFlight--;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(body === undefined ? '' : JSON.stringify(body));
+      }, 5);
     };
+    // A busy BMC refuses requests beyond what it can handle at once.
+    if (opts.maxConcurrent && inFlight > opts.maxConcurrent) return send(503, { error: 'Service unavailable' });
     if (req.method !== 'GET') return send(405, { error: 'Method not allowed' });
     if (req.headers.authorization !== expected) return send(401, { error: 'Unauthorized' });
     const all = docs();
+    // iDRAC 9 style $expand: collection members are returned in full.
+    if (opts.expand && /\?\$expand=/.test(req.url!)) {
+      const c = all[req.url!.split('?')[0]!] as { Members?: { '@odata.id': string }[] } | undefined;
+      if (c && Array.isArray(c.Members)) return send(200, { ...c, Members: c.Members.map((m) => ({ '@odata.id': m['@odata.id'], ...(all[m['@odata.id']] as object) })) });
+    }
     const doc = all[req.url!] ?? all[req.url!.split('?')[0]!];
     return doc === undefined ? send(404, { error: 'Not found' }) : send(200, doc);
   });

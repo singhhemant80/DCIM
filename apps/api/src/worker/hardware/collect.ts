@@ -62,7 +62,7 @@ async function fetchOne(deps: HardwareDeps, deviceId: string) {
     secret = JSON.parse(deps.secrets.decrypt(cred.secretEnc, credentialContext(cred.orgId, cred.deviceId, cred.kind, cred.host, cred.port))) as Record<string, unknown>;
     const adapter = (deps.adapters ?? defaultAdapters()).redfish;
     if (!adapter?.hardware) throw new Error('Redfish hardware reading is not available');
-    const target: AdapterTarget = { host: cred.host, port: cred.port, username: cred.username, params: { ...cred.params, timeoutMs: Math.max(cred.params.timeoutMs ?? 10_000, 10_000) }, secret: secret as AdapterTarget['secret'] };
+    const target: AdapterTarget = { host: cred.host, port: cred.port, username: cred.username, params: { ...cred.params, timeoutMs: Math.max(cred.params.timeoutMs ?? 30_000, 30_000) }, secret: secret as AdapterTarget['secret'] };
     const inv = await adapter.hardware(target);
     await db
       .update(deviceHardware)

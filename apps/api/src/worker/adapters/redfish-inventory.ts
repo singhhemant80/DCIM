@@ -45,24 +45,58 @@ const MAX_LOG_ENTRIES = 200;
 export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: unknown) => boolean = () => false): Promise<HardwareInventory> {
   const warnings: string[] = [];
   let requests = 0;
-  const g = async (path: string): Promise<Row | null> => {
-    if (++requests > 400) {
-      if (!warnings.includes('Stopped after 400 requests')) warnings.push('Stopped after 400 requests');
-      return null;
-    }
+  // BMCs (iDRAC especially) drop or refuse requests when many arrive at once:
+  // at most three are in flight, and a failed one is tried once more.
+  let active = 0;
+  const queue: (() => void)[] = [];
+  const slot = async () => {
+    if (active >= 3) await new Promise<void>((r) => queue.push(r));
+    active++;
+  };
+  const release = () => {
+    active--;
+    queue.shift()?.();
+  };
+  const raw = async (path: string): Promise<Row> => {
+    await slot();
     try {
       return await get(path);
-    } catch (e) {
-      if (isAuthError(e)) throw e;
-      if (warnings.length < 30) warnings.push(`${path}: ${(e as Error).message}`.slice(0, 200));
-      return null;
+    } finally {
+      release();
     }
   };
+  const g = async (path: string, quiet = false): Promise<Row | null> => {
+    if (++requests > 500) {
+      if (!warnings.includes('Stopped after 500 requests')) warnings.push('Stopped after 500 requests');
+      return null;
+    }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await raw(path);
+      } catch (e) {
+        if (isAuthError(e)) throw e;
+        const notFound = /404|Not found/i.test((e as Error).message);
+        if (attempt === 0 && !notFound && !quiet) {
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        if (!quiet && warnings.length < 30) warnings.push(`${path}: ${(e as Error).message}`.slice(0, 200));
+        return null;
+      }
+    }
+  };
+  /**
+   * A collection's members. Tries one expanded request first ($expand, which
+   * iDRAC 9 and iLO 5+ support), else reads each member.
+   */
   const list = async (path: string | null, cap: number): Promise<Row[]> => {
     if (!path) return [];
-    const coll = await g(path);
+    const expanded = await g(`${path}?$expand=*($levels=1)`, true);
+    const full = Array.isArray(expanded?.Members) ? (expanded!.Members as Row[]) : [];
+    if (full.length && full.every((m) => m && typeof m === 'object' && Object.keys(m).some((k) => !k.startsWith('@odata')))) return full.slice(0, cap);
+    const coll = expanded && Array.isArray(expanded.Members) ? expanded : await g(path);
     if (!coll) return [];
-    const docs = await pool(members(coll).slice(0, cap), 4, (m) => g(m));
+    const docs = await Promise.all(members(coll).slice(0, cap).map((m) => g(m)));
     return docs.filter((d): d is Row => !!d);
   };
 
@@ -72,10 +106,13 @@ export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: 
   const ps = (sys.ProcessorSummary ?? {}) as Row;
   const ms = (sys.MemorySummary ?? {}) as Row;
 
+  // Older firmware leaves some links out of the system resource; the standard paths are tried then.
+  const memPath = odataId(sys.Memory) ?? `${sysPath}/Memory`;
+  const storagePath = odataId(sys.Storage) ?? `${sysPath}/Storage`;
   const [cpus, dimms, storage, nics, chassisPaths, managers] = await Promise.all([
-    list(odataId(sys.Processors), 16),
-    list(odataId(sys.Memory), 64),
-    list(odataId(sys.Storage), 16),
+    list(odataId(sys.Processors) ?? `${sysPath}/Processors`, 16),
+    list(memPath, 64),
+    list(storagePath, 16),
     list(odataId(sys.EthernetInterfaces), 32),
     g('/redfish/v1/Chassis').then((c) => (c ? members(c).slice(0, 4) : [])),
     g('/redfish/v1/Managers').then((c) => (c ? members(c).slice(0, 2) : [])),
@@ -110,6 +147,17 @@ export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: 
     }
     for (const v of await list(odataId(st.Volumes), 32)) {
       volumes.push({ name: s(v.Name) ?? s(v.Id) ?? 'Volume', raid: s(v.RAIDType) ?? s(v.VolumeType), capacityGb: gb(v.CapacityBytes), health: health(v.Status) });
+    }
+  }
+
+  // Older BMCs list disks only under SimpleStorage.
+  if (!drives.length && odataId(sys.SimpleStorage)) {
+    for (const ss of await list(odataId(sys.SimpleStorage), 16)) {
+      for (const dv of Array.isArray(ss.Devices) ? (ss.Devices as Row[]) : []) {
+        if (absent(dv.Status) || (n(dv.CapacityBytes) ?? 0) <= 0) continue;
+        drives.push({ name: s(dv.Name) ?? 'Drive', slot: null, model: s(dv.Model), serial: null, mediaType: null, protocol: null, capacityGb: gb(dv.CapacityBytes), lifeLeftPercent: null, failurePredicted: null, health: health(dv.Status) });
+      }
+      if (!controllers.some((c) => c.name === (s(ss.Name) ?? s(ss.Id)))) controllers.push({ name: s(ss.Name) ?? s(ss.Id) ?? 'Controller', model: null, firmware: null, health: health(ss.Status) });
     }
   }
 
@@ -188,7 +236,10 @@ export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: 
   }
   logs.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
 
-  const dimmsPresent = dimms.filter((d) => !absent(d.Status) && (n(d.CapacityMiB) ?? 0) > 0);
+  // Empty slots report State "Absent" or a capacity of 0; a module without a capacity field is kept.
+  const dimmsPresent = dimms.filter((d) => !absent(d.Status) && (n(d.CapacityMiB) === null ? n(d.CapacityMB) !== 0 : n(d.CapacityMiB)! > 0));
+  if (!dimmsPresent.length && (n(ms.TotalSystemMemoryGiB) ?? 0) > 0) warnings.push(`Memory: the BMC reports ${ms.TotalSystemMemoryGiB} GiB but listed no modules at ${memPath} (${dimms.length} entries read)`);
+  if (!drives.length) warnings.push(`Storage: no drives listed at ${storagePath} (${storage.length} storage resource(s) read)`);
   return {
     system: {
       manufacturer: s(sys.Manufacturer),
@@ -210,7 +261,7 @@ export async function collectRedfishInventory(get: RedfishGet, isAuthError: (e: 
       .map((c) => ({ socket: s(c.Socket) ?? s(c.Id) ?? 'CPU', model: s(c.Model), cores: n(c.TotalCores), threads: n(c.TotalThreads), maxSpeedMhz: n(c.MaxSpeedMHz), health: health(c.Status) })),
     memory: dimmsPresent.map((d) => ({
       slot: s(d.DeviceLocator) ?? s(d.Id) ?? 'DIMM',
-      sizeGb: n(d.CapacityMiB) !== null ? Math.round(n(d.CapacityMiB)! / 1024) : null,
+      sizeGb: n(d.CapacityMiB) !== null ? Math.round(n(d.CapacityMiB)! / 1024) : n(d.CapacityMB) !== null ? Math.round(n(d.CapacityMB)! / 1024) : null,
       type: s(d.MemoryDeviceType),
       speedMhz: n(d.OperatingSpeedMhz) ?? n(d.AllowedSpeedsMHz),
       manufacturer: s(d.Manufacturer),

@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { deviceHardware, spareParts } from '../src/db/schema';
 import { SecretBox } from '../src/common/secret-box';
 import { fetchDueHardware } from '../src/worker/hardware/collect';
+import { collectRedfishInventory } from '../src/worker/adapters/redfish-inventory';
 import { Client, setupTestApp, type TestContext } from './helpers';
 import { startRedfish, type MockRedfish } from './simulators/power-devices';
 
@@ -121,6 +122,49 @@ describe('hardware from the BMC', () => {
     expect(h.differences).toEqual([]);
     expect((await acme.post(`${D}/devices/${ids.srv}/hardware/refresh`)).status).toBe(403);
     expect((await acme.get(`${D}/devices/${ids.plain}/hardware`)).status).toBe(404);
+  });
+});
+
+describe('BMCs that answer differently (iDRAC 9 and older firmware)', () => {
+  const read = (port: number) => async (path: string) => {
+    const r = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Basic ${Buffer.from('root:pw').toString('base64')}` } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}${r.status === 404 ? ' Not found' : ''}`);
+    return (await r.json()) as Record<string, unknown>;
+  };
+  const slots = (inv: { memory: { slot: string | null }[] }) => inv.memory.map((m) => m.slot);
+
+  it('uses $expand when offered, so memory comes back in one request', async () => {
+    const sim = await startRedfish('root', 'pw', { expand: true });
+    try {
+      const inv = await collectRedfishInventory(read(sim.port));
+      expect(slots(inv)).toEqual(['DIMM.Socket.A1', 'DIMM.Socket.A2', 'DIMM.Socket.B1', 'DIMM.Socket.B2']);
+      expect(inv.drives.length).toBeGreaterThan(0);
+      expect(sim.requests.some((r) => /Memory\/DIMM/.test(r.url))).toBe(false);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('a BMC that refuses many requests at once still gives the full inventory', async () => {
+    const sim = await startRedfish('root', 'pw', { maxConcurrent: 3 });
+    try {
+      const inv = await collectRedfishInventory(read(sim.port));
+      expect(slots(inv)).toHaveLength(4);
+      expect(inv.drives.length).toBeGreaterThan(0);
+      expect(inv.processors).toHaveLength(2);
+      expect(inv.warnings ?? []).toEqual([]);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('finds memory at the standard path when the system resource leaves the link out', async () => {
+    const sim = await startRedfish('root', 'pw', { noMemoryLink: true });
+    try {
+      expect(slots(await collectRedfishInventory(read(sim.port)))).toHaveLength(4);
+    } finally {
+      await sim.close();
+    }
   });
 });
 
