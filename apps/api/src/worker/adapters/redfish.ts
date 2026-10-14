@@ -1,5 +1,6 @@
 import type { Adapter, AdapterTarget, DiscoveryResult, PowerSnapshot, TestResult } from '../../network/discovery/types';
 import { DeviceHttpError, basicAuth, deviceRequest, str } from './http';
+import { collectRedfishInventory } from './redfish-inventory';
 
 /**
  * DMTF Redfish (Dell iDRAC 8/9, HPE iLO 5/6, Lenovo XClarity, Supermicro…).
@@ -53,6 +54,12 @@ export function redfishAdapter(): Adapter {
     },
     async discover(): Promise<DiscoveryResult> {
       throw new Error('Redfish is used for power readings and server facts (use "Test"); network discovery does not apply');
+    },
+    async hardware(t) {
+      return collectRedfishInventory(
+        (path) => get(t, path),
+        (e) => e instanceof DeviceHttpError && (e.status === 401 || e.status === 403),
+      );
     },
     async power(t): Promise<PowerSnapshot> {
       const chassis = members(await get(t, '/redfish/v1/Chassis')).slice(0, 8);

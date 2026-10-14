@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import type { HardwareInventory } from '@crapplet/shared';
 import {
   bigint,
   bigserial,
@@ -980,6 +981,52 @@ export const deviceReachability = pgTable(
     error: text('error'),
   },
   (t) => [primaryKey({ columns: [t.deviceId, t.kind] }), index('device_reachability_org_idx').on(t.orgId), check('device_reachability_kind_ck', sql`${t.kind} in ('mgmt', 'server')`)],
+);
+
+/**
+ * Hardware read from a server's BMC (Redfish): components, health and event
+ * logs. One row per device, replaced on each fetch. Fetched by the worker
+ * when a Redfish credential exists (then daily), or when someone asks.
+ */
+export const deviceHardware = pgTable('device_hardware', {
+  deviceId: uuid('device_id')
+    .primaryKey()
+    .references(() => devices.id, { onDelete: 'cascade' }),
+  orgId: orgRef(),
+  /** idle | running | failed */
+  status: text('status').notNull().default('idle'),
+  requestedAt: ts('requested_at'),
+  requestedBy: text('requested_by'),
+  startedAt: ts('started_at'),
+  fetchedAt: ts('fetched_at'),
+  nextAt: ts('next_at'),
+  lastError: text('last_error'),
+  inventory: jsonb('inventory').$type<HardwareInventory>(),
+  health: text('health'),
+});
+
+/** Equipment fitted with a device: cables, transceivers, rail kits, trays… */
+export const deviceAccessories = pgTable(
+  'device_accessories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    quantity: integer('quantity').notNull(),
+    description: text('description'),
+    lengthM: numeric('length_m', { precision: 10, scale: 2 }),
+    partNumber: text('part_number'),
+    serial: text('serial'),
+    notes: text('notes'),
+    /** Taken from this spare-parts line (stock was reduced). */
+    sparePartId: uuid('spare_part_id').references(() => spareParts.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('device_accessories_device_idx').on(t.deviceId), check('device_accessories_qty_ck', sql`${t.quantity} > 0`)],
 );
 
 export const ipEvents = pgTable(

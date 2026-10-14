@@ -1,0 +1,73 @@
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
+import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { z } from 'zod';
+import { accessorySchema, hardwareApplySchema } from '@crapplet/shared';
+import { ApiZodBody, ZodPipe } from '../common/zod';
+import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly } from '../auth/decorators';
+import type { Principal, RequestMeta } from '../auth/principal';
+import { HardwareService } from './hardware.service';
+
+const UUID = new ParseUUIDPipe();
+const removeQuery = z.object({ returnToStock: z.enum(['true', 'false']).optional() });
+
+@ApiTags('dcim: devices')
+@ApiCookieAuth()
+@Controller({ path: 'dcim/devices/:id', version: '1' })
+export class DeviceHardwareController {
+  constructor(private readonly svc: HardwareService) {}
+
+  @Get('hardware')
+  @RequirePermissions('dcim.read')
+  @ApiOperation({ summary: 'Hardware read from the BMC (Redfish): CPUs, memory, drives, PSUs, fans, temperatures, NICs, firmware and, for staff, the event logs.' })
+  hardware(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.svc.hardware(p, id);
+  }
+
+  @Post('hardware/refresh')
+  @StaffOnly()
+  @RequirePermissions('dcim.write')
+  @ApiOperation({ summary: 'Ask the worker to read the BMC again (read-only).' })
+  refresh(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    return this.svc.refresh(p, id, m);
+  }
+
+  @Post('hardware/apply')
+  @StaffOnly()
+  @RequirePermissions('dcim.write')
+  @ApiZodBody(hardwareApplySchema)
+  @ApiOperation({ summary: 'Copy chosen fields (serial, CPU, RAM, disks, NICs, firmware) from the last BMC read into the device record.' })
+  apply(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(hardwareApplySchema)) b: z.infer<typeof hardwareApplySchema>, @ReqMeta() m: RequestMeta) {
+    return this.svc.apply(p, id, b, m);
+  }
+
+  @Get('accessories')
+  @RequirePermissions('dcim.read')
+  @ApiOperation({ summary: 'Cables, transceivers, rail kits, trays and other accessories fitted with the device.' })
+  accessories(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.svc.accessories(p, id);
+  }
+
+  @Post('accessories')
+  @StaffOnly()
+  @RequirePermissions('dcim.write')
+  @ApiZodBody(accessorySchema)
+  addAccessory(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(accessorySchema)) b: z.infer<typeof accessorySchema>, @ReqMeta() m: RequestMeta) {
+    return this.svc.addAccessory(p, id, b, m);
+  }
+
+  @Put('accessories/:accessoryId')
+  @StaffOnly()
+  @RequirePermissions('dcim.write')
+  @ApiZodBody(accessorySchema)
+  updateAccessory(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Param('accessoryId', UUID) aid: string, @Body(new ZodPipe(accessorySchema)) b: z.infer<typeof accessorySchema>, @ReqMeta() m: RequestMeta) {
+    return this.svc.updateAccessory(p, id, aid, b, m);
+  }
+
+  @Delete('accessories/:accessoryId')
+  @StaffOnly()
+  @HttpCode(204)
+  @RequirePermissions('dcim.write')
+  async removeAccessory(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Param('accessoryId', UUID) aid: string, @Query(new ZodPipe(removeQuery)) q: z.infer<typeof removeQuery>, @ReqMeta() m: RequestMeta) {
+    await this.svc.removeAccessory(p, id, aid, q.returnToStock === 'true', m);
+  }
+}

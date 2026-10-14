@@ -23,15 +23,73 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
   let watts: number | null = opts.watts ?? 312;
   const requests: { method: string; url: string }[] = [];
   const expected = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+  const S = '/redfish/v1/Systems/System.Embedded.1';
+  const M = '/redfish/v1/Managers/iDRAC.Embedded.1';
+  const link = (p: string) => ({ '@odata.id': p });
+  const coll = (ps: string[]) => ({ Members: ps.map(link) });
+  const ok = { State: 'Enabled', Health: 'OK' };
+  const dimms = ['A1', 'A2', 'B1', 'B2'];
+  const sel = Array.from({ length: 5 }, (_, i) => ({
+    Id: String(i + 1),
+    Created: `2026-10-1${i}T08:00:00+00:00`,
+    Severity: i === 4 ? 'Critical' : i === 3 ? 'Warning' : 'OK',
+    Message: i === 4 ? 'The power supply PS2 is not receiving power.' : i === 3 ? 'Correctable memory error rate exceeded for DIMM A2.' : 'Log cleared.',
+    MessageId: i === 4 ? 'PSU0003' : i === 3 ? 'MEM0702' : 'SEL9901',
+  }));
   const docs = (): Record<string, unknown> => ({
-    '/redfish/v1/Systems': { Members: [{ '@odata.id': '/redfish/v1/Systems/System.Embedded.1' }] },
-    '/redfish/v1/Systems/System.Embedded.1': { Manufacturer: 'Dell Inc.', Model: 'PowerEdge R650', SerialNumber: 'CN7XXXX', PowerState: 'On', HostName: 'srv-01', BiosVersion: '1.10.2' },
-    '/redfish/v1/Chassis': { Members: [{ '@odata.id': '/redfish/v1/Chassis/System.Embedded.1' }] },
+    '/redfish/v1/Systems': coll([S]),
+    [S]: {
+      Manufacturer: 'Dell Inc.', Model: 'PowerEdge R650', SerialNumber: 'CN7XXXX', SKU: 'HH90TAG', PowerState: 'On', HostName: 'srv-01', BiosVersion: '1.10.2',
+      Status: { State: 'Enabled', Health: 'Warning', HealthRollup: 'Warning' },
+      ProcessorSummary: { Count: 2, Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', LogicalProcessorCount: 128 },
+      MemorySummary: { TotalSystemMemoryGiB: 128 },
+      Processors: link(`${S}/Processors`), Memory: link(`${S}/Memory`), Storage: link(`${S}/Storage`), EthernetInterfaces: link(`${S}/EthernetInterfaces`), LogServices: link(`${S}/LogServices`),
+    },
+    [`${S}/Processors`]: coll([`${S}/Processors/CPU.Socket.1`, `${S}/Processors/CPU.Socket.2`]),
+    [`${S}/Processors/CPU.Socket.1`]: { Socket: 'CPU.Socket.1', ProcessorType: 'CPU', Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', TotalCores: 32, TotalThreads: 64, MaxSpeedMHz: 4000, Status: ok },
+    [`${S}/Processors/CPU.Socket.2`]: { Socket: 'CPU.Socket.2', ProcessorType: 'CPU', Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', TotalCores: 32, TotalThreads: 64, MaxSpeedMHz: 4000, Status: ok },
+    [`${S}/Memory`]: coll([...dimms.map((d) => `${S}/Memory/DIMM.Socket.${d}`), `${S}/Memory/DIMM.Socket.C1`]),
+    ...Object.fromEntries(dimms.map((d) => [`${S}/Memory/DIMM.Socket.${d}`, { DeviceLocator: `DIMM.Socket.${d}`, CapacityMiB: 32768, MemoryDeviceType: 'DDR4', OperatingSpeedMhz: 3200, Manufacturer: 'Hynix', PartNumber: 'HMA84GR7DJR4N-XN', SerialNumber: `S${d}`, Status: d === 'A2' ? { State: 'Enabled', Health: 'Warning' } : ok }])),
+    [`${S}/Memory/DIMM.Socket.C1`]: { DeviceLocator: 'DIMM.Socket.C1', CapacityMiB: 0, Status: { State: 'Absent' } },
+    [`${S}/Storage`]: coll([`${S}/Storage/RAID.Integrated.1-1`]),
+    [`${S}/Storage/RAID.Integrated.1-1`]: {
+      Id: 'RAID.Integrated.1-1', Name: 'PERC H755',
+      StorageControllers: [{ Name: 'PERC H755 Front', Model: 'PERC H755 Front', FirmwareVersion: '52.16.1-4405', Status: ok }],
+      Drives: [link(`${S}/Storage/Drives/Disk.Bay.0`), link(`${S}/Storage/Drives/Disk.Bay.1`)],
+      Volumes: link(`${S}/Storage/RAID.Integrated.1-1/Volumes`),
+    },
+    [`${S}/Storage/Drives/Disk.Bay.0`]: { Name: 'SSD 0', Model: 'MZ7LH960HBJR0D3', SerialNumber: 'SSD0SER', MediaType: 'SSD', Protocol: 'SATA', CapacityBytes: 960197124096, PredictedMediaLifeLeftPercent: 97, FailurePredicted: false, PhysicalLocation: { PartLocation: { LocationOrdinalValue: 0 } }, Status: ok },
+    [`${S}/Storage/Drives/Disk.Bay.1`]: { Name: 'SSD 1', Model: 'MZ7LH960HBJR0D3', SerialNumber: 'SSD1SER', MediaType: 'SSD', Protocol: 'SATA', CapacityBytes: 960197124096, PredictedMediaLifeLeftPercent: 12, FailurePredicted: true, PhysicalLocation: { PartLocation: { LocationOrdinalValue: 1 } }, Status: { State: 'Enabled', Health: 'Warning' } },
+    [`${S}/Storage/RAID.Integrated.1-1/Volumes`]: coll([`${S}/Storage/Volumes/Disk.Virtual.0`]),
+    [`${S}/Storage/Volumes/Disk.Virtual.0`]: { Name: 'VD0', RAIDType: 'RAID1', CapacityBytes: 959656755200, Status: ok },
+    [`${S}/EthernetInterfaces`]: coll([`${S}/EthernetInterfaces/NIC.Slot.1-1-1`]),
+    [`${S}/EthernetInterfaces/NIC.Slot.1-1-1`]: { Id: 'NIC.Slot.1-1-1', MACAddress: 'B8:CE:F6:00:11:22', SpeedMbps: 25000, LinkStatus: 'LinkUp', Status: ok },
+    [`${S}/LogServices`]: coll([]),
+    '/redfish/v1/Chassis': coll(['/redfish/v1/Chassis/System.Embedded.1']),
     '/redfish/v1/Chassis/System.Embedded.1': opts.environmentMetricsOnly
-      ? { EnvironmentMetrics: { '@odata.id': '/redfish/v1/Chassis/System.Embedded.1/EnvironmentMetrics' } }
-      : { Power: { '@odata.id': '/redfish/v1/Chassis/System.Embedded.1/Power' } },
-    '/redfish/v1/Chassis/System.Embedded.1/Power': { PowerControl: [{ Name: 'System Power Control', PowerConsumedWatts: watts, PowerCapacityWatts: 1400 }] },
+      ? { EnvironmentMetrics: link('/redfish/v1/Chassis/System.Embedded.1/EnvironmentMetrics') }
+      : { Power: link('/redfish/v1/Chassis/System.Embedded.1/Power'), Thermal: link('/redfish/v1/Chassis/System.Embedded.1/Thermal') },
+    '/redfish/v1/Chassis/System.Embedded.1/Power': {
+      PowerControl: [{ Name: 'System Power Control', PowerConsumedWatts: watts, PowerCapacityWatts: 1400 }],
+      PowerSupplies: [
+        { Name: 'PS1 Status', Model: 'PWR SPLY,800W,RDNT,LTON', SerialNumber: 'PS1SER', PowerCapacityWatts: 800, PowerInputWatts: 190, LastPowerOutputWatts: 170, FirmwareVersion: '00.1D.7D', Status: ok },
+        { Name: 'PS2 Status', Model: 'PWR SPLY,800W,RDNT,LTON', SerialNumber: 'PS2SER', PowerCapacityWatts: 800, PowerInputWatts: 0, LastPowerOutputWatts: 0, FirmwareVersion: '00.1D.7D', Status: { State: 'Enabled', Health: 'Critical' } },
+      ],
+    },
+    '/redfish/v1/Chassis/System.Embedded.1/Thermal': {
+      Fans: [{ Name: 'System Board Fan1A', Reading: 7800, ReadingUnits: 'RPM', Status: ok }],
+      Temperatures: [{ Name: 'CPU1 Temp', ReadingCelsius: 54, UpperThresholdCritical: 98, Status: ok }, { Name: 'Inlet Temp', ReadingCelsius: 23, UpperThresholdCritical: 47, Status: ok }],
+    },
     '/redfish/v1/Chassis/System.Embedded.1/EnvironmentMetrics': { PowerWatts: { Reading: watts } },
+    '/redfish/v1/Managers': coll([M]),
+    [M]: { Model: '15G Monolithic', FirmwareVersion: '7.00.00.171', LogServices: link(`${M}/LogServices`) },
+    [`${M}/LogServices`]: coll([`${M}/LogServices/Sel`, `${M}/LogServices/Lclog`]),
+    [`${M}/LogServices/Sel`]: { Id: 'Sel', Entries: link(`${M}/LogServices/Sel/Entries`) },
+    [`${M}/LogServices/Lclog`]: { Id: 'Lclog', Entries: link(`${M}/LogServices/Lclog/Entries`) },
+    // Two pages, to check that paging is followed.
+    [`${M}/LogServices/Sel/Entries`]: { Members: sel.slice(0, 3), 'Members@odata.nextLink': `${M}/LogServices/Sel/Entries?$skip=3` },
+    [`${M}/LogServices/Sel/Entries?$skip=3`]: { Members: sel.slice(3) },
+    [`${M}/LogServices/Lclog/Entries`]: { Members: [{ Id: 'lc1', Message: 'Lifecycle noise', Severity: 'OK' }] },
   });
   const server = http.createServer((req, res) => {
     requests.push({ method: req.method!, url: req.url! });
@@ -41,7 +99,8 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
     };
     if (req.method !== 'GET') return send(405, { error: 'Method not allowed' });
     if (req.headers.authorization !== expected) return send(401, { error: 'Unauthorized' });
-    const doc = docs()[req.url!.split('?')[0]!];
+    const all = docs();
+    const doc = all[req.url!] ?? all[req.url!.split('?')[0]!];
     return doc === undefined ? send(404, { error: 'Not found' }) : send(200, doc);
   });
   await new Promise<void>((r) => server.listen(opts.port ?? 0, '127.0.0.1', r));

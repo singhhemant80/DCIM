@@ -27,6 +27,8 @@ import { SitesService } from './dcim/sites.service';
 import { RacksService } from './dcim/racks.service';
 import { ModelsService } from './dcim/models.service';
 import { DevicesService } from './dcim/devices.service';
+import { HardwareService } from './dcim/hardware.service';
+import { DeviceHardwareController } from './dcim/hardware.controller';
 import { SparesService } from './dcim/spares.service';
 import { DcimSummaryService } from './dcim/summary.service';
 import { DiscoveryController, DnsController, IpamController, NetworkController } from './network/network.controllers';
@@ -99,6 +101,7 @@ export class AppModule {
         RacksController,
         ModelsController,
         DevicesController,
+        DeviceHardwareController,
         SparesController,
         NetworkController,
         DiscoveryController,
@@ -141,6 +144,7 @@ export class AppModule {
         RacksService,
         ModelsService,
         DevicesService,
+        HardwareService,
         SparesService,
         DcimSummaryService,
         InterfacesService,

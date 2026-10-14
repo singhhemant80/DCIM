@@ -19,6 +19,7 @@ import { deliverDue } from './monitoring/notify';
 import { createLiveLoop } from './monitoring/live';
 import { sweepDuePrefix } from './monitoring/ping';
 import { checkDueDevices } from './monitoring/device-ping';
+import { fetchDueHardware } from './hardware/collect';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
@@ -146,6 +147,8 @@ async function main() {
     }),
     // Device reachability: ping each in-service device's management address once a minute.
     every('device-ping', 15_000, () => checkDueDevices({ db, logger })),
+    // Server hardware and event logs from the BMC (Redfish): on request, when first configured, then daily.
+    every('hardware', 10_000, () => fetchDueHardware({ db, secrets, logger })),
     every('events', 2_000, async () => {
       // Fan out, then run the workflows and webhooks that fan-out produced.
       while ((await dispatchEvents(automation)) === 200);

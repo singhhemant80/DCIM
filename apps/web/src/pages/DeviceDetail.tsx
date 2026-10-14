@@ -8,6 +8,7 @@ import { useAuth } from '../lib/auth';
 import { formatDateTime, relativeTime } from '../lib/format';
 import { daysUntil, STATE_TONE, useRacks, type DeviceT, type EventT } from '../lib/dcim';
 import { PowerControlPanel } from '../components/PowerControl';
+import { AccessoriesPanel, BmcHardwarePanel } from '../components/DeviceHardware';
 import { Button, Chip, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Textarea } from '../components/ui';
 import { DeviceForm } from './Hardware';
 import { formatWattsShort } from '@crapplet/shared';
@@ -204,7 +205,18 @@ function NoteForm({ deviceId, onClose }: { deviceId: string; onClose: () => void
   );
 }
 
-const EVENT_LABEL: Record<string, string> = { created: 'Added', updated: 'Edited', moved: 'Moved', lifecycle: 'State', maintenance: 'Maintenance', note: 'Note' };
+const EVENT_LABEL: Record<string, string> = {
+  created: 'Added',
+  updated: 'Edited',
+  moved: 'Moved',
+  lifecycle: 'State',
+  maintenance: 'Maintenance',
+  note: 'Note',
+  hardware_applied: 'From BMC',
+  accessory_added: 'Accessory',
+  accessory_changed: 'Accessory',
+  accessory_removed: 'Accessory',
+};
 
 export function DeviceDetailPage() {
   const { id = '' } = useParams();
@@ -356,6 +368,8 @@ export function DeviceDetailPage() {
               </>
             )}
           </Panel>
+          {(d.category === 'server' || d.category === 'gpu_server' || d.category === 'storage') && <BmcHardwarePanel deviceId={d.id} canWrite={canWrite} staff={staff} />}
+          <AccessoriesPanel deviceId={d.id} canWrite={canWrite} />
           {can('power.read') && d.lifecycleState !== 'retired' && <DevicePowerPanel id={d.id} />}
           {can('hardware.control') && d.category === 'server' && d.lifecycleState !== 'retired' && <PowerControlPanel deviceId={d.id} />}
           {staff && (

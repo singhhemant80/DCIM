@@ -1,4 +1,5 @@
 import type { CredentialKind, InterfaceKind } from '@crapplet/shared';
+import type { HardwareInventory } from '@crapplet/shared';
 
 /**
  * What a read-only collector returns. Every value here was read from the
@@ -140,6 +141,8 @@ export interface Adapter {
   counters?(t: AdapterTarget): Promise<CounterSnapshot>;
   /** Read-only power collection (Phase 5). */
   power?(t: AdapterTarget): Promise<PowerSnapshot>;
+  /** Read-only hardware inventory and event logs from a server's BMC. */
+  hardware?(t: AdapterTarget): Promise<HardwareInventory>;
 }
 
 /** The secret fields of each credential kind (everything else is stored in plain params). */

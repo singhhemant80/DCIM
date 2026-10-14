@@ -10,3 +10,4 @@ export * from './power';
 export * from './provisioning';
 export * from './colocation';
 export * from './automation';
+export * from './hardware';
