@@ -1,0 +1,16 @@
+301
+HTTP/2 200 
+server: nginx
+date: Wed, 14 Oct 2026 19:49:31 GMT
+content-type: text/html
+content-length: 780
+last-modified: Wed, 14 Oct 2026 19:47:04 GMT
+etag: "6acfdc38-30c"
+expires: Wed, 14 Oct 2026 19:49:30 GMT
+cache-control: no-cache
+strict-transport-security: max-age=31536000; includeSubDomains
+x-content-type-options: nosniff
+referrer-policy: strict-origin-when-cross-origin
+content-security-policy: default-src 'self'; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-hnBIHvN2ja2ATGakvKjFi1cr5cLb6hmu5myF3lOKNJI='; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+accept-ranges: bytes
+

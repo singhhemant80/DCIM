@@ -1,0 +1,72 @@
+
+### 1. Fresh install on Ubuntu 24.04 LTS (apt components: main)
+  (164 s, exit 0, log 01-install.log)
+PASS  fresh install
+PASS  installer enabled 'universe' on a minimal image
+PASS  services active under systemd
+PASS  backup and anchor timers enabled
+PASS  installed code owned by root (read-only to the service account)
+PASS  service account cannot write the release
+
+### 2. Install check and acceptance
+PASS  doctor: no failures (32 pass, 3 warn)
+PASS  acceptance read+write: 48 passed, 0 warning(s), 0 failed — 48 checks
+
+### 3. Backup and restore drill
+PASS  backup written: nexoradc-20261014-193401-drill.cdcim-backup (737280 bytes)
+PASS  backup content is encrypted
+PASS  damaged backup refused before anything changed
+PASS  restore completed in 9 s
+PASS  data back to the backup state (customers 1, row added after the backup is gone)
+PASS  audit chain and anchors verified after restore
+PASS  acceptance after restore: 43 passed, 0 warning(s), 0 failed — 43 checks
+
+### 4. Upgrade
+  (111 s, exit 0, log 08-upgrade.log)
+PASS  upgrade
+PASS  switched release 20261014-193145-local → 20261014-193420-local
+PASS  pre-upgrade backup taken
+PASS  acceptance after upgrade
+
+### 5. Upgrade that cannot start → automatic rollback
+  (167 s, exit 1, log 10-upgrade-broken.log)
+PASS  broken release detected and rolled back
+PASS  running release is still 20261014-193420-local
+PASS  service healthy after the automatic rollback
+
+### 6. Manual rollback
+PASS  rollback command
+PASS  back on 20261014-193145-local
+PASS  rollback restored the pre-upgrade database (the upgrade had added a migration)
+PASS  schema back to 20 migrations, the upgrade's table is gone
+PASS  acceptance after rollback
+
+### 7. Restart (reboot)
+PASS  service back after restart
+PASS  doctor after restart: no failures
+
+### 8. Upgrade from an install made by the previous installer (e248fa2)
+PASS  previous installer (e248fa2) installed
+  (127 s, exit 0, log 15-legacy-upgrade.log)
+PASS  upgrade from the previous layout
+PASS  converted to the release layout: 20261014-194315-local legacy-1792006994 
+PASS  data kept across the upgrade
+PASS  doctor after the legacy upgrade: no failures
+PASS  acceptance after the legacy upgrade: 48 passed, 0 warning(s), 0 failed — 48 checks
+
+### 9. Moving that install to HTTPS behind nginx (CDCIM_DOMAIN, self-signed certificate)
+  (112 s, exit 0, log 18-https-upgrade.log)
+PASS  upgrade with CDCIM_DOMAIN
+PASS  service moved to loopback with secure cookies
+PASS  http:// redirects to https://
+
+Results: 38 passed, 0 failed (details in /tmp/claude-0/-home-claude-dcim/e1e4b235-511e-580a-961e-2893b5900e57/scratchpad/final)
+
+(Step 9, continued. The harness stopped here because its curl went through the build
+machine's HTTP proxy; the remaining checks were run by hand against the same container
+and the harness was fixed to bypass the proxy.)
+PASS  http:// redirects to https:// (301)
+PASS  security headers on the app page (HSTS, CSP with font-src, nosniff): 19-https-headers.txt
+PASS  acceptance over HTTPS: 48 passed, 0 warning(s), 0 failed — 48 checks
+PASS  doctor over HTTPS: no failures (3 warnings)
+PASS  app loaded in Chromium through nginx: no CSP errors (only the expected 401 of the sign-in probe)

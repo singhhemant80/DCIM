@@ -108,4 +108,4 @@ template it fills in for `CDCIM_DOMAIN`, and `deploy/env.example` documents ever
 |---|---|
 | Install validation on a clean Ubuntu 24.04 system (docker and debootstrap; fresh install, backup/restore, upgrade, automatic and manual rollback, restart, upgrade from the previous installer) | `sudo scripts/test-install-container.sh [--legacy-ref REF] OUTDIR` |
 | Acceptance run against any install | `CDCIM_ACCEPT_EMAIL=… CDCIM_ACCEPT_PASSWORD=… node scripts/acceptance.mjs --url http://host:8080 [--write]` |
-| Poller load test (test database) | `cd apps/api && npx tsx test/load/poller-load.ts --devices 100 --ports 48 --interval 60 --duration 180` |
+| Poller load test (test database) | `cd apps/api && LOAD_DEVICES=100 LOAD_PORTS=48 LOAD_INTERVAL=60 LOAD_DURATION=300 npx vitest run -c vitest.load.config.ts` |

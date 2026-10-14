@@ -4,7 +4,7 @@
 
 **NexoraDC by Crapplet Cloud** — data center infrastructure management for Crapplet Infotech Private Limited: physical inventory, racks, network and IPAM, real-time port bandwidth, equipment power (no physical meters needed), server provisioning, colocation, a customer portal and WHMCS billing integration.
 
-**Current state: Phases 1–5 complete.** Sign-in with two-step verification, roles and permissions, customer tenants, a tamper-evident audit log and system settings; physical DCIM (datacenters, rooms, floor plans, racks with database-enforced placement, hardware inventory with lifecycle, CSV, QR labels, spare parts); and network infrastructure and IPAM: ports and logical interfaces, cabling, VLANs, VRFs, circuits, a topology drawn only from verified sources, IPv4/IPv6 prefixes with concurrency-safe allocation, read-only discovery over SNMP, RouterOS REST and API, FortiOS REST and NX-API through a separate worker process (on demand or on a schedule), recording discovered addresses in IPAM, and publishing IPAM names to PowerDNS or Cloudflare; and real-time network monitoring: per-port traffic polled from the same read-only access methods, live updates, history with 95th percentile, totals, alert rules with maintenance windows and email/webhook/Slack/Telegram notifications; and equipment power: measured readings from Redfish and IPMI BMCs, metered PDU outlets and switch supplies, labelled estimates where nothing is measured, hourly energy, tariffs and cost by rack, datacenter and customer. Device adapters are tested against simulators, not yet on real hardware. Sections not built yet are marked as planned in the UI. See the [feature matrix](docs/feature-matrix.md).
+**Current state: all nine roadmap phases complete.** Physical DCIM, network infrastructure and IPAM, real-time network monitoring and alerts, equipment power and energy, BMC hardware inventory, provisioning and remote consoles, colocation and the customer portal, billing (WHMCS) and automation, and production readiness: a validated installer with upgrades, automatic rollback, encrypted backups, an install check and optional HTTPS. Device adapters are tested against simulators; only some have been confirmed on real hardware. The installer was validated on a clean Ubuntu 24.04 system booted in a container, not yet on a hardware VM ([acceptance report](docs/acceptance-report.md)). See the [feature matrix](docs/feature-matrix.md).
 
 ## Install
 
@@ -30,6 +30,9 @@ Then open http://localhost:8080 and sign in with the administrator email and the
 |---|---|
 | Stack | React 19, Vite, Tailwind 4, NestJS 11, PostgreSQL 16, Redis 7, TypeScript throughout |
 | Run it | [docs/development.md](docs/development.md) |
+| Operate it (install, backups, upgrades, troubleshooting) | [docs/operations.md](docs/operations.md) |
+| Use it | [Administrator guide](docs/admin-guide.md) · [Customer portal guide](docs/customer-guide.md) |
+| Acceptance | [docs/acceptance-report.md](docs/acceptance-report.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
 | Database | [docs/database.md](docs/database.md) |
 | API | [docs/api.md](docs/api.md) (OpenAPI at `/api/docs`) |

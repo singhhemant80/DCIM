@@ -45,7 +45,7 @@ db_pass() { local u; u="$(env_get DATABASE_URL)"; u="${u#*://*:}"; printf '%s' "
 as_app() { # run application code as the service account with the configuration loaded
   runuser -u "$RUN_USER" -- bash -c "set -a; . '$ENV_FILE'; set +a; cd '$APP_DIR/apps/api' && $1"
 }
-pg() { runuser -u postgres -- "$@"; }
+pg() { runuser -u postgres -- env PGOPTIONS='-c client_min_messages=warning' "$@"; }
 
 svc() { # svc start|stop|restart
   if has_systemd; then systemctl "$1" "$SERVICE" "$SERVICE-worker"; else "$PREFIX/bin/nosystemd" "$1"; fi

@@ -1,0 +1,39 @@
+{
+  "devices": 100,
+  "portsPerDevice": 48,
+  "ports": 4800,
+  "intervalSeconds": 60,
+  "durationSeconds": 300,
+  "concurrency": 16,
+  "pollsDone": 498,
+  "pollsOk": 498,
+  "pollsExpected": 500,
+  "completion": 0.996,
+  "pollsPerSecond": 1.66,
+  "portSamplesPerSecond": 80,
+  "pollDurationMs": {
+    "p50": 316,
+    "p95": 659,
+    "max": 813
+  },
+  "scheduleLagSeconds": {
+    "p50": 0,
+    "max": 1.9
+  },
+  "devicesFailingAtEnd": 0,
+  "rateRowsWritten": 19104,
+  "rollup": {
+    "ms": 398,
+    "fiveMinute": 9600,
+    "hourly": 4800
+  },
+  "apiPortListMs": {
+    "p50": 34,
+    "p95": 64,
+    "max": 81
+  },
+  "processCpuPercent": 13.7,
+  "rssMaxMb": 417,
+  "node": "v22.22.0",
+  "cpus": 2
+}
