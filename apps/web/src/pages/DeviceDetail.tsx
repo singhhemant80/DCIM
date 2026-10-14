@@ -1,7 +1,7 @@
 import { checkText, DOT, MGMT_LABEL, SERVER_LABEL } from '../lib/reachability';
 import { useState, type ReactNode } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { CATEGORY_LABELS, LIFECYCLE_LABELS, RACKED_STATES, type LifecycleState, type RackFace } from '@crapplet/shared';
 import { api, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -472,29 +472,97 @@ export function DeviceDetailPage() {
 }
 
 /** Print-ready asset label with QR code (fits common 62 mm label printers and A4 sheets). */
+type LabelT = { id: string; assetTag: string; hostname: string | null; serial: string | null; model: string; url: string; qrSvg: string; location: string | null };
+
+/** One asset label, 62 mm wide (common label printers), black on white. */
+function AssetLabel({ l }: { l: LabelT }) {
+  return (
+    <div className="asset-label flex w-[62mm] gap-[3mm] rounded-md border border-black bg-white p-[3mm] text-black" style={{ fontFamily: 'var(--font-sans)' }}>
+      <div className="size-[22mm] shrink-0 [&_svg]:size-full" dangerouslySetInnerHTML={{ __html: l.qrSvg }} />
+      <div className="min-w-0 leading-tight">
+        <p className="text-[9pt] font-bold">{l.assetTag}</p>
+        {l.hostname && <p className="truncate text-[7.5pt]">{l.hostname}</p>}
+        <p className="truncate text-[6.5pt]">{l.model}</p>
+        {l.serial && <p className="truncate font-mono text-[6.5pt]">S/N {l.serial}</p>}
+        <p className="mt-[1mm] text-[6pt]">Crapplet Infotech</p>
+      </div>
+    </div>
+  );
+}
+
+const PRINT_ONLY_LABELS = `@media print { @page { margin: 8mm; } body * { visibility: hidden; } #labels, #labels * { visibility: visible; } #labels { position: absolute; left: 0; top: 0; } .asset-label { break-inside: avoid; box-shadow: none !important; } }`;
+
 export function DeviceLabelPage() {
   const { id = '' } = useParams();
-  const q = useQuery({ queryKey: ['dcim', 'label', id], queryFn: () => api.get<{ assetTag: string; hostname: string | null; serial: string | null; model: string; url: string; qrSvg: string; location: DeviceT['location'] }>(`/dcim/devices/${id}/label`) });
+  const q = useQuery({ queryKey: ['dcim', 'label', id], queryFn: () => api.get<Omit<LabelT, 'location'>>(`/dcim/devices/${id}/label`) });
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorNote error={q.error} />;
   const l = q.data!;
   return (
     <>
-      <style>{`@media print { body * { visibility: hidden; } #label, #label * { visibility: visible; } #label { position: absolute; left: 0; top: 0; box-shadow: none !important; } }`}</style>
+      <style>{PRINT_ONLY_LABELS}</style>
       <PageHeader title="Asset label" description="Scanning the code opens this device in NexoraDC." actions={<Button variant="primary" onClick={() => window.print()}>Print</Button>} />
-      <div id="label" className="flex w-[62mm] gap-[3mm] rounded-md border border-black bg-white p-[3mm] text-black shadow-lg" style={{ fontFamily: 'var(--font-sans)' }}>
-        <div className="size-[22mm] shrink-0 [&_svg]:size-full" dangerouslySetInnerHTML={{ __html: l.qrSvg }} />
-        <div className="min-w-0 leading-tight">
-          <p className="text-[9pt] font-bold">{l.assetTag}</p>
-          {l.hostname && <p className="truncate text-[7.5pt]">{l.hostname}</p>}
-          <p className="truncate text-[6.5pt]">{l.model}</p>
-          {l.serial && <p className="truncate font-mono text-[6.5pt]">S/N {l.serial}</p>}
-          <p className="mt-[1mm] text-[6pt]">Crapplet Infotech</p>
-        </div>
+      <div id="labels" className="w-fit shadow-lg">
+        <AssetLabel l={{ ...l, location: null }} />
       </div>
       <p className="mt-3 text-[12.5px] text-ink-3">
         Link: <span className="font-mono">{l.url}</span>
       </p>
+    </>
+  );
+}
+
+/** Labels for several devices at once (?ids=a,b,c): one per printed label, or a grid on A4 sheets. */
+export function DeviceLabelsPage() {
+  const [params] = useSearchParams();
+  const ids = [...new Set((params.get('ids') ?? '').split(',').filter((x) => /^[0-9a-f-]{36}$/i.test(x)))].slice(0, 200);
+  const [layout, setLayout] = useState<'sheet' | 'roll'>('sheet');
+  const q = useQuery({
+    queryKey: ['dcim', 'labels', ids],
+    queryFn: async () => {
+      const out: LabelT[] = [];
+      // A few at a time keeps a 200-label run from flooding the API.
+      for (let i = 0; i < ids.length; i += 8) {
+        const part = await Promise.all(ids.slice(i, i + 8).map((id) => api.get<Omit<LabelT, 'location'>>(`/dcim/devices/${id}/label`).then((l) => ({ ...l, id, location: null }))));
+        out.push(...part);
+      }
+      return out;
+    },
+    enabled: ids.length > 0,
+  });
+  return (
+    <>
+      <style>{PRINT_ONLY_LABELS + (layout === 'roll' ? ' @media print { @page { size: 62mm 29mm; margin: 0; } .asset-label { break-after: page; border: none !important; } #labels { gap: 0 !important; } }' : '')}</style>
+      <p className="mb-2 text-[13px]">
+        <Link to="/hardware" className="text-accent hover:underline">
+          Servers and hardware
+        </Link>
+      </p>
+      <PageHeader
+        title={`Asset labels (${ids.length})`}
+        description="Scanning a code opens that device in NexoraDC."
+        actions={
+          <>
+            <Select aria-label="Layout" className="w-56" value={layout} onChange={(e) => setLayout(e.target.value as 'sheet' | 'roll')}>
+              <option value="sheet">A4 sheet (grid)</option>
+              <option value="roll">Label printer (one per label)</option>
+            </Select>
+            <Button variant="primary" disabled={!q.data?.length} onClick={() => window.print()}>
+              Print {q.data?.length ?? ''} labels
+            </Button>
+          </>
+        }
+      />
+      {!ids.length && <ErrorNote error={new Error('Select devices in Servers & Hardware, then choose Print labels.')} />}
+      {q.isLoading && <Loading />}
+      <ErrorNote error={q.error} />
+      {q.data && (
+        <div id="labels" className={layout === 'sheet' ? 'grid w-fit grid-cols-1 gap-[4mm] sm:grid-cols-2 lg:grid-cols-3 print:grid-cols-3' : 'flex w-fit flex-col gap-[4mm]'}>
+          {q.data.map((l) => (
+            <AssetLabel key={l.id} l={l} />
+          ))}
+        </div>
+      )}
     </>
   );
 }

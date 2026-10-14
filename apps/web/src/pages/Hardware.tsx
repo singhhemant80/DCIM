@@ -623,6 +623,11 @@ function DevicesTab() {
             Edit {selected.size} selected
           </Button>
         )}
+        {selected.size > 0 && (
+          <Button onClick={() => navigate(`/hardware/labels?ids=${[...selected].join(',')}`)}>
+            Print {selected.size} label{selected.size === 1 ? '' : 's'}
+          </Button>
+        )}
       </div>
       <Panel flush>
         <form
