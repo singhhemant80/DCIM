@@ -43,6 +43,7 @@ export function DeviceForm({ device, onClose }: { device?: DeviceT; onClose: (sa
     raid: s(device?.raid),
     mgmtType: s(device?.mgmtType),
     mgmtAddress: s(device?.mgmtAddress),
+    serverAddress: s(device?.serverAddress),
     biosVersion: s(device?.biosVersion),
     bmcFirmware: s(device?.bmcFirmware),
     os: s(device?.os),
@@ -78,6 +79,7 @@ export function DeviceForm({ device, onClose }: { device?: DeviceT; onClose: (sa
         nics: nics.filter((x) => x.name).map((x) => ({ name: x.name, mac: t(x.mac), speed: t(x.speed) })),
         mgmtType: t(f.mgmtType),
         mgmtAddress: t(f.mgmtAddress),
+        serverAddress: t(f.serverAddress),
         biosVersion: t(f.biosVersion),
         bmcFirmware: t(f.bmcFirmware),
         os: t(f.os),
@@ -231,7 +233,8 @@ export function DeviceForm({ device, onClose }: { device?: DeviceT; onClose: (sa
               </Select>
             )}
           </Field>
-          <Field label="Management address">{(id) => <Input id={id} value={f.mgmtAddress} onChange={set('mgmtAddress')} className="font-mono" placeholder="10.0.0.21" />}</Field>
+          <Field label="Management address" hint="BMC / iDRAC / iLO address">{(id, d) => <Input id={id} aria-describedby={d} value={f.mgmtAddress} onChange={set('mgmtAddress')} className="font-mono" placeholder="10.0.0.21" />}</Field>
+          <Field label="Server address" hint="The server's own IP or host name (OS), pinged for reachability. Empty: the host name, if it is a full name">{(id, d) => <Input id={id} aria-describedby={d} value={f.serverAddress} onChange={set('serverAddress')} className="font-mono" placeholder="203.0.113.10" />}</Field>
           <Field label="BMC firmware">{(id) => <Input id={id} value={f.bmcFirmware} onChange={set('bmcFirmware')} />}</Field>
         </div>
         <p className="mt-2 text-[12.5px] text-ink-3">Management passwords are not stored here; they go into the encrypted credential store with the remote-management integration (Phase 6).</p>

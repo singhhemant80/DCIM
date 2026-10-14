@@ -113,6 +113,13 @@
       "when": 1791977697545,
       "tag": "0015_device_reachability",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1791978591807,
+      "tag": "0016_server_reachability",
+      "breakpoints": true
     }
   ]
 }

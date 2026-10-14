@@ -23,8 +23,10 @@ import {
   buildings,
   customers,
   datacenters,
+  deviceCredentials,
   deviceEvents,
   deviceModels,
+  deviceReachability,
   devices,
   lifecycleTransitions,
   manufacturers,
@@ -34,6 +36,7 @@ import {
   type Device,
 } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
+import { deviceReachabilityView, type ReachabilityKind } from './reachability';
 import { rethrowDbError } from '../common/pg-errors';
 import { tenantFilter } from '../tenancy/tenant-scope';
 import type { Principal, RequestMeta } from '../auth/principal';
@@ -154,7 +157,14 @@ export class DevicesService {
   async get(p: Principal, id: string) {
     const [row] = await this.baseQuery(and(eq(devices.id, id), tenantFilter(p, scopeCols)));
     if (!row) throw NOT_FOUND();
-    return this.view(p, row);
+    const d = row.device;
+    const [reach, creds] = await Promise.all([
+      this.db.select().from(deviceReachability).where(and(eq(deviceReachability.deviceId, id), eq(deviceReachability.orgId, p.orgId))),
+      this.db.select({ n: count() }).from(deviceCredentials).where(and(eq(deviceCredentials.deviceId, id), sql`nullif(trim(${deviceCredentials.host}), '') is not null`)),
+    ]);
+    const rows = Object.fromEntries(reach.map((r) => [r.kind, r])) as Partial<Record<ReachabilityKind, (typeof reach)[number]>>;
+    const has = { mgmt: !!d.mgmtAddress?.trim() || (creds[0]?.n ?? 0) > 0, server: !!d.serverAddress?.trim() || !!d.hostname?.trim().includes('.') };
+    return { ...this.view(p, row), reachability: deviceReachabilityView(d.lifecycleState, has, rows, p.userType === 'staff') };
   }
 
   private async row(p: Principal, id: string, tx: DbOrTx = this.db, lock = false): Promise<Device> {
@@ -198,6 +208,7 @@ export class DevicesService {
       ...base,
       mgmtType: d.mgmtType,
       mgmtAddress: d.mgmtAddress,
+      serverAddress: d.serverAddress,
       biosVersion: d.biosVersion,
       bmcFirmware: d.bmcFirmware,
       purchaseDate: d.purchaseDate,
@@ -683,6 +694,7 @@ export class DevicesService {
       nics: i.nics,
       mgmtType: i.mgmtType ?? null,
       mgmtAddress: i.mgmtAddress ?? null,
+      serverAddress: i.serverAddress ?? null,
       biosVersion: i.biosVersion ?? null,
       bmcFirmware: i.bmcFirmware ?? null,
       os: i.os ?? null,

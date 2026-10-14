@@ -1,3 +1,4 @@
+import { checkText, DOT, MGMT_LABEL, SERVER_LABEL } from '../lib/reachability';
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
@@ -292,11 +293,30 @@ export function DeviceDetailPage() {
                   ),
                 ],
                 ['Customer', d.customerName],
+                ...(d.reachability
+                  ? ([
+                      [
+                        'Reachability',
+                        <span className="flex flex-col gap-0.5">
+                          {([['mgmt', MGMT_LABEL], ['server', SERVER_LABEL]] as const).map(([k, label]) => (
+                            <span key={k} className="flex items-start gap-1.5 text-[13px]">
+                              <span className={`mt-1.5 size-2 shrink-0 rounded-full ${DOT[d.reachability![k].state]}`} />
+                              <span>
+                                <span className="font-medium">{label}</span>
+                                {d.reachability![k].target ? <span className="font-mono text-ink-3"> {d.reachability![k].target}</span> : null}: {checkText(d.reachability![k])}
+                              </span>
+                            </span>
+                          ))}
+                        </span>,
+                      ],
+                    ] as [string, ReactNode][])
+                  : []),
                 ['Serial number', d.serial && <span className="font-mono">{d.serial}</span>],
                 ['Operating system', d.os],
                 ...(staff
                   ? ([
                       ['Management', d.mgmtAddress ? <span className="font-mono">{`${d.mgmtType?.toUpperCase() ?? ''} ${d.mgmtAddress}`.trim()}</span> : null],
+                      ['Server address', d.serverAddress ? <span className="font-mono">{d.serverAddress}</span> : null],
                       ['Firmware', [d.biosVersion && `BIOS ${d.biosVersion}`, d.bmcFirmware && `BMC ${d.bmcFirmware}`].filter(Boolean).join(', ')],
                     ] as [string, ReactNode][])
                   : []),

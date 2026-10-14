@@ -64,6 +64,23 @@ export interface RackT {
   deviceCount: number;
 }
 
+/** One ping check; "unknown" (with the reason) whenever there is no recent result. */
+export interface ReachCheckT {
+  state: 'up' | 'down' | 'unknown';
+  reason: string | null;
+  target?: string | null;
+  rttMs: number | null;
+  checkedAt: string | null;
+  lastSeenAt: string | null;
+  changedAt: string | null;
+}
+/** Management (BMC / iDRAC) and server (OS) address checks, and both together. */
+export interface DeviceReachabilityT {
+  state: 'up' | 'down' | 'partial' | 'unknown';
+  mgmt: ReachCheckT;
+  server: ReachCheckT;
+}
+
 export interface ElevationDevice {
   id: string;
   assetTag: string;
@@ -79,15 +96,7 @@ export interface ElevationDevice {
   customerName: string | null;
   modelName: string;
   manufacturerName: string;
-  /** Ping of the management address; "unknown" (with the reason) whenever there is no recent result. */
-  reachability: {
-    state: 'up' | 'down' | 'unknown';
-    reason: string | null;
-    rttMs: number | null;
-    checkedAt: string | null;
-    lastSeenAt: string | null;
-    changedAt: string | null;
-  };
+  reachability: DeviceReachabilityT;
 }
 export interface ReservationT {
   id: string;
@@ -154,6 +163,8 @@ export interface DeviceT {
   warrantyExpires: string | null;
   mgmtType?: string | null;
   mgmtAddress?: string | null;
+  serverAddress?: string | null;
+  reachability?: DeviceReachabilityT;
   biosVersion?: string | null;
   bmcFirmware?: string | null;
   purchaseDate?: string | null;

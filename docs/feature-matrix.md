@@ -12,7 +12,7 @@ Last updated: Phase 8, 10 October 2026.
 | 2 | Datacenters | **Done** | 2 | Create, edit, delete (only when empty), counts per site |
 | 3 | Buildings and Rooms | **Done** | 2 | Buildings, rooms (floor size), rows; deletes refused while in use |
 | 4 | Floor Plans | **Done** | 2 | Tile grid per room; drag or click to position racks; fill colour by occupancy |
-| 5 | Racks and Rack Elevation | **Done** | 2 | Front/rear elevation, drag-and-drop placement, reservations, dedicated racks, rack relocation, history. Elevation can be coloured by reachability: green when the device's management address answers ping, red when it doesn't, grey when not checked (not in service, no address, check error or no recent result) |
+| 5 | Racks and Rack Elevation | **Done** | 2 | Front/rear elevation, drag-and-drop placement, reservations, dedicated racks, rack relocation, history. Elevation can be coloured by reachability from two ping checks per device, the management (BMC/iDRAC) address and the server's own address (or its full host name): green when every check answers, amber when only one does, red when none does, grey when not checked (not in service, no address, check error or no recent result). Both checks are shown on the device page |
 | 6 | Servers and Hardware Inventory | **Done** | 2 | Devices with full spec, lifecycle with configurable rules, history, CSV import/export, bulk edit, QR labels, models, spare parts. Attachments (S3) pending, see below |
 | 7 | Network Infrastructure | **Done** | 3 | Network devices, physical and logical interfaces (LAG, VLAN, bridge, tunnel, loopback), cables, VLANs, VRFs, providers and circuits with history, topology, write-only access credentials, read-only discovery with preview and apply. Staff only. Live traffic is Phase 4 |
 | 8 | Network Monitoring | **Done** | 4 | Live per-port RX/TX, utilization, errors/discards and link state measured from counters (SNMP, RouterOS REST/API, FortiOS, NX-API); SSE live updates; live view while a port chart is open (the device is read once a second and the rates streamed, not stored); recorded polling every 10 s to 1 h; history charts (1 h–30 d) with 95th percentile; totals over uplink ports with LAG de-duplication; live rates on the device page; customers see their own ports and the ports cabled to them. Simulator-tested only |
@@ -71,7 +71,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Placement validated in the database: no overlap per face (GiST exclusion), height and depth fit (triggers, row-locked) | Done | `dcim.e2e`, `dcim-regressions.e2e` (incl. concurrent placement and shrink races) |
 | Full-depth vs half-depth mounting, multi-unit and 0U equipment | Done | `dcim.e2e`, `dcim-regressions.e2e` |
 | Front and rear elevation with drag-and-drop placement | Done | browser drag test during verification |
-| Elevation reachability colours (ping of management address, every minute, in-service devices) | Done | `device-reachability.e2e` |
+| Elevation reachability colours (BMC and server address pings, every minute, in-service devices) | Done | `device-reachability.e2e` |
 | Rack reservations (customer or internal, expiry) and dedicated racks | Done | `dcim.e2e`, `dcim-regressions.e2e` |
 | Rack relocation, device movement history, rack history | Done | `dcim.e2e` |
 | Equipment ownership (company vs customer-owned) | Done | `dcim.e2e` |

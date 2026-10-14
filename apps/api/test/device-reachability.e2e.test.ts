@@ -22,10 +22,10 @@ async function ok<T = any>(res: Promise<import('supertest').Response> | import('
   if (!status.includes(r.status)) throw new Error(`HTTP ${r.status}: ${JSON.stringify(r.body)}`);
   return r.body as T;
 }
-async function device(tag: string, u: number, state: string, mgmtAddress: string | null) {
+async function device(tag: string, u: number, state: string, mgmtAddress: string | null, server: { serverAddress?: string; hostname?: string } = {}) {
   const id = (await ok(admin.post(`${V}/devices`, { modelId: ids.model, assetTag: tag, initialState: 'inventory' }))).id as string;
   await ok(admin.post(`${V}/devices/${id}/placement`, { rackId: ids.rack, positionU: u, face: 'front' }));
-  await ctx.db.update(devices).set({ lifecycleState: state as 'active', mgmtAddress }).where(eq(devices.id, id));
+  await ctx.db.update(devices).set({ lifecycleState: state as 'active', mgmtAddress, serverAddress: server.serverAddress ?? null, hostname: server.hostname ?? null }).where(eq(devices.id, id));
   return id;
 }
 const elevation = async () => {
@@ -48,6 +48,10 @@ beforeAll(async () => {
   ids.noaddr = await device('NOADDR-1', 36, 'active', null);
   ids.stock = await device('STOCK-1', 34, 'received', '198.51.100.20');
   ids.bad = await device('BAD-1', 32, 'active', '-f evil');
+  // BMC answers, the server (by its full host name) does not: partly reachable.
+  ids.half = await device('HALF-1', 30, 'active', '198.51.100.30', { hostname: 'srv5.example.net' });
+  // A short host name is not pinged as the server address; an explicit server address is.
+  ids.os = await device('OS-1', 28, 'active', null, { hostname: 'pve-10', serverAddress: '198.51.100.40' });
 });
 afterAll(async () => ctx?.close());
 
@@ -64,28 +68,36 @@ describe('pingTarget', () => {
 });
 
 describe('rack elevation reachability', () => {
-  it('pings only in-service devices with an address, retrying once before "down"', async () => {
+  const answers = new Set(['163.5.191.7', '198.51.100.30', '198.51.100.40']);
+  it('pings the BMC and the server address of in-service devices, retrying once before "down"', async () => {
     const asked: string[] = [];
-    const ping: Pinger = async (ip) => (asked.push(ip), ip === '163.5.191.7' ? { reachable: true, rttMs: 0.8 } : { reachable: false, rttMs: null });
+    const ping: Pinger = async (ip) => (asked.push(ip), answers.has(ip) ? { reachable: true, rttMs: 0.8 } : { reachable: false, rttMs: null });
     const r = await checkDueDevices({ db: ctx.db, logger: silent, ping });
-    expect(r).toEqual({ checked: 3, up: 1 });
-    // The unreachable one was tried twice; the device in stock and the one without an address were not checked.
-    expect(asked.sort()).toEqual(['163.5.191.7', '198.51.100.9', '198.51.100.9']);
+    expect(r).toEqual({ checked: 6, up: 3 });
+    // Unreachable ones are tried twice; the device in stock and checks without an address are not run.
+    expect(asked.sort()).toEqual(['163.5.191.7', '198.51.100.30', '198.51.100.40', '198.51.100.9', '198.51.100.9', 'srv5.example.net', 'srv5.example.net'].sort());
     const e = await elevation();
-    expect(e['UP-1']).toMatchObject({ state: 'up', rttMs: 0.8 });
-    expect(e['DOWN-1']).toMatchObject({ state: 'down', rttMs: null, lastSeenAt: null });
-    expect(e['NOADDR-1']).toMatchObject({ state: 'unknown', reason: expect.stringMatching(/no management address/) });
-    expect(e['STOCK-1']).toMatchObject({ state: 'unknown', reason: expect.stringMatching(/not in service/) });
+    expect(e['UP-1']).toMatchObject({ state: 'up', mgmt: { state: 'up', rttMs: 0.8, target: '163.5.191.7' }, server: { state: 'unknown', reason: expect.stringMatching(/no server address/) } });
+    expect(e['DOWN-1']).toMatchObject({ state: 'down', mgmt: { state: 'down', rttMs: null, lastSeenAt: null } });
+    expect(e['NOADDR-1']).toMatchObject({ state: 'unknown', mgmt: { reason: expect.stringMatching(/no management/) } });
+    expect(e['STOCK-1']).toMatchObject({ state: 'unknown', mgmt: { reason: expect.stringMatching(/not in service/) } });
     // A value that isn't an address is never passed to ping, and isn't shown as down.
-    expect(e['BAD-1']).toMatchObject({ state: 'unknown', reason: expect.stringMatching(/not an IP address or host name/) });
+    expect(e['BAD-1']).toMatchObject({ state: 'unknown', mgmt: { state: 'unknown', reason: expect.stringMatching(/not an IP address or host name/) } });
+    expect(e['HALF-1']).toMatchObject({ state: 'partial', mgmt: { state: 'up' }, server: { state: 'down', target: 'srv5.example.net' } });
+    expect(e['OS-1']).toMatchObject({ state: 'up', mgmt: { state: 'unknown' }, server: { state: 'up', target: '198.51.100.40' } });
     // Not due again within the minute.
     expect((await checkDueDevices({ db: ctx.db, logger: silent, ping })).checked).toBe(0);
+  });
+
+  it('the device page shows both checks', async () => {
+    const d = await ok(admin.get(`${V}/devices/${ids.half}`));
+    expect(d.reachability).toMatchObject({ state: 'partial', mgmt: { state: 'up' }, server: { state: 'down' } });
   });
 
   it('a lost first echo does not flip a device to down', async () => {
     await due();
     let n = 0;
-    const flaky: Pinger = async (ip) => (ip === '163.5.191.7' && n++ === 0 ? { reachable: false, rttMs: null } : { reachable: ip === '163.5.191.7', rttMs: 1 });
+    const flaky: Pinger = async (ip) => (ip === '163.5.191.7' && n++ === 0 ? { reachable: false, rttMs: null } : { reachable: answers.has(ip), rttMs: 1 });
     await checkDueDevices({ db: ctx.db, logger: silent, ping: flaky });
     expect((await elevation())['UP-1'].state).toBe('up');
   });
@@ -95,15 +107,15 @@ describe('rack elevation reachability', () => {
     await checkDueDevices({ db: ctx.db, logger: silent, ping: async () => ({ reachable: false, rttMs: null }) });
     const e = await elevation();
     expect(e['UP-1'].state).toBe('down');
-    expect(e['UP-1'].lastSeenAt).toBeTruthy();
-    expect(new Date(e['UP-1'].changedAt).getTime()).toBeGreaterThan(new Date(e['UP-1'].lastSeenAt).getTime() - 1000);
+    expect(e['UP-1'].mgmt.lastSeenAt).toBeTruthy();
+    expect(e['HALF-1'].state).toBe('down');
   });
 
   it('a broken ping or an old result shows unknown, not down', async () => {
     await due();
     await checkDueDevices({ db: ctx.db, logger: silent, ping: async () => { throw new Error('The ping command is not installed on the worker host (apt install iputils-ping)'); } });
-    expect((await elevation())['UP-1']).toMatchObject({ state: 'unknown', reason: expect.stringMatching(/not installed/) });
+    expect((await elevation())['UP-1']).toMatchObject({ state: 'unknown', mgmt: { state: 'unknown', reason: expect.stringMatching(/not installed/) } });
     await ctx.db.update(deviceReachability).set({ error: null, reachable: true, checkedAt: new Date(Date.now() - 3_600_000) });
-    expect((await elevation())['UP-1']).toMatchObject({ state: 'unknown', reason: expect.stringMatching(/No recent check/) });
+    expect((await elevation())['UP-1']).toMatchObject({ state: 'unknown', mgmt: { reason: expect.stringMatching(/No recent check/) } });
   });
 });

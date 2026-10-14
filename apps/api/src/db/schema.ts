@@ -503,6 +503,8 @@ export const devices = pgTable(
     nics: jsonb('nics').$type<DeviceNic[]>().notNull().default(sql`'[]'::jsonb`),
     mgmtType: mgmtTypeEnum('mgmt_type'),
     mgmtAddress: text('mgmt_address'),
+    /** The server's own (OS) IP or host name, pinged for reachability alongside the BMC. */
+    serverAddress: text('server_address'),
     biosVersion: text('bios_version'),
     bmcFirmware: text('bmc_firmware'),
     os: text('os'),
@@ -964,8 +966,10 @@ export const deviceReachability = pgTable(
   'device_reachability',
   {
     deviceId: uuid('device_id')
-      .primaryKey()
+      .notNull()
       .references(() => devices.id, { onDelete: 'cascade' }),
+    /** 'mgmt' = the BMC / management address, 'server' = the server's own (OS) address. */
+    kind: text('kind').notNull().default('mgmt'),
     orgId: orgRef(),
     target: text('target').notNull(),
     reachable: boolean('reachable').notNull(),
@@ -975,7 +979,7 @@ export const deviceReachability = pgTable(
     checkedAt: ts('checked_at').notNull(),
     error: text('error'),
   },
-  (t) => [index('device_reachability_org_idx').on(t.orgId)],
+  (t) => [primaryKey({ columns: [t.deviceId, t.kind] }), index('device_reachability_org_idx').on(t.orgId), check('device_reachability_kind_ck', sql`${t.kind} in ('mgmt', 'server')`)],
 );
 
 export const ipEvents = pgTable(

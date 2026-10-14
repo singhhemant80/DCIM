@@ -34,28 +34,36 @@ export function pingTarget(raw: string | null | undefined): string | null {
 }
 
 /**
- * Pings the management address of every in-service device that is due
- * (checked longer than a minute ago). The address is the device's
- * management address, or else the host of its first stored credential. A
- * failed echo is retried once before the device counts as unreachable, so a
+ * Two checks per in-service device, each once a minute:
+ * - `mgmt`: the management (BMC / iDRAC) address, or else the host of the
+ *   device's first stored credential;
+ * - `server`: the server's own address, or else its host name when that is a
+ *   fully qualified name (contains a dot).
+ * A failed echo is retried once before the check counts as unreachable, so a
  * single lost packet doesn't flip it to red. ICMP echo only; nothing else is
  * sent to the device.
  */
 export async function checkDueDevices(deps: { db: Db; logger: Pick<Logger, 'warn'>; ping?: Pinger; limit?: number; concurrency?: number }): Promise<{ checked: number; up: number }> {
   const { db } = deps;
   const ping = deps.ping ?? systemPing;
-  const due = await db.execute<{ id: string; org_id: string; address: string | null }>(sql`
-    select d.id, d.org_id,
-           coalesce(nullif(trim(d.mgmt_address), ''),
-                    (select c.host from device_credentials c
-                      where c.device_id = d.id and nullif(trim(c.host), '') is not null
-                      order by c.created_at limit 1)) as address
-      from devices d
-      left join device_reachability r on r.device_id = d.id
-     where d.lifecycle_state in (${sql.join(CHECKED_STATES.map((s) => sql`${s}`), sql`, `)})
+  const states = sql.join(CHECKED_STATES.map((s) => sql`${s}`), sql`, `);
+  const due = await db.execute<{ id: string; org_id: string; kind: 'mgmt' | 'server'; address: string }>(sql`
+    with t as (
+      select d.id, d.org_id, 'mgmt' as kind,
+             coalesce(nullif(trim(d.mgmt_address), ''),
+                      (select c.host from device_credentials c
+                        where c.device_id = d.id and nullif(trim(c.host), '') is not null
+                        order by c.created_at limit 1)) as address
+        from devices d where d.lifecycle_state in (${states})
+      union all
+      select d.id, d.org_id, 'server' as kind,
+             coalesce(nullif(trim(d.server_address), ''), case when trim(d.hostname) like '%.%' then trim(d.hostname) end) as address
+        from devices d where d.lifecycle_state in (${states})
+    )
+    select t.id, t.org_id, t.kind, t.address
+      from t left join device_reachability r on r.device_id = t.id and r.kind = t.kind
+     where t.address is not null
        and (r.checked_at is null or r.checked_at < now() - make_interval(secs => ${DEVICE_CHECK_SECONDS - 5}))
-       and coalesce(nullif(trim(d.mgmt_address), ''),
-                    (select c.host from device_credentials c where c.device_id = d.id and nullif(trim(c.host), '') is not null limit 1)) is not null
      order by r.checked_at nulls first
      limit ${deps.limit ?? 256}`);
   let up = 0;
@@ -85,10 +93,10 @@ export async function checkDueDevices(deps: { db: Db; logger: Pick<Logger, 'warn
       if (reachable) up++;
       const now = new Date().toISOString();
       await db.execute(sql`
-        insert into device_reachability (device_id, org_id, target, reachable, rtt_ms, last_seen_at, changed_at, checked_at, error)
-        values (${d.id}, ${d.org_id}, ${target ?? String(d.address).slice(0, 255)}, ${reachable}, ${rtt},
+        insert into device_reachability (device_id, kind, org_id, target, reachable, rtt_ms, last_seen_at, changed_at, checked_at, error)
+        values (${d.id}, ${d.kind}, ${d.org_id}, ${target ?? String(d.address).slice(0, 255)}, ${reachable}, ${rtt},
                 ${reachable ? now : null}::timestamptz, ${now}::timestamptz, ${now}::timestamptz, ${error})
-        on conflict (device_id) do update set
+        on conflict (device_id, kind) do update set
           reachable = excluded.reachable,
           rtt_ms = excluded.rtt_ms,
           last_seen_at = case when device_reachability.target = excluded.target
@@ -101,7 +109,7 @@ export async function checkDueDevices(deps: { db: Db; logger: Pick<Logger, 'warn
           target = excluded.target,
           checked_at = excluded.checked_at,
           error = excluded.error`);
-      if (error) deps.logger.warn({ deviceId: d.id, err: error }, 'device reachability check failed');
+      if (error) deps.logger.warn({ deviceId: d.id, check: d.kind, err: error }, 'device reachability check failed');
     }
   };
   await Promise.all(Array.from({ length: Math.min(deps.concurrency ?? 32, rows.length) }, work));

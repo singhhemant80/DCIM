@@ -225,6 +225,8 @@ export const deviceSchema = z.object({
   nics: z.array(nic).max(32).default([]),
   mgmtType: z.enum(['idrac', 'ilo', 'ipmi', 'redfish', 'other']).nullable().optional(),
   mgmtAddress: z.string().trim().max(120).nullable().optional(),
+  /** The server's own (OS) IP address or host name, for reachability; the BMC is mgmtAddress. */
+  serverAddress: z.string().trim().max(253).nullable().optional(),
   biosVersion: optText(60),
   bmcFirmware: optText(60),
   os: optText(120),

@@ -5,6 +5,7 @@ import { CATEGORY_LABELS, LIFECYCLE_LABELS, type RackFace } from '@crapplet/shar
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { relativeTime } from '../lib/format';
+import { DOT, reachTitle } from '../lib/reachability';
 import { roomOptions, STATE_TONE, useRacks, useTree, type DeviceT, type ElevationDevice, type ElevationT, type EventT, type RackT } from '../lib/dcim';
 import type { Customer } from '../lib/types';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Table, Textarea, cx } from '../components/ui';
@@ -275,6 +276,7 @@ function deviceTone(d: ElevationDevice, mode: ColourMode) {
   if (mode === 'reach') {
     if (d.reachability.state === 'up') return 'border-[#6fd9a6] bg-[#1f7a52] text-white';
     if (d.reachability.state === 'down') return 'border-[#ff9a9a] bg-[#b3261e] text-white';
+    if (d.reachability.state === 'partial') return 'border-[#f5c06a] bg-[#b4690e] text-white';
     return 'border-[#8a96a8] bg-[#4a5566] text-white';
   }
   if (d.lifecycleState === 'maintenance') return 'border-[#f0c46a] bg-[#a8720f] text-white';
@@ -285,17 +287,15 @@ function deviceTone(d: ElevationDevice, mode: ColourMode) {
 
 type ColourMode = 'reach' | 'status';
 
-function ago(iso: string | null) {
-  if (!iso) return 'never';
-  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-  return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
-}
-
-function reachText(d: ElevationDevice) {
-  const r = d.reachability;
-  if (r.state === 'up') return `Reachable (ping ${r.rttMs !== null ? `${r.rttMs < 10 ? r.rttMs.toFixed(1) : Math.round(r.rttMs)} ms` : 'ok'}, checked ${ago(r.checkedAt)})`;
-  if (r.state === 'down') return `Not reachable since ${ago(r.changedAt)} (last answered ${ago(r.lastSeenAt)})`;
-  return r.reason ?? 'Not checked';
+/** Two small dots: management (BMC) and server (OS) check. */
+function ReachDots({ r }: { r: ElevationDevice['reachability'] }) {
+  if (r.mgmt.state === 'unknown' && r.server.state === 'unknown') return null;
+  return (
+    <span className="ml-auto flex shrink-0 items-center gap-1 text-[9.5px] font-semibold tracking-wide text-white/80" aria-label={`BMC ${r.mgmt.state}, server ${r.server.state}`}>
+      <span className="flex items-center gap-0.5"><span className={cx('size-1.5 rounded-full ring-1 ring-white/50', DOT[r.mgmt.state])} />BMC</span>
+      <span className="flex items-center gap-0.5"><span className={cx('size-1.5 rounded-full ring-1 ring-white/50', DOT[r.server.state])} />OS</span>
+    </span>
+  );
 }
 
 function RackFaceView({
@@ -407,14 +407,12 @@ function RackFaceView({
                 onDragEnd={() => window.dispatchEvent(new CustomEvent('cdcim-drag', { detail: null }))}
                 className={cx('z-10 mx-0.5 my-px flex min-w-0 items-center gap-2 overflow-hidden rounded-[5px] border px-2 text-[12px] shadow-[inset_0_1px_0_rgb(255_255_255/0.18)] hover:brightness-110', deviceTone(d, mode), canWrite && 'cursor-grab active:cursor-grabbing')}
                 style={{ gridColumn: 2, gridRow: `${Math.min(top, bottom)} / ${Math.max(top, bottom) + 1}` }}
-                title={`${d.assetTag} — ${d.manufacturerName} ${d.modelName}, ${LIFECYCLE_LABELS[d.lifecycleState]}${d.customerName ? `, ${d.customerName}` : ''}\n${reachText(d)}`}
+                title={`${d.assetTag} — ${d.manufacturerName} ${d.modelName}, ${LIFECYCLE_LABELS[d.lifecycleState]}${d.customerName ? `, ${d.customerName}` : ''}\n${reachTitle(d.reachability)}`}
               >
-                {mode === 'status' && d.reachability.state !== 'unknown' && (
-                  <span className={cx('size-2 shrink-0 rounded-full ring-1 ring-white/60', d.reachability.state === 'up' ? 'bg-[#4ade80]' : 'bg-[#f87171]')} aria-label={d.reachability.state === 'up' ? 'Reachable' : 'Not reachable'} />
-                )}
                 <span className="truncate font-semibold">{d.hostname || d.assetTag}</span>
                 <span className="hidden truncate text-white/75 sm:inline">{d.modelName}</span>
-                {!d.fullDepth && <span className="ml-auto shrink-0 text-[10.5px] text-white/70" title="Half-depth">½</span>}
+                <ReachDots r={d.reachability} />
+                {!d.fullDepth && <span className={cx('shrink-0 text-[10.5px] text-white/70', d.reachability.mgmt.state === 'unknown' && d.reachability.server.state === 'unknown' && 'ml-auto')} title="Half-depth">½</span>}
               </Link>
             );
           })}
@@ -736,6 +734,7 @@ export function RackDetailPage() {
               {mode === 'reach' ? (
                 <>
                   <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#6fd9a6] bg-[#1f7a52]" />Reachable</span>
+                  <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#f5c06a] bg-[#b4690e]" />Partly (BMC or OS)</span>
                   <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#ff9a9a] bg-[#b3261e]" />Not reachable</span>
                   <span className="flex items-center gap-1"><span className="size-2.5 rounded-sm border border-[#8a96a8] bg-[#4a5566]" />Not checked</span>
                 </>
@@ -750,7 +749,7 @@ export function RackDetailPage() {
             </span>
           }
         >
-          {mode === 'reach' && <p className="mb-3 text-[13px] text-ink-3">Colour shows whether the device's management address answers ping (checked every minute from the NexoraDC server). Hover a device for details.</p>}
+          {mode === 'reach' && <p className="mb-3 text-[13px] text-ink-3">Colour shows whether the device answers ping, checked every minute from the NexoraDC server: the management (BMC/iDRAC) address and the server's own address. Amber means only one of them answers. Hover a device for details.</p>}
           {canWrite && <p className="mb-3 text-[13px] text-ink-3">Drag equipment onto a unit to place or move it, or click an empty unit to choose what goes there. Placements are checked by the server: overlaps, height and depth are refused.</p>}
           <div className="flex flex-col gap-5 overflow-x-auto sm:flex-row">
             {(['front', 'rear'] as const).map((face) => (

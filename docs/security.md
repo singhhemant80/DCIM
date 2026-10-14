@@ -200,7 +200,7 @@ The worker pings addresses only in prefixes where an administrator turned the ch
 
 ## Device reachability
 
-The worker pings the management address (or the host of the device's first stored credential) of devices that are racked, provisioning, active or in maintenance, once a minute, with one echo request and one retry. The address must be an IP literal or a DNS name (a URL or host:port is reduced to its host); anything else is refused before it reaches `ping`, so a stored value can never become a `ping` option. Results show only up / down; a check error or a result older than five minutes is shown as "not checked", never as down. Nothing else is sent to the device.
+The worker runs two pings per device: the management address (or the host of the device's first stored credential), and the server address (or the host name when it is a full DNS name). It checks devices that are racked, provisioning, active or in maintenance, once a minute, with one echo request and one retry. The address must be an IP literal or a DNS name (a URL or host:port is reduced to its host); anything else is refused before it reaches `ping`, so a stored value can never become a `ping` option. Results show only up / down (the address pinged is shown to staff only); a check error or a result older than five minutes is shown as "not checked", never as down. Nothing else is sent to the device.
 
 ## Dependency advisories
 

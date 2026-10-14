@@ -1,12 +1,12 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, asc, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm';
 import type { z } from 'zod';
 import type { rackMoveSchema, rackSchema, reservationSchema } from '@crapplet/shared';
 import { DB, type Db, type DbOrTx } from '../db/db';
 import { buildings, customers, datacenters, deviceModels, deviceReachability, devices, manufacturers, rackEvents, rackReservations, rackRows, racks, rooms, type Rack } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { rethrowDbError } from '../common/pg-errors';
-import { reachabilityView } from './reachability';
+import { deviceReachabilityView, type ReachabilityKind } from './reachability';
 import type { Principal, RequestMeta } from '../auth/principal';
 
 type RackInput = z.infer<typeof rackSchema>;
@@ -94,21 +94,13 @@ export class RacksService {
           customerName: customers.name,
           modelName: deviceModels.name,
           manufacturerName: manufacturers.name,
-          hasAddress: sql<boolean>`(nullif(trim(${devices.mgmtAddress}), '') is not null or exists (select 1 from device_credentials c where c.device_id = ${devices.id} and nullif(trim(c.host), '') is not null))`,
-          reach: {
-            reachable: deviceReachability.reachable,
-            rttMs: deviceReachability.rttMs,
-            checkedAt: deviceReachability.checkedAt,
-            lastSeenAt: deviceReachability.lastSeenAt,
-            changedAt: deviceReachability.changedAt,
-            error: deviceReachability.error,
-          },
+          hasMgmt: sql<boolean>`(nullif(trim(${devices.mgmtAddress}), '') is not null or exists (select 1 from device_credentials c where c.device_id = ${devices.id} and nullif(trim(c.host), '') is not null))`,
+          hasServer: sql<boolean>`(nullif(trim(${devices.serverAddress}), '') is not null or trim(${devices.hostname}) like '%.%')`,
         })
         .from(devices)
         .innerJoin(deviceModels, eq(deviceModels.id, devices.modelId))
         .innerJoin(manufacturers, eq(manufacturers.id, deviceModels.manufacturerId))
         .leftJoin(customers, eq(customers.id, devices.customerId))
-        .leftJoin(deviceReachability, eq(deviceReachability.deviceId, devices.id))
         .where(eq(devices.rackId, id))
         .orderBy(desc(devices.positionU)),
       this.db
@@ -119,7 +111,13 @@ export class RacksService {
         .orderBy(asc(rackReservations.startU)),
     ]);
     const now = Date.now();
-    const shown = placed.map(({ hasAddress, reach, ...d }) => ({ ...d, reachability: reachabilityView(d.lifecycleState, !!hasAddress, reach?.checkedAt ? reach : null, now) }));
+    const reach = placed.length ? await this.db.select().from(deviceReachability).where(and(eq(deviceReachability.orgId, p.orgId), inArray(deviceReachability.deviceId, placed.map((d) => d.id)))) : [];
+    const byDevice = new Map<string, Partial<Record<ReachabilityKind, (typeof reach)[number]>>>();
+    for (const r of reach) byDevice.set(r.deviceId, { ...byDevice.get(r.deviceId), [r.kind as ReachabilityKind]: r });
+    const shown = placed.map(({ hasMgmt, hasServer, ...d }) => ({
+      ...d,
+      reachability: deviceReachabilityView(d.lifecycleState, { mgmt: !!hasMgmt, server: !!hasServer }, byDevice.get(d.id) ?? {}, p.userType === 'staff', now),
+    }));
     return {
       rack,
       devices: shown.filter((d) => d.positionU !== null),
