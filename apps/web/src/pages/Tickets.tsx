@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { DateFilter, dateParams } from '../components/DateRange';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { TICKET_KINDS, TICKET_KIND_LABELS, TICKET_PRIORITIES, TICKET_STATUSES, TICKET_STATUS_LABELS, type TicketKind, type TicketStatus } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -120,7 +120,8 @@ export function TicketsPage() {
   const staff = me?.user.userType === 'staff';
   const navigate = useNavigate();
   const customers = useCustomerOptions();
-  const [f, setF] = useState({ status: 'open', kind: '', customerId: '', q: '', mine: '' });
+  const [params] = useSearchParams();
+  const [f, setF] = useState({ status: 'open', kind: '', customerId: params.get('customerId') ?? '', q: '', mine: '' });
   const [dates, setDates] = useState({ from: '', to: '' });
   const [page, setPage] = useState(1);
   const [creating, setCreating] = useState(false);

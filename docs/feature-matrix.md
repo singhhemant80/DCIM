@@ -90,6 +90,7 @@ The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTION
 | Printable A4 datasheet per device, or many at once (logo, QR code, location, management, hardware, power, warnings); customers print their own | Done | Checked by rendering to PDF (one page for a typical server); no automated layout test |
 | Device front photo: uploaded by staff (shrunk in the browser to under ~900 KB; the server accepts JPEG/PNG/WebP up to 1 MB, checked by content, not by the declared type), shown on the device page and printed in the datasheet header; the owning customer can view it | Done | `hardware.e2e`. Stored in PostgreSQL (one photo per device, included in backups) |
 | Customer view of own equipment (no internal fields) | Done | `dcim.e2e` |
+| Staff page per customer: counts, contact, equipment with power and energy, ports and bandwidth, IPs and prefixes, rack space, cross-connects, services, open tickets, portal users; print all their datasheets | Done | `rbac-tenancy.e2e` (summary), `power.e2e` and `monitoring.e2e` (customer filters); page checked by screenshot |
 | Power and network connection records | Done | Network connections in Phase 3; PDU outlet → device mapping and power readings in Phase 5 |
 | Environmental sensor associations | Not started | Needs the monitoring collectors (Phase 4) |
 | Attachments (S3-compatible storage) | Not started | Planned with the object-storage integration. The only files stored so far are device front photos, in the database |

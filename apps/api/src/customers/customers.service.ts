@@ -125,6 +125,27 @@ export class CustomersService {
   }
 
   /** Internal notes and billing references are staff-only and stripped for customer principals. */
+  /** Counts of everything assigned to one customer, for the customer's page. */
+  async summary(p: Principal, id: string) {
+    await this.get(p, id); // tenant check (404 for someone else's)
+    const n = (q: SQL) => sql<number>`(${q})::int`;
+    const [row] = (
+      await this.db.execute<Record<string, number>>(sql`select
+        ${n(sql`select count(*) from devices where org_id = ${p.orgId} and customer_id = ${id} and lifecycle_state <> 'retired'`)} as devices,
+        ${n(sql`select count(*) from devices where org_id = ${p.orgId} and customer_id = ${id} and lifecycle_state <> 'retired' and category in ('server', 'gpu_server')`)} as servers,
+        ${n(sql`select count(*) from ip_addresses where org_id = ${p.orgId} and customer_id = ${id} and status in ('allocated', 'reserved')`)} as ips,
+        ${n(sql`select count(*) from prefixes where org_id = ${p.orgId} and customer_id = ${id}`)} as prefixes,
+        ${n(sql`select count(*) from colo_allocations where org_id = ${p.orgId} and customer_id = ${id} and ended_at is null`)} as allocations,
+        ${n(sql`select coalesce(sum(end_u - start_u + 1), 0) from colo_allocations where org_id = ${p.orgId} and customer_id = ${id} and ended_at is null`)} as "allocatedU",
+        ${n(sql`select coalesce(sum(contracted_power_w), 0) from colo_allocations where org_id = ${p.orgId} and customer_id = ${id} and ended_at is null`)} as "contractedPowerW",
+        ${n(sql`select count(*) from cross_connects where org_id = ${p.orgId} and customer_id = ${id} and status not in ('rejected', 'decommissioned')`)} as "crossConnects",
+        ${n(sql`select count(*) from services where org_id = ${p.orgId} and customer_id = ${id} and status in ('pending', 'active', 'suspended')`)} as services,
+        ${n(sql`select count(*) from tickets where org_id = ${p.orgId} and customer_id = ${id} and status not in ('resolved', 'closed')`)} as "openTickets",
+        ${n(sql`select count(*) from users where customer_id = ${id}`)} as users`)
+    ).rows;
+    return row!;
+  }
+
   view(p: Principal, c: Customer, userCount?: number) {
     const base = {
       id: c.id,

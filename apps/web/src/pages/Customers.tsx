@@ -24,7 +24,7 @@ function toForm(c?: Customer): FormState {
   };
 }
 
-function CustomerForm({ customer, onClose }: { customer?: Customer; onClose: () => void }) {
+export function CustomerForm({ customer, onClose }: { customer?: Customer; onClose: () => void }) {
   const qc = useQueryClient();
   const [f, setF] = useState<FormState>(toForm(customer));
   const set = (k: keyof FormState) => (e: { target: { value: string } }) => setF((s) => ({ ...s, [k]: e.target.value }));
@@ -117,7 +117,7 @@ export function CustomersPage() {
     <>
       <PageHeader
         title="Customers and tenants"
-        description="Each customer is a tenant. Its portal users only ever see resources assigned to it."
+        description="Each customer is a tenant. Its portal users only ever see resources assigned to it. Open a customer to see everything assigned to them."
         actions={can('customers.write') && <Button variant="primary" onClick={() => setEditing('new')}>Add customer</Button>}
       />
       <Panel flush>
@@ -158,19 +158,18 @@ export function CustomersPage() {
                   <th>Portal users</th>
                   <th>Status</th>
                   <th>Added</th>
+                  <th>
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {list.data.items.map((c) => (
                   <tr key={c.id} className="hover:bg-sunken/50">
                     <td>
-                      {can('customers.write') ? (
-                        <button className="text-left font-medium text-accent hover:underline" onClick={() => setEditing(c)}>
-                          {c.name}
-                        </button>
-                      ) : (
-                        <span className="font-medium">{c.name}</span>
-                      )}
+                      <Link to={`/customers/${c.id}`} className="font-medium text-accent hover:underline">
+                        {c.name}
+                      </Link>
                     </td>
                     <td className="font-mono text-[13px]">{c.code}</td>
                     <td className="text-ink-2">{c.contactEmail ?? '—'}</td>
@@ -187,6 +186,13 @@ export function CustomersPage() {
                       <Chip tone={STATUS_TONE[c.status]}>{STATUS_LABEL[c.status]}</Chip>
                     </td>
                     <td className="text-ink-2">{formatDateTime(c.createdAt)}</td>
+                    <td className="text-right">
+                      {can('customers.write') && (
+                        <Button size="sm" variant="ghost" onClick={() => setEditing(c)}>
+                          Edit
+                        </Button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

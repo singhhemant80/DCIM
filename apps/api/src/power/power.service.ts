@@ -292,6 +292,7 @@ export class PowerService {
     if (q.datacenterId) conds.push(sql`b.datacenter_id = ${q.datacenterId}`);
     if (q.rackId) conds.push(sql`d.rack_id = ${q.rackId}`);
     if (q.deviceId) conds.push(sql`d.id = ${q.deviceId}`);
+    if (q.customerId) conds.push(sql`d.customer_id = ${q.customerId}`);
     let list = await this.current(p, sql.join(conds, sql` and `));
     if (q.quality) list = list.filter((d) => d.quality === q.quality);
     const per = await this.period(p, q.period, q);
@@ -303,7 +304,20 @@ export class PowerService {
     list.sort((a, b) => (q.sort === 'name' ? a.name.localeCompare(b.name) : q.sort === 'energy' ? kwh(b.deviceId) - kwh(a.deviceId) : (b.watts ?? -1) - (a.watts ?? -1)));
     const total = list.length;
     const page = list.slice((q.page - 1) * q.pageSize, q.page * q.pageSize);
-    return { items: page.map((d) => ({ ...d, energy: energy.get(d.deviceId) ?? null })), page: q.page, pageSize: q.pageSize, total, period: { name: q.period, from: per.from, to: per.to } };
+    // Totals over every matching device (not just this page): power now, and energy in the period.
+    const energyTotal = { measuredKwh: 0, estimatedKwh: 0 };
+    for (const d of list) {
+      const e = energy.get(d.deviceId);
+      if (e) (energyTotal.measuredKwh += e.measuredKwh), (energyTotal.estimatedKwh += e.estimatedKwh);
+    }
+    return {
+      items: page.map((d) => ({ ...d, energy: energy.get(d.deviceId) ?? null })),
+      page: q.page,
+      pageSize: q.pageSize,
+      total,
+      totals: { now: PowerService.totalsOf(list), energy: energyTotal },
+      period: { name: q.period, from: per.from, to: per.to },
+    };
   }
 
   async device(p: Principal, id: string) {

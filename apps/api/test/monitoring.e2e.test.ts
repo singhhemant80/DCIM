@@ -401,6 +401,12 @@ describe('tenancy', () => {
     // Another customer gets nothing for it.
     expect((await ok(globex.get(`${M}/ports?servingDeviceId=${ids.s1}`))).items).toEqual([]);
   });
+  it("staff see a customer's ports: those cabled to its equipment", async () => {
+    const forAcme = await ok(admin.get(`${M}/ports?customerId=${ctx.customers.acme}`));
+    expect(forAcme.items.map((i: { interfaceId: string }) => i.interfaceId)).toContain(ids.swif.ether1);
+    expect((await ok(admin.get(`${M}/ports?customerId=${ctx.customers.globex}`))).items.map((i: { interfaceId: string }) => i.interfaceId)).not.toContain(ids.swif.ether1);
+    expect((await ok(globex.get(`${M}/ports?customerId=${ctx.customers.acme}`))).items).toEqual([]);
+  });
 });
 
 describe('alerts, maintenance and notifications', () => {

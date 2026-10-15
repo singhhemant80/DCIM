@@ -35,6 +35,13 @@ export class CustomersController {
     return this.customersSvc.get(p, id);
   }
 
+  @Get(':id/summary')
+  @RequirePermissions('customers.read')
+  @ApiOperation({ summary: 'Counts of the equipment, IPs, space, services, tickets and users assigned to a customer.' })
+  summary(@CurrentPrincipal() p: Principal, @Param('id', ParseUUIDPipe) id: string) {
+    return this.customersSvc.summary(p, id);
+  }
+
   @Post()
   @RequirePermissions('customers.write')
   @ApiZodBody(customerSchema)

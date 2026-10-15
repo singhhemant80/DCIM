@@ -8,6 +8,7 @@ import { LoginPage } from './pages/Login';
 import { EnrollMfaPage } from './pages/EnrollMfa';
 import { OverviewPage } from './pages/Overview';
 import { CustomersPage } from './pages/Customers';
+import { CustomerDetailPage } from './pages/CustomerDetail';
 import { UsersPage } from './pages/Users';
 import { RolesPage } from './pages/Roles';
 import { AuditPage } from './pages/Audit';
@@ -89,6 +90,7 @@ function AppRoutes() {
         {visible.has('network') && <Route path="/network/devices/:id" element={<NetworkDevicePage />} />}
         {visible.has('ipam') && <Route path="/ipam/prefixes/:id" element={<PrefixDetailPage />} />}
         {visible.has('tickets') && <Route path="/tickets/:id" element={<TicketDetailPage />} />}
+        {visible.has('customers') && <Route path="/customers/:id" element={<CustomerDetailPage />} />}
         <Route path="/account" element={<AccountPage />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />

@@ -145,6 +145,15 @@ describe('tenant isolation', () => {
     expect(staffView.body.notes).toBe('staff-only note');
   });
 
+  it("staff get counts of a customer's resources; customers cannot", async () => {
+    const res = await admin.get(`/api/v1/customers/${ctx.customers.acme}/summary`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ devices: expect.any(Number), ips: expect.any(Number), openTickets: expect.any(Number), users: expect.any(Number) });
+    expect(res.body.users).toBeGreaterThan(0);
+    expect((await acme.get(`/api/v1/customers/${ctx.customers.acme}/summary`)).status).toBe(403);
+    expect((await admin.get('/api/v1/customers/00000000-0000-4000-8000-000000000000/summary')).status).toBe(404);
+  });
+
   it('customers cannot create or edit customer records', async () => {
     expect((await acme.patch(`/api/v1/customers/${ctx.customers.acme}`, { name: 'Hacked', code: 'ACME' })).status).toBe(403);
     expect((await acme.post('/api/v1/customers', { name: 'New', code: 'NEWCO' })).status).toBe(403);

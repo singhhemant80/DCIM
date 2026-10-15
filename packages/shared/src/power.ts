@@ -77,6 +77,8 @@ export const powerDeviceListQuerySchema = paginationSchema.extend({
   rackId: z.string().uuid().optional(),
   quality: z.enum(['measured', 'estimated', 'unknown']).optional(),
   deviceId: z.string().uuid().optional(),
+  /** Staff only: one customer's equipment (portal users always see only their own). */
+  customerId: z.string().uuid().optional(),
   sort: z.enum(['power', 'energy', 'name']).default('power'),
 });
 

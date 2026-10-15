@@ -400,6 +400,12 @@ describe('tenancy and secrecy', () => {
     expect(mine[0]).toMatchObject({ rackId: null, rackName: null, datacenterId: null, datacenterCode: null, polling: null });
     expect(mine[0].energy.unpricedKwh).toBe(0);
     expect((await ok(globex.get(`${P}/devices`))).items.map((d: { deviceId: string }) => d.deviceId)).toEqual([ids.s5]);
+    // Staff can list one customer's equipment, with totals over all of it; a customer asking for another's gets nothing.
+    const staffAcme = await ok(admin.get(`${P}/devices?customerId=${ctx.customers.acme}&pageSize=200`));
+    expect(staffAcme.items.map((d: { deviceId: string }) => d.deviceId)).toEqual([ids.s1]);
+    expect(staffAcme.totals.now.devices).toBe(1);
+    expect(staffAcme.totals.energy.measuredKwh + staffAcme.totals.energy.estimatedKwh).toBeCloseTo((staffAcme.items[0].energy?.measuredKwh ?? 0) + (staffAcme.items[0].energy?.estimatedKwh ?? 0));
+    expect((await ok(acme.get(`${P}/devices?customerId=${ctx.customers.globex}`))).items).toEqual([]);
     expect((await acme.get(`${P}/devices/${ids.s5}`)).status).toBe(404);
     expect((await acme.get(`${P}/devices/${ids.s5}/history`)).status).toBe(404);
     for (const path of ['racks', 'pdus', 'tariffs', 'polling', 'settings']) expect((await acme.get(`${P}/${path}`)).status).toBe(403);

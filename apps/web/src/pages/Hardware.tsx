@@ -1321,14 +1321,21 @@ export function HardwarePage() {
   );
 }
 
-/** Customer portal view: only their own equipment, no internal data; power and energy per server. */
-export function CustomerEquipment({ embedded }: { embedded?: boolean }) {
+/**
+ * Customer portal view: only their own equipment, no internal data; power and energy per server.
+ * Staff see the same table for one customer (customerId), on that customer's page.
+ */
+export function CustomerEquipment({ embedded, customerId, onIds }: { embedded?: boolean; customerId?: string; onIds?: (ids: string[]) => void }) {
   const { can } = useAuth();
   const power = can('power.read');
   const [period, setPeriod] = useState<PeriodValue<keyof typeof PERIOD_LABELS>>({ period: 'mtd', from: '', to: '' });
   const list = useQuery({
-    queryKey: ['dcim', 'devices', 'mine', periodParams(period)],
-    queryFn: () => api.get<Paginated<DeviceT> & { totals?: ListTotals | null }>(`/dcim/devices${qs({ pageSize: 200, withStatus: 'true', ...periodParams(period) })}`),
+    queryKey: ['dcim', 'devices', customerId ?? 'mine', periodParams(period)],
+    queryFn: async () => {
+      const r = await api.get<Paginated<DeviceT> & { totals?: ListTotals | null }>(`/dcim/devices${qs({ pageSize: 200, customerId, withStatus: 'true', ...periodParams(period) })}`);
+      onIds?.(r.items.map((d) => d.id));
+      return r;
+    },
     enabled: periodReady(period),
     placeholderData: keepPreviousData,
     refetchInterval: 60_000,
@@ -1337,21 +1344,22 @@ export function CustomerEquipment({ embedded }: { embedded?: boolean }) {
   const priced = items.some((d) => (d.status?.power?.cost.length ?? 0) > 0);
   const body = (
     <Panel
-      title={embedded ? 'Your equipment' : undefined}
+      title={embedded ? (customerId ? `Equipment (${list.data?.total ?? '…'})` : 'Your equipment') : undefined}
       flush
       actions={power && <PeriodPicker value={period} onChange={setPeriod} options={Object.keys(PERIOD_LABELS) as (keyof typeof PERIOD_LABELS)[]} labels={PERIOD_LABELS} prefix="Energy: " className="w-52" />}
     >
       {list.isLoading && <Loading />}
       <ErrorNote error={list.error} className="m-4" />
-      {list.data?.items.length === 0 && <EmptyState title="No equipment yet">Servers and colocated equipment assigned to your account appear here.</EmptyState>}
-      {power && !embedded && items.length > 0 && list.data?.totals && <TotalsBar t={list.data.totals} period={periodLabel(period, PERIOD_LABELS)} />}
+      {list.data?.items.length === 0 && <EmptyState title="No equipment yet">{customerId ? 'Assign servers to this customer from their page (Edit → Customer).' : 'Servers and colocated equipment assigned to your account appear here.'}</EmptyState>}
+      {power && (!embedded || customerId) && items.length > 0 && list.data?.totals && <TotalsBar t={list.data.totals} period={periodLabel(period, PERIOD_LABELS)} />}
       {!!items.length && (
-        <Table label="Your equipment">
+        <Table label={customerId ? 'Equipment' : 'Your equipment'}>
           <thead>
             <tr>
               <th>Device</th>
               <th>Model</th>
               <th>Location</th>
+              <th>BMC · server address</th>
               <th>Reachability</th>
               {power && (
                 <>
@@ -1377,7 +1385,11 @@ export function CustomerEquipment({ embedded }: { embedded?: boolean }) {
                   {d.model.manufacturer} {d.model.name}
                 </td>
                 <td className="whitespace-nowrap text-ink-2">{d.location ? `${d.location.datacenterCode}, rack ${d.location.rackName}${d.location.positionU ? ` U${d.location.positionU}` : ''}` : 'Not installed'}</td>
-                <td>{d.status ? <ReachCell r={d.status.reachability} customer /> : '—'}</td>
+                <td className="whitespace-nowrap font-mono text-[12.5px] text-ink-2">
+                  {d.mgmtAddress ? `${d.mgmtType ? d.mgmtType.toUpperCase() + ' ' : ''}${d.mgmtAddress}` : '—'}
+                  {d.serverAddress && <span className="block">{d.serverAddress}</span>}
+                </td>
+                <td>{d.status ? <ReachCell r={d.status.reachability} customer={!customerId} /> : '—'}</td>
                 {power && (
                   <>
                     <td className="text-right whitespace-nowrap">{d.status?.power ? <PowerNowCell p={d.status.power} /> : '—'}</td>
@@ -1392,7 +1404,7 @@ export function CustomerEquipment({ embedded }: { embedded?: boolean }) {
           </tbody>
         </Table>
       )}
-      {power && !!items.length && <p className="px-4 py-2.5 text-[12px] text-ink-3">Energy is measured where your server's power is read (BMC or metered PDU outlet) and estimated otherwise; * marks estimated energy.</p>}
+      {power && !!items.length && <p className="px-4 py-2.5 text-[12px] text-ink-3">Energy is measured where {customerId ? 'the' : 'your'} server's power is read (BMC or metered PDU outlet) and estimated otherwise; * marks estimated energy.</p>}
     </Panel>
   );
   if (embedded) return body;

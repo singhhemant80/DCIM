@@ -113,6 +113,12 @@ export class MonitoringService {
     const conds: SQL[] = [sql`true`];
     if (q.q) conds.push(sql`(i.name ilike ${'%' + q.q + '%'} or i.description ilike ${'%' + q.q + '%'} or d.hostname ilike ${'%' + q.q + '%'} or d.asset_tag ilike ${'%' + q.q + '%'})`);
     if (q.deviceId) conds.push(sql`i.device_id = ${q.deviceId}`);
+    // Staff: the ports of one customer's equipment, and the switch ports cabled to it (what that customer sees).
+    if (q.customerId)
+      conds.push(sql`(exists (select 1 from devices cd where cd.id = i.device_id and cd.customer_id = ${q.customerId})
+                    or exists (select 1 from cable_ends e1 join cable_ends e2 on e2.cable_id = e1.cable_id and e2.interface_id <> e1.interface_id
+                                join interfaces ci on ci.id = e2.interface_id join devices cd2 on cd2.id = ci.device_id
+                               where e1.interface_id = i.id and cd2.customer_id = ${q.customerId}))`);
     if (q.servingDeviceId)
       conds.push(sql`(i.device_id = ${q.servingDeviceId} or exists (select 1 from cable_ends e1 join cable_ends e2 on e2.cable_id = e1.cable_id and e2.interface_id <> e1.interface_id
                         join interfaces si on si.id = e2.interface_id where e1.interface_id = i.id and si.device_id = ${q.servingDeviceId}))`);

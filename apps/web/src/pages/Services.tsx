@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { SERVICE_KINDS, SERVICE_KIND_LABELS, SERVICE_STATUSES, SERVICE_STATUS_LABELS, SERVICE_TRANSITIONS, type ServiceKind, type ServiceStatus } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -210,7 +211,8 @@ export function ServicesPage() {
   const staff = me?.user.userType === 'staff';
   const manage = staff && can('services.write');
   const customers = useCustomerOptions();
-  const [f, setF] = useState({ q: '', status: '', kind: '', customerId: '' });
+  const [params] = useSearchParams();
+  const [f, setF] = useState({ q: '', status: '', kind: '', customerId: params.get('customerId') ?? '' });
   const [page, setPage] = useState(1);
   const q = useQuery({
     queryKey: ['services', 'list', f, page],

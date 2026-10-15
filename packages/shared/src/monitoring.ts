@@ -43,6 +43,8 @@ export const portListQuerySchema = paginationSchema.extend({
   deviceId: z.string().uuid().optional(),
   /** Ports of this device and the switch/router ports cabled to it (where a server's traffic is measured). */
   servingDeviceId: z.string().uuid().optional(),
+  /** Ports of one customer's equipment and the ports cabled to it. */
+  customerId: z.string().uuid().optional(),
   datacenterId: z.string().uuid().optional(),
   sort: z.enum(['utilization', 'traffic', 'name', 'errors']).default('traffic'),
   /** Only ports that count towards totals (uplinks/transit). */
