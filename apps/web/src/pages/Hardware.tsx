@@ -628,6 +628,11 @@ function DevicesTab() {
             Print {selected.size} label{selected.size === 1 ? '' : 's'}
           </Button>
         )}
+        {selected.size > 0 && (
+          <Button onClick={() => navigate(`/hardware/sheets?ids=${[...selected].join(',')}`)}>
+            Print {selected.size} datasheet{selected.size === 1 ? '' : 's'}
+          </Button>
+        )}
       </div>
       <Panel flush>
         <form

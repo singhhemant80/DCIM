@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ACCESSORY_LABELS, CATEGORY_LABELS, formatBitRate, formatKwh, formatWattsShort, IP_STATUS_LABELS, LIFECYCLE_LABELS, type AccessoryKind, type HardwareInventory, type HwHealth, type IpStatus } from '@crapplet/shared';
 import { api, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -50,24 +50,26 @@ const PRINT_CSS = `
   html, body { background: #fff !important; }
   body::before, body::after, #root::before, #root::after { display: none !important; }
   body * { visibility: hidden; }
-  body *:not(#sheet):not(#sheet *) { background: transparent !important; box-shadow: none !important; backdrop-filter: none !important; }
-  #sheet, #sheet * { visibility: visible; }
-  #sheet { position: absolute; left: 0; top: 0; width: 100% !important; box-shadow: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; }
+  body *:not(#sheets):not(#sheets *) { background: transparent !important; box-shadow: none !important; backdrop-filter: none !important; }
+  #sheets, #sheets * { visibility: visible; }
+  #sheets { position: absolute; left: 0; top: 0; width: 100%; }
+  .sheet { width: 100% !important; box-shadow: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; }
+  .sheet + .sheet { break-before: page; }
   .no-print { display: none !important; }
   .sheet-section { break-inside: avoid; }
-  #sheet table { break-inside: auto; }
-  #sheet tr { break-inside: avoid; }
+  .sheet table { break-inside: auto; }
+  .sheet tr { break-inside: avoid; }
 }
-#sheet { color: #111; font-family: var(--font-sans), system-ui, sans-serif; font-size: 8.5pt; line-height: 1.3; }
-#sheet h2 { font-size: 9.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1.2pt solid #111; padding-bottom: 1mm; margin: 3mm 0 1.2mm; }
-#sheet table { width: 100%; border-collapse: collapse; font-size: 7.5pt; }
-#sheet th { text-align: left; font-weight: 600; background: #f1f1f4; border: .5pt solid #bbb; padding: .6mm 1.5mm; }
-#sheet td { border: .5pt solid #ccc; padding: .6mm 1.5mm; vertical-align: top; }
-#sheet .mono { font-family: var(--font-mono), ui-monospace, monospace; }
-#sheet dl { display: grid; grid-template-columns: 34mm 1fr 34mm 1fr; border: .5pt solid #ccc; }
-#sheet dt { background: #f6f6f8; font-weight: 600; padding: .6mm 1.5mm; border-bottom: .5pt solid #ddd; }
-#sheet dt.blank { background: none; }
-#sheet dd { padding: .6mm 1.5mm; border-bottom: .5pt solid #ddd; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.sheet { color: #111; font-family: var(--font-sans), system-ui, sans-serif; font-size: 8.5pt; line-height: 1.3; }
+.sheet h2 { font-size: 9.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1.2pt solid #111; padding-bottom: 1mm; margin: 3mm 0 1.2mm; }
+.sheet table { width: 100%; border-collapse: collapse; font-size: 7.5pt; }
+.sheet th { text-align: left; font-weight: 600; background: #f1f1f4; border: .5pt solid #bbb; padding: .6mm 1.5mm; }
+.sheet td { border: .5pt solid #ccc; padding: .6mm 1.5mm; vertical-align: top; }
+.sheet .mono { font-family: var(--font-mono), ui-monospace, monospace; }
+.sheet dl { display: grid; grid-template-columns: 34mm 1fr 34mm 1fr; border: .5pt solid #ccc; }
+.sheet dt { background: #f6f6f8; font-weight: 600; padding: .6mm 1.5mm; border-bottom: .5pt solid #ddd; }
+.sheet dt.blank { background: none; }
+.sheet dd { padding: .6mm 1.5mm; border-bottom: .5pt solid #ddd; margin: 0; min-width: 0; overflow-wrap: anywhere; }
 `;
 
 const dash = (v: unknown) => (v === null || v === undefined || v === '' ? '—' : String(v));
@@ -90,8 +92,8 @@ function Facts({ items }: { items: [string, ReactNode][] }) {
   );
 }
 
-export function DeviceSheetPage() {
-  const { id = '' } = useParams();
+/** One device's datasheet (one A4 page, or more for very large servers). */
+function DeviceSheet({ id }: { id: string }) {
   const { me, can } = useAuth();
   const staff = me?.user.userType === 'staff';
   const dev = useQuery({ queryKey: ['dcim', 'device', id], queryFn: () => api.get<DeviceT>(`/dcim/devices/${id}`) });
@@ -112,8 +114,8 @@ export function DeviceSheetPage() {
     retry: false,
   });
 
-  if (dev.isLoading || label.isLoading) return <Loading />;
-  if (dev.error) return <ErrorNote error={dev.error} />;
+  if (dev.isLoading || label.isLoading) return <div className="no-print"><Loading /></div>;
+  if (dev.error) return <div className="no-print"><ErrorNote error={dev.error} /></div>;
   const d = dev.data!;
   const inv = hw.data?.inventory ?? null;
   const p = power.data?.items[0];
@@ -125,19 +127,7 @@ export function DeviceSheetPage() {
 
   return (
     <>
-      <style>{PRINT_CSS}</style>
-      <div className="no-print mb-4 flex flex-wrap items-center gap-3">
-        <Link to={`/hardware/${d.id}`} className="text-[13px] text-accent hover:underline">
-          ← Back to {title}
-        </Link>
-        <span className="flex-1" />
-        <span className="text-[12.5px] text-ink-3">A4 portrait. In the print dialog, turn off “Headers and footers” for a clean page.</span>
-        <Button variant="primary" onClick={() => window.print()}>
-          Print / Save as PDF
-        </Button>
-      </div>
-
-      <div id="sheet" className="mx-auto w-[210mm] max-w-full rounded-md bg-white p-[12mm] shadow-xl">
+      <div className="sheet mx-auto mb-6 w-[210mm] max-w-full rounded-md bg-white p-[12mm] shadow-xl">
         {/* Header */}
         <div className="flex items-start gap-[5mm] border-b-[2pt] border-black pb-[3mm]">
           <div className="min-w-0 flex-1">
@@ -451,6 +441,65 @@ export function DeviceSheetPage() {
             Generated by NexoraDC on {formatDateTime(new Date().toISOString())} by {me?.user.email}. Figures are as recorded and as last read from the equipment; estimates are marked. {label.data?.url}
           </p>
         </section>
+      </div>
+    </>
+  );
+}
+
+function Toolbar({ back, count }: { back: ReactNode; count?: number }) {
+  return (
+    <div className="no-print mb-4 flex flex-wrap items-center gap-3">
+      {back}
+      <span className="flex-1" />
+      <span className="text-[12.5px] text-ink-3">
+        {count ? `${count} datasheet${count === 1 ? '' : 's'}, each on its own A4 page. ` : 'A4 portrait. '}In the print dialog, turn off “Headers and footers” for a clean page.
+      </span>
+      <Button variant="primary" onClick={() => window.print()}>
+        Print / Save as PDF
+      </Button>
+    </div>
+  );
+}
+
+export function DeviceSheetPage() {
+  const { id = '' } = useParams();
+  return (
+    <>
+      <style>{PRINT_CSS}</style>
+      <Toolbar
+        back={
+          <Link to={`/hardware/${id}`} className="text-[13px] text-accent hover:underline">
+            ← Back to the device
+          </Link>
+        }
+      />
+      <div id="sheets">
+        <DeviceSheet id={id} />
+      </div>
+    </>
+  );
+}
+
+/** Datasheets of several devices (?ids=a,b,c), each starting on a new page. */
+export function DeviceSheetsPage() {
+  const [params] = useSearchParams();
+  const ids = [...new Set((params.get('ids') ?? '').split(',').filter((x) => /^[0-9a-f-]{36}$/i.test(x)))].slice(0, 100);
+  return (
+    <>
+      <style>{PRINT_CSS}</style>
+      <Toolbar
+        count={ids.length}
+        back={
+          <Link to="/hardware" className="text-[13px] text-accent hover:underline">
+            ← Servers and hardware
+          </Link>
+        }
+      />
+      {!ids.length && <p className="text-[13px] text-ink-2">Select devices in the list first.</p>}
+      <div id="sheets">
+        {ids.map((id) => (
+          <DeviceSheet key={id} id={id} />
+        ))}
       </div>
     </>
   );
