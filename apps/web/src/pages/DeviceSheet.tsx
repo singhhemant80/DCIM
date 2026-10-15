@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ACCESSORY_LABELS, CATEGORY_LABELS, formatBitRate, formatKwh, formatWattsShort, IP_STATUS_LABELS, LIFECYCLE_LABELS, type AccessoryKind, type HardwareInventory, type HwHealth, type IpStatus } from '@crapplet/shared';
@@ -62,10 +62,10 @@ const PRINT_CSS = `
   .sheet tr { break-inside: avoid; }
 }
 .sheet { zoom: var(--sheet-zoom, 1); color: #111; font-family: var(--font-sans), system-ui, sans-serif; font-size: 8.5pt; line-height: 1.3; }
-.sheet h2 { font-size: 9.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1.2pt solid #111; padding-bottom: 1mm; margin: 3mm 0 1.2mm; }
+.sheet h2 { font-size: 9pt; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1.2pt solid #111; padding-bottom: .8mm; margin: 2.6mm 0 1mm; }
 .sheet table { width: 100%; border-collapse: collapse; font-size: 7.5pt; }
-.sheet th { text-align: left; font-weight: 600; background: #f1f1f4; border: .5pt solid #bbb; padding: .6mm 1.5mm; }
-.sheet td { border: .5pt solid #ccc; padding: .6mm 1.5mm; vertical-align: top; }
+.sheet th { text-align: left; font-weight: 600; background: #f1f1f4; border: .5pt solid #bbb; padding: .45mm 1.5mm; }
+.sheet td { border: .5pt solid #ccc; padding: .45mm 1.5mm; vertical-align: top; }
 .sheet .mono { font-family: var(--font-mono), ui-monospace, monospace; }
 .sheet dl { display: grid; grid-template-columns: 34mm 1fr 34mm 1fr; border: .5pt solid #ccc; }
 .sheet dt { background: #f6f6f8; font-weight: 600; padding: .6mm 1.5mm; border-bottom: .5pt solid #ddd; }
@@ -94,7 +94,20 @@ function Facts({ items }: { items: [string, ReactNode][] }) {
 }
 
 /** One device's datasheet (one A4 page, or more for very large servers). */
-function DeviceSheet({ id }: { id: string }) {
+interface PowerDetailT {
+  spec: { typicalW: number | null; idleW: number | null; maxW: number | null; psuCount: number | null; psuRatedW: number | null } | null;
+  outlets: { id: string; outlet_number: number; name: string | null; label: string | null; pdu_name: string | null; last_watts: number | null }[];
+}
+interface NoteEventT {
+  id: number;
+  kind: string;
+  summary: string;
+  actorLabel: string | null;
+  occurredAt?: string;
+  createdAt?: string;
+}
+
+function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
   const { me, can } = useAuth();
   const staff = me?.user.userType === 'staff';
   const dev = useQuery({ queryKey: ['dcim', 'device', id], queryFn: () => api.get<DeviceT>(`/dcim/devices/${id}`) });
@@ -115,6 +128,13 @@ function DeviceSheet({ id }: { id: string }) {
     retry: false,
   });
 
+  const powerDetail = useQuery({ queryKey: ['power', 'device', id], queryFn: () => api.get<PowerDetailT>(`/power/devices/${id}`), enabled: can('power.read'), retry: false });
+  const notes = useQuery({
+    queryKey: ['dcim', 'device-events', id],
+    queryFn: () => api.get<NoteEventT[]>(`/dcim/devices/${id}/events`),
+    enabled: staff && withNotes,
+  });
+
   if (dev.isLoading || label.isLoading) return <div className="no-print"><Loading /></div>;
   if (dev.error) return <div className="no-print"><ErrorNote error={dev.error} /></div>;
   const d = dev.data!;
@@ -124,6 +144,10 @@ function DeviceSheet({ id }: { id: string }) {
   const title = d.hostname || d.assetTag;
   const loc = d.location;
   const reach = d.reachability;
+  const spec = powerDetail.data?.spec ?? null;
+  const outlets = staff ? (powerDetail.data?.outlets ?? []) : [];
+  const psus = inv?.psus.length ? inv.psus.map((x) => `${x.name.replace(/ Status$/, '')}${x.capacityW ? ` ${x.capacityW} W` : ''}`).join(', ') : null;
+  const noteEvents = (notes.data ?? []).filter((e) => e.kind === 'maintenance' || e.kind === 'note').slice(0, 5);
   const events = (inv?.logs ?? []).filter((e) => e.severity && e.severity !== 'OK').slice(0, 6);
 
   return (
@@ -264,7 +288,6 @@ function DeviceSheet({ id }: { id: string }) {
               ['Memory', inv?.memory.length ? `${inv.memory.reduce((a, m) => a + (m.sizeGb ?? 0), 0)} GB in ${inv.memory.length} modules` : d.ramGb ? `${d.ramGb} GB${d.dimmLayout ? ` (${d.dimmLayout})` : ''}` : '—'],
               ['RAID', dash(d.raid ?? (inv?.volumes[0]?.raid ?? null))],
               ['Drives', inv?.drives.length ? `${inv.drives.length}, ${gbText(inv.drives.reduce((a, x) => a + (x.capacityGb ?? 0), 0))} total` : d.disks.length ? `${d.disks.length}, ${gbText(d.disks.reduce((a, x) => a + x.sizeGb, 0))} total` : '—'],
-              ['Power supplies', inv?.psus.length ? inv.psus.map((x) => `${x.name.replace(/ Status$/, '')}${x.capacityW ? ` ${x.capacityW} W` : ''}`).join(', ') : null],
               ['Health (BMC)', inv ? healthText(hw.data?.health) : null],
               ['Read from BMC', hw.data?.fetchedAt ? formatDateTime(hw.data.fetchedAt) : null],
             ]}
@@ -371,43 +394,52 @@ function DeviceSheet({ id }: { id: string }) {
           )}
         </section>
 
-        {(p || !!acc.data?.length) && (
+        {(p || can('power.read')) && (
           <section className="sheet-section">
-            <h2>{p && acc.data?.length ? 'Power and fitted items' : p ? 'Power' : 'Fitted items'}</h2>
-            {p && (
-              <Facts
-                items={[
-                  ['Power now', p.watts !== null ? `${formatWattsShort(p.watts)} (${p.quality}${p.source ? `, ${p.source}` : ''})` : 'Unknown'],
-                  ['Energy, last 30 days', energy !== null ? `${formatKwh(energy)}${p.energy && p.energy.estimatedKwh > 0 ? ` (${formatKwh(p.energy.estimatedKwh)} estimated)` : ''}` : '—'],
-                ]}
-              />
-            )}
-            {!!acc.data?.length && (
-              <table style={{ marginTop: '2mm' }}>
-                <thead>
-                  <tr>
-                    <th>Item</th>
-                    <th>Qty</th>
-                    <th>Description</th>
-                    <th>Length</th>
-                    <th>Part / serial</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {acc.data.map((a) => (
-                    <tr key={a.id}>
-                      <td>{ACCESSORY_LABELS[a.kind] ?? a.kind}</td>
-                      <td>{a.quantity}</td>
-                      <td>{dash(a.description)}</td>
-                      <td>{a.lengthM !== null ? `${a.lengthM} m` : '—'}</td>
-                      <td className="mono">{[a.partNumber, a.serial].filter(Boolean).join(' · ') || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            <h2>Power</h2>
+            <Facts
+              items={[
+                ['Power now', p ? (p.watts !== null ? `${formatWattsShort(p.watts)} (${p.quality}${p.source ? `, ${p.source}` : ''})` : 'Not measured') : '—'],
+                ['Energy, last 30 days', energy !== null ? `${formatKwh(energy)}${p?.energy && p.energy.estimatedKwh > 0 ? ` (${formatKwh(p.energy.estimatedKwh)} estimated)` : ''}` : '—'],
+                ['Typical / maximum draw', spec && (spec.typicalW || spec.maxW) ? `${spec.typicalW ? formatWattsShort(spec.typicalW) : '—'} / ${spec.maxW ? formatWattsShort(spec.maxW) : '—'} (model)` : null],
+                ['Estimate used', p?.estimateW && p.quality !== 'measured' ? `${formatWattsShort(p.estimateW)} (${p.estimateKind === 'admin' ? 'set for this device' : 'from the model'})` : null],
+                ['Power supplies', psus ?? (spec?.psuCount ? `${spec.psuCount}${spec.psuRatedW ? ` × ${formatWattsShort(spec.psuRatedW)}` : ''} (model)` : null)],
+                ['Power reading', p?.polling && p.quality !== 'measured' ? `${p.polling.credentialKind.toUpperCase()} ${p.polling.enabled ? (p.polling.lastError ? 'failing' : 'not answered yet') : 'paused'}` : null],
+                ['Fed from (PDU outlets)', outlets.length ? outlets.map((o) => `${o.pdu_name ?? 'PDU'} outlet ${o.outlet_number}${o.label ? ` (${o.label})` : ''}`).join(', ') : null],
+              ]}
+            />
           </section>
         )}
+
+        <section className="sheet-section">
+          <h2>Fitted items</h2>
+          {acc.data?.length ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Qty</th>
+                  <th>Description</th>
+                  <th>Length</th>
+                  <th>Part / serial</th>
+                </tr>
+              </thead>
+              <tbody>
+                {acc.data.map((a) => (
+                  <tr key={a.id}>
+                    <td>{ACCESSORY_LABELS[a.kind] ?? a.kind}</td>
+                    <td>{a.quantity}</td>
+                    <td>{dash(a.description)}</td>
+                    <td>{a.lengthM !== null ? `${a.lengthM} m` : '—'}</td>
+                    <td className="mono">{[a.partNumber, a.serial].filter(Boolean).join(' · ') || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p style={{ color: '#555' }}>None recorded (rails, cables, transceivers and other items fitted with the device are listed here once added on its page).</p>
+          )}
+        </section>
 
         {events.length > 0 && (
           <section className="sheet-section">
@@ -433,6 +465,25 @@ function DeviceSheet({ id }: { id: string }) {
           </section>
         )}
 
+        <section className="sheet-section">
+          <h2>Notes</h2>
+          {withNotes && staff && (d.notes || noteEvents.length > 0) ? (
+            <div style={{ border: '.5pt solid #ccc', padding: '1.5mm 2mm' }}>
+              {d.notes && <p style={{ whiteSpace: 'pre-wrap', marginBottom: noteEvents.length ? '1.5mm' : 0 }}>{d.notes}</p>}
+              {noteEvents.map((e) => (
+                <p key={e.id} style={{ marginTop: '.6mm' }}>
+                  <b>{formatDateTime(e.occurredAt ?? e.createdAt ?? null).split(',')[0]}</b> · {e.kind === 'maintenance' ? 'Maintenance' : 'Note'}: {e.summary}
+                  {e.actorLabel && <span style={{ color: '#555' }}> ({e.actorLabel})</span>}
+                </p>
+              ))}
+            </div>
+          ) : null}
+          {/* Lines to write on by hand. */}
+          {Array.from({ length: withNotes && staff && (d.notes || noteEvents.length) ? 2 : 3 }, (_, i) => (
+            <div key={i} style={{ borderBottom: '.5pt solid #bbb', height: '6.5mm' }} />
+          ))}
+        </section>
+
         <section className="sheet-section" style={{ marginTop: '5mm' }}>
           <div className="grid grid-cols-2 gap-[10mm]" style={{ fontSize: '8pt' }}>
             <div>
@@ -453,11 +504,18 @@ function DeviceSheet({ id }: { id: string }) {
   );
 }
 
-function Toolbar({ back, count }: { back: ReactNode; count?: number }) {
+function Toolbar({ back, count, notes }: { back: ReactNode; count?: number; notes: [boolean, (v: boolean) => void] }) {
+  const { me } = useAuth();
   return (
     <div className="no-print mb-4 flex flex-wrap items-center gap-3">
       {back}
       <span className="flex-1" />
+      {me?.user.userType === 'staff' && (
+        <label className="flex items-center gap-2 text-[13px]" title="Internal notes and maintenance notes are for staff; untick before handing the sheet to a customer.">
+          <input type="checkbox" checked={notes[0]} onChange={(e) => notes[1](e.target.checked)} />
+          Include internal notes
+        </label>
+      )}
       <span className="text-[12.5px] text-ink-3">
         {count ? `${count} datasheet${count === 1 ? '' : 's'}, each on its own A4 page. ` : 'A4 portrait. '}In the print dialog, turn off “Headers and footers” for a clean page.
       </span>
@@ -493,10 +551,12 @@ function SheetsFrame({ children }: { children: ReactNode }) {
 
 export function DeviceSheetPage() {
   const { id = '' } = useParams();
+  const notes = useState(true);
   return (
     <>
       <style>{PRINT_CSS}</style>
       <Toolbar
+        notes={notes}
         back={
           <Link to={`/hardware/${id}`} className="text-[13px] text-accent hover:underline">
             ← Back to the device
@@ -504,7 +564,7 @@ export function DeviceSheetPage() {
         }
       />
       <SheetsFrame>
-        <DeviceSheet id={id} />
+        <DeviceSheet id={id} withNotes={notes[0]} />
       </SheetsFrame>
     </>
   );
@@ -513,11 +573,13 @@ export function DeviceSheetPage() {
 /** Datasheets of several devices (?ids=a,b,c), each starting on a new page. */
 export function DeviceSheetsPage() {
   const [params] = useSearchParams();
+  const notes = useState(true);
   const ids = [...new Set((params.get('ids') ?? '').split(',').filter((x) => /^[0-9a-f-]{36}$/i.test(x)))].slice(0, 100);
   return (
     <>
       <style>{PRINT_CSS}</style>
       <Toolbar
+        notes={notes}
         count={ids.length}
         back={
           <Link to="/hardware" className="text-[13px] text-accent hover:underline">
@@ -528,7 +590,7 @@ export function DeviceSheetsPage() {
       {!ids.length && <p className="text-[13px] text-ink-2">Select devices in the list first.</p>}
       <SheetsFrame>
         {ids.map((id) => (
-          <DeviceSheet key={id} id={id} />
+          <DeviceSheet key={id} id={id} withNotes={notes[0]} />
         ))}
       </SheetsFrame>
     </>
