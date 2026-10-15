@@ -294,12 +294,19 @@ export function DeviceDetailPage() {
           </span>
         }
         actions={
-          canWrite && (
+          !canWrite ? (
+            <Link to={`/hardware/${d.id}/sheet`} className="inline-flex h-9 items-center rounded-lg border border-rule-strong bg-field px-3.5 font-medium hover:bg-panel">
+              Print datasheet
+            </Link>
+          ) : (
             <>
               {d.lifecycleState !== 'retired' && <Button onClick={() => setDialog('place')}>{d.location ? 'Move' : 'Place in rack'}</Button>}
               <Button onClick={() => setDialog('note')}>Add maintenance note</Button>
               <Link to={`/hardware/${d.id}/label`} className="inline-flex h-9 items-center rounded-lg border border-rule-strong bg-field px-3.5 font-medium hover:bg-panel">
                 Print label
+              </Link>
+              <Link to={`/hardware/${d.id}/sheet`} className="inline-flex h-9 items-center rounded-lg border border-rule-strong bg-field px-3.5 font-medium hover:bg-panel">
+                Datasheet
               </Link>
               {can('network.read') && (
                 <Link to={`/network/devices/${d.id}`} className="inline-flex h-9 items-center rounded-lg border border-rule-strong bg-field px-3.5 font-medium hover:bg-panel">

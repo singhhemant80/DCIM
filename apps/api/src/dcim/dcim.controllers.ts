@@ -370,8 +370,8 @@ export class DevicesController {
     return this.devicesSvc.events(p, id);
   }
 
+  // Customers may print the label and datasheet of their own equipment (get() is tenant-scoped).
   @Get(':id/label')
-  @StaffOnly()
   @RequirePermissions('dcim.read')
   label(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
     return this.devicesSvc.label(p, id);

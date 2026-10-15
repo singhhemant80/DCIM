@@ -19,6 +19,7 @@ import { FloorPlansPage } from './pages/FloorPlans';
 import { RackDetailPage, RacksPage } from './pages/Racks';
 import { HardwarePage } from './pages/Hardware';
 import { DeviceDetailPage, DeviceLabelPage, DeviceLabelsPage } from './pages/DeviceDetail';
+import { DeviceSheetPage } from './pages/DeviceSheet';
 import { NetworkPage } from './pages/Network';
 import { NetworkDevicePage } from './pages/NetworkDevice';
 import { IpamPage, PrefixDetailPage } from './pages/Ipam';
@@ -83,6 +84,7 @@ function AppRoutes() {
         {visible.has('hardware') && me?.user.userType === 'staff' && <Route path="/hardware/labels" element={<DeviceLabelsPage />} />}
         {visible.has('hardware') && <Route path="/hardware/:id" element={<DeviceDetailPage />} />}
         {visible.has('hardware') && me?.user.userType === 'staff' && <Route path="/hardware/:id/label" element={<DeviceLabelPage />} />}
+        {visible.has('hardware') && <Route path="/hardware/:id/sheet" element={<DeviceSheetPage />} />}
         {visible.has('network') && <Route path="/network/devices/:id" element={<NetworkDevicePage />} />}
         {visible.has('ipam') && <Route path="/ipam/prefixes/:id" element={<PrefixDetailPage />} />}
         {visible.has('tickets') && <Route path="/tickets/:id" element={<TicketDetailPage />} />}

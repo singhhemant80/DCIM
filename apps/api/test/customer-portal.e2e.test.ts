@@ -51,6 +51,9 @@ describe('customer portal', () => {
     expect(mine.items[0].energy.measuredKwh).toBe(0.4);
     expect((await ok(acme.get(`/api/v1/power/devices?deviceId=${ids.other}&period=24h`))).items).toHaveLength(0);
     expect((await acme.get(`${D}/devices/${ids.other}`)).status).toBe(404);
+    // The QR label (used on the printable datasheet): own equipment only.
+    expect((await ok(acme.get(`${D}/devices/${ids.mine}/label`))).qrSvg).toMatch(/<svg/);
+    expect((await acme.get(`${D}/devices/${ids.other}/label`)).status).toBe(404);
   });
 
   it('colocation shows their racked equipment even without a space allocation', async () => {
