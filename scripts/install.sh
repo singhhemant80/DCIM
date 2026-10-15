@@ -256,7 +256,9 @@ setup_nginx() {
   fi
   svc enable nginx; (has_systemd && systemctl reload nginx) || service nginx reload >/dev/null 2>&1 || true
   if [ "$TLS_MODE" = letsencrypt ] && [ "$CERT" != "$live/fullchain.pem" ]; then
-    if certbot certonly --webroot -w /var/www/letsencrypt -n --agree-tos ${CDCIM_TLS_EMAIL:+-m "$CDCIM_TLS_EMAIL"} ${CDCIM_TLS_EMAIL:---register-unsafely-without-email} \
+    local who=(--register-unsafely-without-email)
+    [ -n "${CDCIM_TLS_EMAIL:-}" ] && who=(-m "$CDCIM_TLS_EMAIL")
+    if certbot certonly --webroot -w /var/www/letsencrypt -n --agree-tos "${who[@]}" \
          -d "$DOMAIN" --deploy-hook "systemctl reload nginx" >"$LOG_DIR/certbot.log" 2>&1; then
       sed -i -e "s#ssl_certificate .*#ssl_certificate     $live/fullchain.pem;#" -e "s#ssl_certificate_key .*#ssl_certificate_key $live/privkey.pem;#" "$conf"
       nginx -t >/dev/null 2>&1 && { (has_systemd && systemctl reload nginx) || service nginx reload >/dev/null 2>&1 || true; }
