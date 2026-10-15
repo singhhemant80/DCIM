@@ -120,6 +120,13 @@ afterAll(async () => {
 });
 
 describe('collection', () => {
+  it('a BMC credential starts power collection by itself; other kinds are left to configure', async () => {
+    const list = await ok(admin.get(`${P}/polling`));
+    expect(byId(list, ids.s1)).toMatchObject({ configured: true, enabled: true, credentialKind: 'redfish' });
+    expect(byId(list, ids.s5)).toMatchObject({ configured: true, enabled: true, credentialKind: 'ipmi' });
+    expect(byId(list, ids.pdu)).toMatchObject({ configured: false });
+  });
+
   it('needs a stored credential, power.configure and a staff user', async () => {
     expect((await admin.put(`${P}/polling/${ids.s2}`, { enabled: true, credentialKind: 'redfish', intervalSeconds: 60 })).status).toBe(400);
     expect((await noc.put(`${P}/polling/${ids.s1}`, { enabled: true, credentialKind: 'redfish', intervalSeconds: 60 })).status).toBe(403);

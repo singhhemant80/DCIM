@@ -3,7 +3,7 @@ import { BMC_CREDENTIAL_KINDS } from '@crapplet/shared';
 import { and, eq } from 'drizzle-orm';
 import type { CredentialInput, CredentialKind } from '@crapplet/shared';
 import { DB, type Db } from '../db/db';
-import { deviceCredentials, type CredentialParams, type DeviceCredential } from '../db/schema';
+import { deviceCredentials, powerMonitoring, type CredentialParams, type DeviceCredential } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { SecretBox } from '../common/secret-box';
 import { rethrowDbError } from '../common/pg-errors';
@@ -90,9 +90,19 @@ export class CredentialsService {
         const [row] = existing
           ? await tx.update(deviceCredentials).set(cols).where(eq(deviceCredentials.id, existing.id)).returning()
           : await tx.insert(deviceCredentials).values({ ...cols, orgId: p.orgId, deviceId, kind: input.kind, createdBy: p.userId }).returning();
+        // A BMC credential starts power collection (read-only) unless collection is already set up for the device.
+        let powerStarted = false;
+        if ((BMC_CREDENTIAL_KINDS as readonly string[]).includes(input.kind)) {
+          const started = await tx
+            .insert(powerMonitoring)
+            .values({ deviceId, orgId: p.orgId, credentialKind: input.kind, enabled: true, intervalSeconds: 60, nextPollAt: new Date() })
+            .onConflictDoNothing()
+            .returning({ id: powerMonitoring.deviceId });
+          powerStarted = started.length > 0;
+        }
         // Audit records which kind changed — never the secret, and not even its length.
         await this.audit.record(
-          { orgId: p.orgId, actor: actorFrom(p), action: existing ? 'credential.rotate' : 'credential.create', target: { type: 'device', id: deviceId }, outcome: 'success', meta, metadata: { kind: input.kind, host, port, username } },
+          { orgId: p.orgId, actor: actorFrom(p), action: existing ? 'credential.rotate' : 'credential.create', target: { type: 'device', id: deviceId }, outcome: 'success', meta, metadata: { kind: input.kind, host, port, username, ...(powerStarted ? { powerCollection: 'started' } : {}) } },
           tx,
         );
         return CredentialsService.view(row!);
