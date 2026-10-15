@@ -15,8 +15,7 @@ Raw outputs: [`docs/acceptance/2026-10-14/`](acceptance/2026-10-14/).
 | Harness | [`scripts/test-install-container.sh`](../scripts/test-install-container.sh), reproducible on any Linux host with docker and debootstrap |
 
 **Not tested:** a hardware VM or bare-metal server, Ubuntu 22.04, Debian 12,
-WSL, Let's Encrypt issuance (it needs public DNS; the self-signed TLS path was
-tested), real BMCs and switches (the acceptance run sends nothing to devices).
+WSL, real BMCs and switches (the acceptance run sends nothing to devices).
 
 ## Results
 
@@ -52,6 +51,12 @@ against the same container, and the harness was then fixed.
   * create an IP prefix and allocate two addresses atomically;
   * create a customer and a half-rack allocation;
   * check that these changes are in the audit log and the chain still verifies.
+
+## Production server (15 October 2026)
+
+The first real upgrade of the production server (Ubuntu 22.04, PostgreSQL 14) went from the previous installer to this one. Data was kept: 7 stored credentials still decrypt and 320 audit events verified. `doctor` showed 0 failures.
+
+Moving it to `https://dcim.crapplet.co.in` found one more defect: the installer passed the Let's Encrypt contact email to certbot twice, so certbot refused to run, and a self-signed certificate was used instead. After the fix, the Let's Encrypt certificate was issued and installed.
 
 ## Poller load test
 
