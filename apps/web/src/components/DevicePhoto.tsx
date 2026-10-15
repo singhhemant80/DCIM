@@ -36,11 +36,16 @@ export async function shrinkPhoto(file: File): Promise<string> {
 /** Front-panel photo: shown on the device page, uploaded and replaced by staff. */
 export function DevicePhotoPanel({ deviceId, photoUpdatedAt, canWrite }: { deviceId: string; photoUpdatedAt: string | null | undefined; canWrite: boolean }) {
   const qc = useQueryClient();
-  const input = useRef<HTMLInputElement>(null);
+  const camera = useRef<HTMLInputElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const refresh = () => qc.invalidateQueries({ queryKey: ['dcim', 'device', deviceId] });
-  const remove = useMutation({ mutationFn: () => api.delete(`/dcim/devices/${deviceId}/photo`), onSuccess: refresh });
+  const remove = useMutation({
+    mutationFn: () => api.delete(`/dcim/devices/${deviceId}/photo`),
+    onSuccess: refresh,
+  });
   if (!photoUpdatedAt && !canWrite) return null;
 
   const upload = async (file: File | undefined) => {
@@ -55,7 +60,7 @@ export function DevicePhotoPanel({ deviceId, photoUpdatedAt, canWrite }: { devic
       setError(e);
     } finally {
       setBusy(false);
-      if (input.current) input.current.value = '';
+      for (const i of [camera.current, picker.current]) if (i) i.value = '';
     }
   };
 
@@ -64,10 +69,21 @@ export function DevicePhotoPanel({ deviceId, photoUpdatedAt, canWrite }: { devic
       title="Front photo"
       actions={
         canWrite && (
-          <span className="flex gap-2">
-            <input ref={input} type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/*" capture="environment" className="hidden" onChange={(e) => void upload(e.target.files?.[0])} />
-            <Button size="sm" disabled={busy} onClick={() => input.current?.click()}>
-              {busy ? 'Uploading…' : photoUpdatedAt ? 'Replace' : 'Upload photo'}
+          <span className="flex flex-wrap justify-end gap-2">
+            {/* Two inputs: with `capture` phones open the camera only, without it they offer the gallery and files. */}
+            <input ref={camera} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => void upload(e.target.files?.[0])} />
+            <input
+              ref={picker}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.heic"
+              className="hidden"
+              onChange={(e) => void upload(e.target.files?.[0])}
+            />
+            <Button size="sm" disabled={busy} onClick={() => picker.current?.click()}>
+              {busy ? 'Uploading…' : photoUpdatedAt ? 'Replace' : 'Choose file'}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => camera.current?.click()} className="sm:hidden">
+              Camera
             </Button>
             {photoUpdatedAt && (
               <Button size="sm" variant="ghost" disabled={remove.isPending} onClick={() => remove.mutate()}>
@@ -78,13 +94,37 @@ export function DevicePhotoPanel({ deviceId, photoUpdatedAt, canWrite }: { devic
         )
       }
     >
-      {photoUpdatedAt ? (
-        <a href={photoUrl(deviceId, photoUpdatedAt)} target="_blank" rel="noreferrer" title="Open full size">
-          <img src={photoUrl(deviceId, photoUpdatedAt)} alt="Front of the device" className="max-h-72 w-full rounded-lg bg-sunken object-contain" />
-        </a>
-      ) : (
-        <p className="text-[13px] text-ink-2">No photo yet. Upload a picture of the front panel (from a phone, the camera opens directly); it is shown here and printed on the datasheet.</p>
-      )}
+      <div
+        onDragOver={
+          canWrite
+            ? (e) => {
+                e.preventDefault();
+                setDragging(true);
+              }
+            : undefined
+        }
+        onDragLeave={canWrite ? () => setDragging(false) : undefined}
+        onDrop={
+          canWrite
+            ? (e) => {
+                e.preventDefault();
+                setDragging(false);
+                void upload(e.dataTransfer.files?.[0]);
+              }
+            : undefined
+        }
+        className={dragging ? 'rounded-lg outline-2 outline-dashed outline-accent' : undefined}
+      >
+        {photoUpdatedAt ? (
+          <a href={photoUrl(deviceId, photoUpdatedAt)} target="_blank" rel="noreferrer" title="Open full size">
+            <img src={photoUrl(deviceId, photoUpdatedAt)} alt="Front of the device" className="max-h-72 w-full rounded-lg bg-sunken object-contain" />
+          </a>
+        ) : (
+          <p className="text-[13px] text-ink-2">
+            No photo yet. Choose a picture of the front panel from this computer or phone (or drag it here), or take one with the phone's camera. It is shown here and printed on the datasheet.
+          </p>
+        )}
+      </div>
       {photoUpdatedAt && <p className="mt-2 text-[12px] text-ink-3">Updated {formatDateTime(photoUpdatedAt)}</p>}
       {error != null && <ErrorNote error={error} />}
       {remove.error && <ErrorNote error={remove.error} />}
