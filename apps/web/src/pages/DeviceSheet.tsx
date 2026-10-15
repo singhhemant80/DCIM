@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ACCESSORY_LABELS, CATEGORY_LABELS, formatBitRate, formatKwh, formatWattsShort, IP_STATUS_LABELS, LIFECYCLE_LABELS, type AccessoryKind, type HardwareInventory, type HwHealth, type IpStatus } from '@crapplet/shared';
@@ -107,7 +107,21 @@ interface NoteEventT {
   createdAt?: string;
 }
 
-function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
+export const COPIES = ['customer', 'office', 'datacenter'] as const;
+export type CopyKind = (typeof COPIES)[number];
+const COPY_LABELS: Record<CopyKind, string> = { customer: 'Customer copy', office: 'Office copy', datacenter: 'Datacenter copy' };
+const COPY_HINTS: Record<CopyKind, string> = {
+  customer: 'All details, without internal notes',
+  office: 'All details, with internal and maintenance notes',
+  datacenter: 'Customer name hidden, with maintenance notes',
+};
+
+/**
+ * One copy of a device's datasheet. Copies: for the customer (everything except
+ * staff-internal notes), for the office (everything), for the datacenter floor
+ * (customer details hidden). Customer portal users only ever get the customer copy.
+ */
+function DeviceSheet({ id, copy }: { id: string; copy: CopyKind | null }) {
   const { me, can } = useAuth();
   const staff = me?.user.userType === 'staff';
   const dev = useQuery({ queryKey: ['dcim', 'device', id], queryFn: () => api.get<DeviceT>(`/dcim/devices/${id}`) });
@@ -132,12 +146,16 @@ function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
   const notes = useQuery({
     queryKey: ['dcim', 'device-events', id],
     queryFn: () => api.get<NoteEventT[]>(`/dcim/devices/${id}/events`),
-    enabled: staff && withNotes,
+    enabled: staff && (copy === 'office' || copy === 'datacenter'),
   });
 
   if (dev.isLoading || label.isLoading) return <div className="no-print"><Loading /></div>;
   if (dev.error) return <div className="no-print"><ErrorNote error={dev.error} /></div>;
   const d = dev.data!;
+  const withNotes = staff && (copy === 'office' || copy === 'datacenter');
+  const hideCustomer = copy === 'datacenter';
+  // No customer on this device: a customer copy has nobody to go to.
+  if (copy === 'customer' && staff && !d.customerId) return null;
   const inv = hw.data?.inventory ?? null;
   const p = power.data?.items[0];
   const energy = p?.energy ? p.energy.measuredKwh + p.energy.estimatedKwh : null;
@@ -160,6 +178,9 @@ function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
               <img src="/brand-logo.png" alt={me?.organization.name ?? 'Logo'} style={{ height: '12mm', width: 'auto', flexShrink: 0 }} />
               <p style={{ fontSize: '8pt', letterSpacing: '.06em', textTransform: 'uppercase', color: '#444', textAlign: 'right', minWidth: '30mm' }}>
                 <span style={{ whiteSpace: 'nowrap' }}>Equipment datasheet</span>
+                {copy && staff && (
+                  <span style={{ display: 'block', whiteSpace: 'nowrap', fontWeight: 700, color: '#111', border: '1pt solid #111', padding: '.3mm 1.5mm', margin: '.6mm 0 .6mm auto', width: 'fit-content' }}>{COPY_LABELS[copy]}</span>
+                )}
                 <span style={{ display: 'block', textTransform: 'none', letterSpacing: 0 }}>{me?.organization.name}</span>
               </p>
             </div>
@@ -203,7 +224,7 @@ function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
               ['Room', loc?.roomName],
               ['Rack', loc?.rackName],
               ['Position', loc ? (loc.positionU ? `U${loc.positionU}${d.model.uHeight > 1 ? `–U${loc.positionU + d.model.uHeight - 1}` : ''}${loc.face === 'rear' ? ' (rear)' : ''}` : '0U') : null],
-              ['Customer', d.customerName ?? (staff ? 'Company equipment' : null)],
+              ['Customer', hideCustomer ? (d.customerId ? 'Not shown on this copy' : 'Company equipment') : d.customerName ?? (staff ? 'Company equipment' : null)],
               ['Ownership', d.ownership === 'customer' ? 'Customer-owned' : 'Company-owned'],
               ['Warranty until', d.warrantyExpires],
               ...(staff
@@ -467,9 +488,9 @@ function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
 
         <section className="sheet-section">
           <h2>Notes</h2>
-          {withNotes && staff && (d.notes || noteEvents.length > 0) ? (
+          {withNotes && ((copy === 'office' && d.notes) || noteEvents.length > 0) ? (
             <div style={{ border: '.5pt solid #ccc', padding: '1.5mm 2mm' }}>
-              {d.notes && <p style={{ whiteSpace: 'pre-wrap', marginBottom: noteEvents.length ? '1.5mm' : 0 }}>{d.notes}</p>}
+              {copy === 'office' && d.notes && <p style={{ whiteSpace: 'pre-wrap', marginBottom: noteEvents.length ? '1.5mm' : 0 }}>{d.notes}</p>}
               {noteEvents.map((e) => (
                 <p key={e.id} style={{ marginTop: '.6mm' }}>
                   <b>{formatDateTime(e.occurredAt ?? e.createdAt ?? null).split(',')[0]}</b> · {e.kind === 'maintenance' ? 'Maintenance' : 'Note'}: {e.summary}
@@ -479,7 +500,7 @@ function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
             </div>
           ) : null}
           {/* Lines to write on by hand. */}
-          {Array.from({ length: withNotes && staff && (d.notes || noteEvents.length) ? 2 : 3 }, (_, i) => (
+          {Array.from({ length: withNotes && ((copy === 'office' && d.notes) || noteEvents.length) ? 2 : 3 }, (_, i) => (
             <div key={i} style={{ borderBottom: '.5pt solid #bbb', height: '6.5mm' }} />
           ))}
         </section>
@@ -492,7 +513,7 @@ function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
             </div>
             <div>
               <div style={{ borderBottom: '.6pt solid #111', height: '8mm' }} />
-              <p style={{ marginTop: '1mm' }}>{d.customerName ? 'Customer acknowledgement' : 'Approved by'}</p>
+              <p style={{ marginTop: '1mm' }}>{hideCustomer ? 'Datacenter technician (name, signature, date)' : d.customerName ? 'Customer acknowledgement' : 'Approved by'}</p>
             </div>
           </div>
           <p style={{ fontSize: '6.5pt', color: '#555', marginTop: '3mm' }}>
@@ -504,25 +525,66 @@ function DeviceSheet({ id, withNotes }: { id: string; withNotes: boolean }) {
   );
 }
 
-function Toolbar({ back, count, notes }: { back: ReactNode; count?: number; notes: [boolean, (v: boolean) => void] }) {
+function Toolbar({ back, count, copies }: { back: ReactNode; count?: number; copies: [CopyKind[], (v: CopyKind[]) => void] }) {
   const { me } = useAuth();
+  const staff = me?.user.userType === 'staff';
+  const [chosen, setChosen] = copies;
+  const toggle = (c: CopyKind) => setChosen(chosen.includes(c) ? chosen.filter((x) => x !== c) : COPIES.filter((x) => x === c || chosen.includes(x)));
   return (
-    <div className="no-print mb-4 flex flex-wrap items-center gap-3">
-      {back}
-      <span className="flex-1" />
-      {me?.user.userType === 'staff' && (
-        <label className="flex items-center gap-2 text-[13px]" title="Internal notes and maintenance notes are for staff; untick before handing the sheet to a customer.">
-          <input type="checkbox" checked={notes[0]} onChange={(e) => notes[1](e.target.checked)} />
-          Include internal notes
-        </label>
+    <div className="no-print mb-4 grid gap-3">
+      <div className="flex flex-wrap items-center gap-3">
+        {back}
+        <span className="flex-1" />
+        <span className="text-[12.5px] text-ink-3">
+          {count ? `${count} device${count === 1 ? '' : 's'}. ` : ''}A4 portrait, each copy starts on a new page. In the print dialog, turn off “Headers and footers”.
+        </span>
+        <Button variant="primary" disabled={staff && !chosen.length} onClick={() => window.print()}>
+          Print / Save as PDF
+        </Button>
+      </div>
+      {staff && (
+        <fieldset className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-rule bg-panel px-4 py-2.5">
+          <legend className="sr-only">Copies to print</legend>
+          <span className="text-[13px] font-medium">Copies to print</span>
+          {COPIES.map((c) => (
+            <label key={c} className="flex items-center gap-2 text-[13px]" title={COPY_HINTS[c]}>
+              <input type="checkbox" checked={chosen.includes(c)} onChange={() => toggle(c)} />
+              <span>
+                {COPY_LABELS[c]} <span className="text-ink-3">· {COPY_HINTS[c].toLowerCase()}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
       )}
-      <span className="text-[12.5px] text-ink-3">
-        {count ? `${count} datasheet${count === 1 ? '' : 's'}, each on its own A4 page. ` : 'A4 portrait. '}In the print dialog, turn off “Headers and footers” for a clean page.
-      </span>
-      <Button variant="primary" onClick={() => window.print()}>
-        Print / Save as PDF
-      </Button>
     </div>
+  );
+}
+
+/** Which copies to print, kept in the address (?copies=customer,office) so a bookmark or reload keeps the choice. */
+function useCopies(): [CopyKind[], (v: CopyKind[]) => void] {
+  const [params, setParams] = useSearchParams();
+  const raw = params.get('copies');
+  const chosen = raw === null ? [...COPIES] : COPIES.filter((c) => raw.split(',').includes(c));
+  return [
+    chosen,
+    (v) => {
+      const next = new URLSearchParams(params);
+      next.set('copies', v.join(','));
+      setParams(next, { replace: true });
+    },
+  ];
+}
+
+/** The sheets for one device: each chosen copy (staff), or the single customer view (portal users). */
+function DeviceCopies({ id, copies }: { id: string; copies: CopyKind[] }) {
+  const { me } = useAuth();
+  if (me?.user.userType !== 'staff') return <DeviceSheet id={id} copy={null} />;
+  return (
+    <>
+      {copies.map((c) => (
+        <DeviceSheet key={c} id={id} copy={c} />
+      ))}
+    </>
   );
 }
 
@@ -551,12 +613,12 @@ function SheetsFrame({ children }: { children: ReactNode }) {
 
 export function DeviceSheetPage() {
   const { id = '' } = useParams();
-  const notes = useState(true);
+  const copies = useCopies();
   return (
     <>
       <style>{PRINT_CSS}</style>
       <Toolbar
-        notes={notes}
+        copies={copies}
         back={
           <Link to={`/hardware/${id}`} className="text-[13px] text-accent hover:underline">
             ← Back to the device
@@ -564,7 +626,7 @@ export function DeviceSheetPage() {
         }
       />
       <SheetsFrame>
-        <DeviceSheet id={id} withNotes={notes[0]} />
+        <DeviceCopies id={id} copies={copies[0]} />
       </SheetsFrame>
     </>
   );
@@ -573,13 +635,13 @@ export function DeviceSheetPage() {
 /** Datasheets of several devices (?ids=a,b,c), each starting on a new page. */
 export function DeviceSheetsPage() {
   const [params] = useSearchParams();
-  const notes = useState(true);
+  const copies = useCopies();
   const ids = [...new Set((params.get('ids') ?? '').split(',').filter((x) => /^[0-9a-f-]{36}$/i.test(x)))].slice(0, 100);
   return (
     <>
       <style>{PRINT_CSS}</style>
       <Toolbar
-        notes={notes}
+        copies={copies}
         count={ids.length}
         back={
           <Link to="/hardware" className="text-[13px] text-accent hover:underline">
@@ -590,7 +652,7 @@ export function DeviceSheetsPage() {
       {!ids.length && <p className="text-[13px] text-ink-2">Select devices in the list first.</p>}
       <SheetsFrame>
         {ids.map((id) => (
-          <DeviceSheet key={id} id={id} withNotes={notes[0]} />
+          <DeviceCopies key={id} id={id} copies={copies[0]} />
         ))}
       </SheetsFrame>
     </>
