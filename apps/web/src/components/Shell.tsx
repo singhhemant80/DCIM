@@ -188,7 +188,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <UserMenu />
         </header>
         <main id="main" className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-[1280px] px-4 py-6 lg:px-8">{children}</div>
+          <div className={cx('mx-auto px-4 py-6 lg:px-8', loc.pathname === '/' ? 'max-w-[1920px]' : 'max-w-[1280px]')}>{children}</div>
         </main>
       </div>
     </div>

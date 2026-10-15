@@ -1,6 +1,5 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { NAV_SECTIONS } from '@crapplet/shared';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
@@ -17,6 +16,8 @@ import { RateChart } from '../components/RateChart';
 import { MultiRateChart, uplinkColors, type Series } from '../components/MultiRateChart';
 import { formatKwh, formatWattsShort } from '@crapplet/shared';
 import type { EnergyT, PowerNowT } from '../lib/power';
+import type { AllocationT, OverviewT as ColoOverviewT, TicketT } from '../lib/colocation';
+import type { PrefixT } from './Ipam';
 
 interface DcimSummary {
   counts: { datacenters: number; rooms: number; racks: number; devices: number; unracked: number };
@@ -36,7 +37,11 @@ function PhysicalPanel() {
     return (
       <Panel title="Physical infrastructure">
         <p className="text-ink-2">
-          No datacenters yet. <Link to="/datacenters" className="text-accent hover:underline">Add your first site</Link>, then its rooms and racks, and import your hardware.
+          No datacenters yet.{' '}
+          <Link to="/datacenters" className="text-accent hover:underline">
+            Add your first site
+          </Link>
+          , then its rooms and racks, and import your hardware.
         </p>
       </Panel>
     );
@@ -44,15 +49,23 @@ function PhysicalPanel() {
   const pct = s.capacity.totalU ? Math.round((s.capacity.usedU / s.capacity.totalU) * 100) : 0;
   const order: LifecycleState[] = ['active', 'provisioning', 'racked', 'maintenance', 'reserved', 'inventory', 'received', 'planned'];
   return (
-    <Panel title="Physical infrastructure" actions={<Link to="/racks" className="text-[13px] text-accent hover:underline">All racks</Link>}>
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+    <Panel
+      title="Physical infrastructure"
+      className="@container"
+      actions={
+        <Link to="/racks" className="text-[13px] text-accent hover:underline">
+          All racks
+        </Link>
+      }
+    >
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 @xl:grid-cols-4">
         <Stat label="Datacenters" value={s.counts.datacenters} note={`${s.counts.rooms} room${s.counts.rooms === 1 ? '' : 's'}`} />
         <Stat label="Racks" value={s.counts.racks} note={`${s.capacity.totalU} rack units`} />
         <Stat label="Devices" value={s.counts.devices} note={`${s.counts.unracked} not in a rack`} />
         <Stat label="Rack units in use" value={`${pct}%`} note={`${s.capacity.freeU} free, ${s.capacity.reservedU} reserved`} tone={pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : undefined} />
       </dl>
       <OccupancyBar rack={{ uHeight: Math.max(1, s.capacity.totalU), usedU: s.capacity.usedU, reservedU: s.capacity.reservedU }} className="mt-4 h-2.5" />
-      <div className="mt-5 grid gap-5 lg:grid-cols-2">
+      <div className="mt-5 grid gap-5 @2xl:grid-cols-2">
         <div>
           <p className="mb-2 text-[13px] font-semibold">Devices by state</p>
           <ul className="flex flex-wrap gap-1.5">
@@ -120,6 +133,7 @@ function BandwidthPanel() {
   return (
     <Panel
       title="Bandwidth (measured)"
+      className="@container"
       actions={
         <span className="flex gap-3 text-[13px]">
           <Link to="/network-monitoring" className="text-accent hover:underline">
@@ -133,11 +147,15 @@ function BandwidthPanel() {
     >
       {d.now.ports === 0 ? (
         <p className="text-[13px] text-ink-2">
-          No uplink or transit ports are counted yet. Enable polling in <Link to="/alerts?tab=polling" className="text-accent hover:underline">Monitoring &amp; Alerts</Link> and mark uplink ports with <em>Count in totals</em>.
+          No uplink or transit ports are counted yet. Enable polling in{' '}
+          <Link to="/alerts?tab=polling" className="text-accent hover:underline">
+            Monitoring &amp; Alerts
+          </Link>{' '}
+          and mark uplink ports with <em>Count in totals</em>.
         </p>
       ) : (
         <>
-          <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+          <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-5 @xl:grid-cols-4">
             <Stat label="Inbound now" value={bps(d.now.inBps)} note={`${d.now.freshPorts} of ${d.now.ports} uplink ports reporting`} tone={d.now.stalePorts ? 'warn' : undefined} />
             <Stat label="Outbound now" value={bps(d.now.outBps)} />
             <Stat label="95th pct in, 24 h" value={bps(d.history.p95.inBps)} note={`${d.history.p95.samples} 5-minute samples`} />
@@ -274,11 +292,9 @@ function LiveUplinks() {
           const peak = Math.max(1, ...samples.slice(-120).flatMap((s) => [s.inBps ?? 0, s.outBps ?? 0]));
           const pctOf = (v: number | null) => (v !== null && p.speedBps ? `${((v / p.speedBps) * 100).toFixed(v / p.speedBps < 0.1 ? 1 : 0)}%` : null);
           return (
-            <li key={p.interfaceId} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)] items-center gap-x-3 gap-y-1.5 px-3 py-2.5">
-              <Link to={`/network-monitoring?port=${p.interfaceId}`} className="col-span-3 min-w-0 hover:underline">
-                <div className="truncate font-medium">
-                  {p.description || p.name}
-                </div>
+            <li key={p.interfaceId} className="grid grid-cols-2 items-center gap-x-3 gap-y-1.5 px-3 py-2.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)]">
+              <Link to={`/network-monitoring?port=${p.interfaceId}`} className="col-span-2 min-w-0 hover:underline @2xl:col-span-3">
+                <div className="truncate font-medium">{p.description || p.name}</div>
                 <div className="truncate text-[12px] text-ink-3">
                   {p.deviceName} · <span className="font-mono">{p.name}</span>
                   {p.speedBps ? ` · ${bps(p.speedBps)}` : ''}
@@ -299,7 +315,7 @@ function LiveUplinks() {
                 </div>
                 {pctOf(outBps) && <div className="text-[11.5px] text-ink-3">{pctOf(outBps)} of link</div>}
               </div>
-              {samples.length > 1 ? <Sparkline samples={samples} max={peak * 1.1} colors={c} /> : <div className="text-[12px] text-ink-3">{l ? '' : 'waiting for live samples…'}</div>}
+              <div className="col-span-2 @2xl:col-span-1">{samples.length > 1 ? <Sparkline samples={samples} max={peak * 1.1} colors={c} /> : <div className="text-[12px] text-ink-3">{l ? '' : 'waiting for live samples…'}</div>}</div>
             </li>
           );
         })}
@@ -309,38 +325,95 @@ function LiveUplinks() {
 }
 
 function PowerPanel() {
-  const q = useQuery({ queryKey: ['overview', 'power'], queryFn: () => api.get<{ now: PowerNowT; energy: EnergyT | null; byDatacenter: { datacenterCode: string | null; now: PowerNowT }[] } | null>('/overview/power'), refetchInterval: 60_000 });
+  const q = useQuery({
+    queryKey: ['overview', 'power'],
+    queryFn: () => api.get<{ now: PowerNowT; energy: EnergyT | null; byDatacenter: { datacenterCode: string | null; now: PowerNowT }[] } | null>('/overview/power'),
+    refetchInterval: 60_000,
+  });
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorNote error={q.error} />;
   const d = q.data;
   if (!d) return null;
   return (
-    <Panel title="Equipment power" actions={<Link to="/power" className="text-[13px] text-accent hover:underline">Power</Link>}>
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+    <Panel
+      title="Equipment power"
+      className="@container"
+      actions={
+        <Link to="/power" className="text-[13px] text-accent hover:underline">
+          Power
+        </Link>
+      }
+    >
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 @3xl:grid-cols-4">
         <Stat label="Measured now" value={formatWattsShort(d.now.measuredW)} note={`${d.now.measuredDevices} devices reporting`} />
         <Stat label="Estimated now" value={<span className="text-est">{formatWattsShort(d.now.estimatedW)}</span>} note={`${d.now.estimatedDevices} from estimates`} />
         <Stat label="Unknown" value={d.now.unknownDevices} tone={d.now.unknownDevices ? 'warn' : undefined} note="No figure, not in totals" />
         <Stat label="Energy, 24 h" value={formatKwh(d.energy ? d.energy.measuredKwh + d.energy.estimatedKwh : 0)} note={d.energy ? `${formatKwh(d.energy.estimatedKwh)} of it estimated` : 'No hourly data yet'} />
       </dl>
+      {d.byDatacenter.length > 1 && (
+        <ul className="mt-5 divide-y divide-rule border-t border-rule text-[13px]">
+          {d.byDatacenter.map((x) => (
+            <li key={x.datacenterCode ?? 'none'} className="flex justify-between gap-3 py-1.5">
+              <span>{x.datacenterCode ?? 'Not in a rack'}</span>
+              <span className="tabular-nums">
+                {formatWattsShort(x.now.measuredW + x.now.estimatedW)}
+                {x.now.estimatedW > 0 && <span className="text-est"> ({formatWattsShort(x.now.estimatedW)} est.)</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </Panel>
   );
 }
 
 function NetworkPanel() {
   const { can } = useAuth();
-  const net = useQuery({ queryKey: ['network', 'summary'], queryFn: () => api.get<{ networkDevices: number; interfaces: number; physicalInterfaces: number; cables: number; vlans: number; activeCircuits: number; committedTransitBps: number }>('/network/summary'), enabled: can('network.read') });
-  const ipam = useQuery({ queryKey: ['ipam', 'summary'], queryFn: () => api.get<{ prefixes: number; allocated: number; reserved: number; ipv4: { usable: number; used: number; utilization: number }; fullest: { id: string; prefix: string; addressUtilization: number }[] }>('/ipam/summary'), enabled: can('ipam.read') });
+  const net = useQuery({
+    queryKey: ['network', 'summary'],
+    queryFn: () => api.get<{ networkDevices: number; interfaces: number; physicalInterfaces: number; cables: number; vlans: number; activeCircuits: number; committedTransitBps: number }>('/network/summary'),
+    enabled: can('network.read'),
+  });
+  const ipam = useQuery({
+    queryKey: ['ipam', 'summary'],
+    queryFn: () => api.get<{ prefixes: number; allocated: number; reserved: number; ipv4: { usable: number; used: number; utilization: number }; fullest: { id: string; prefix: string; addressUtilization: number }[] }>('/ipam/summary'),
+    enabled: can('ipam.read'),
+  });
   if (!can('network.read') && !can('ipam.read')) return null;
   const n = net.data;
   const i = ipam.data;
   return (
-    <Panel title="Network and IP addresses" actions={<span className="flex gap-3 text-[13px]">{n && <Link to="/network" className="text-accent hover:underline">Network</Link>}{i && <Link to="/ipam" className="text-accent hover:underline">IPAM</Link>}</span>}>
+    <Panel
+      title="Network and IP addresses"
+      className="@container"
+      actions={
+        <span className="flex gap-3 text-[13px]">
+          {n && (
+            <Link to="/network" className="text-accent hover:underline">
+              Network
+            </Link>
+          )}
+          {i && (
+            <Link to="/ipam" className="text-accent hover:underline">
+              IPAM
+            </Link>
+          )}
+        </span>
+      }
+    >
       <ErrorNote error={net.error ?? ipam.error} />
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 @3xl:grid-cols-4">
         {n && <Stat label="Network devices" value={n.networkDevices} note={`${n.physicalInterfaces} physical ports`} />}
         {n && <Stat label="Cables documented" value={n.cables} note={`${n.vlans} VLANs`} />}
         {n && <Stat label="Active circuits" value={n.activeCircuits} note={n.committedTransitBps ? `${formatBps(n.committedTransitBps)} committed transit` : 'No transit commits recorded'} />}
-        {i && <Stat label="IPv4 in use" value={`${i.ipv4.utilization}%`} note={`${i.ipv4.used.toLocaleString('en-IN')} of ${i.ipv4.usable.toLocaleString('en-IN')} in active subnets`} tone={i.ipv4.utilization >= 90 ? 'crit' : i.ipv4.utilization >= 75 ? 'warn' : undefined} />}
+        {i && (
+          <Stat
+            label="IPv4 in use"
+            value={`${i.ipv4.utilization}%`}
+            note={`${i.ipv4.used.toLocaleString('en-IN')} of ${i.ipv4.usable.toLocaleString('en-IN')} in active subnets`}
+            tone={i.ipv4.utilization >= 90 ? 'crit' : i.ipv4.utilization >= 75 ? 'warn' : undefined}
+          />
+        )}
       </dl>
       {i && i.fullest.filter((f) => f.addressUtilization >= 75).length > 0 && (
         <p className="mt-4 text-[13px]">
@@ -358,7 +431,6 @@ function NetworkPanel() {
             ))}
         </p>
       )}
-      <p className="mt-4 text-[12.5px] text-ink-3">Live port traffic arrives with Phase 4 (network monitoring); these are inventory figures.</p>
     </Panel>
   );
 }
@@ -372,114 +444,148 @@ interface Overview {
   audit: { events24h: number; failedLogins24h: number; denied24h: number } | null;
 }
 
-const PHASES: { n: number; name: string; scope: string; done?: boolean }[] = [
-  { n: 1, name: 'Foundation', scope: 'Sign-in, roles, tenants, audit log' },
-  { n: 2, name: 'Physical DCIM', scope: 'Datacenters, rooms, racks, hardware lifecycle' },
-  { n: 3, name: 'Network and IPAM', scope: 'Devices, interfaces, VLANs, IPv4/IPv6' },
-  { n: 4, name: 'Network monitoring', scope: 'Live per-port RX/TX and alerts' },
-  { n: 5, name: 'Equipment power', scope: 'Measured and estimated watts, kWh, cost' },
-  { n: 6, name: 'Provisioning', scope: 'OS installs, Proxmox, Virtualizor' },
-  { n: 7, name: 'Colocation and portal', scope: 'Customer self-service, remote hands' },
-  { n: 8, name: 'Billing and automation', scope: 'WHMCS, workflows, reports' },
-  // No section of its own (installer, backups, install check): marked done explicitly.
-  { n: 9, name: 'Production readiness', scope: 'Hardening, install validation, acceptance', done: true },
-];
-
-function Roadmap() {
-  const done = new Set(NAV_SECTIONS.filter((s) => s.status === 'available').map((s) => s.phase));
-  const pending = new Set(NAV_SECTIONS.filter((s) => s.status === 'planned').map((s) => s.phase));
+/** Things that need someone: each row links to where it is handled. */
+function AttentionPanel({ o }: { o: Overview }) {
+  const { can } = useAuth();
+  const dcim = useQuery({ queryKey: ['dcim', 'summary'], queryFn: () => api.get<DcimSummary>('/dcim/summary'), enabled: can('dcim.read'), refetchInterval: 60_000 });
+  const bw = useQuery({ queryKey: ['overview', 'bandwidth'], queryFn: () => api.get<{ alerts: AlertSummaryT } | null>('/overview/bandwidth'), enabled: can('monitoring.read'), refetchInterval: 30_000 });
+  const colo = useQuery({ queryKey: ['colo', 'overview'], queryFn: () => api.get<ColoOverviewT>('/colocation/overview'), enabled: can('services.read'), refetchInterval: 60_000 });
+  const power = useQuery({ queryKey: ['overview', 'power'], queryFn: () => api.get<{ now: PowerNowT } | null>('/overview/power'), enabled: can('power.read'), refetchInterval: 60_000 });
+  const integrity = useQuery({
+    queryKey: ['audit-integrity'],
+    queryFn: () => api.get<{ ok: boolean; checked: number; brokenAtId: number | null } | null>('/overview/audit-integrity'),
+    enabled: can('audit.read'),
+  });
+  const a = bw.data?.alerts;
+  const c = colo.data;
+  const d = dcim.data;
+  const rows: { label: string; n: number | null | undefined; to: string; tone: 'crit' | 'warn'; note?: string }[] = [
+    { label: 'Alerts firing', n: a?.firing, to: '/alerts', tone: a?.critical ? 'crit' : 'warn', note: a?.critical ? `${a.critical} critical` : undefined },
+    { label: 'Open tickets', n: c?.open.tickets, to: '/tickets', tone: 'warn' },
+    { label: 'Cross-connect requests', n: c?.open.crossConnects, to: '/colocation?tab=cross-connects', tone: 'warn' },
+    { label: 'Shipments and visits expected', n: c ? c.open.shipments + c.open.visits : undefined, to: '/colocation?tab=shipments', tone: 'warn' },
+    { label: 'Racks over contracted power', n: c?.overContract.length, to: '/colocation', tone: 'crit', note: c?.mayExceed.length ? `${c.mayExceed.length} may exceed` : undefined },
+    { label: 'Warranties expired', n: d?.warranty.expired, to: '/hardware?warranty=0', tone: 'crit', note: d?.warranty.within90Days ? `${d.warranty.within90Days} more within 90 days` : undefined },
+    { label: 'Spare parts at reorder level', n: d?.sparePartsLow, to: '/hardware?tab=spares', tone: 'warn' },
+    { label: 'Devices without a power figure', n: power.data?.now.unknownDevices, to: '/power?tab=collection', tone: 'warn' },
+    { label: 'Staff without two-step sign-in', n: o.users?.staffWithoutMfa, to: '/users', tone: 'warn' },
+  ];
+  const shown = rows.filter((r) => r.n !== undefined && r.n !== null);
+  const open = shown.filter((r) => (r.n ?? 0) > 0);
   return (
-    <ol className="divide-y divide-rule">
-      {PHASES.map((p) => {
-        const live = p.done || (done.has(p.n) && !pending.has(p.n));
-        return (
-          <li key={p.n} className="flex items-center gap-3 px-4 py-2.5">
-            <span className="w-14 flex-none text-[12.5px] text-ink-3">Phase {p.n}</span>
-            <span className="min-w-0 flex-1">
-              <span className="font-medium">{p.name}</span>
-              <span className="block truncate text-[12.5px] text-ink-3">{p.scope}</span>
-            </span>
-            {live ? <Chip tone="ok">Live</Chip> : <Chip>Not started</Chip>}
+    <Panel title="Needs attention" flush>
+      {open.length === 0 && shown.length > 0 && <p className="px-4 pt-3 text-[13px] text-ok">Nothing waiting. All clear.</p>}
+      <ul className="divide-y divide-rule">
+        {shown.map((r) => (
+          <li key={r.label}>
+            <Link to={r.to} className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-sunken/50">
+              <span className="min-w-0">
+                <span className={r.n ? 'font-medium' : 'text-ink-2'}>{r.label}</span>
+                {r.note && <span className="block text-[12px] text-ink-3">{r.note}</span>}
+              </span>
+              {r.n ? <Chip tone={r.tone}>{r.n}</Chip> : <span className="text-[13px] text-ink-3">0</span>}
+            </Link>
           </li>
-        );
-      })}
-    </ol>
+        ))}
+      </ul>
+      {integrity.data && (
+        <p className={`border-t border-rule px-4 py-2.5 text-[12.5px] ${integrity.data.ok ? 'text-ok' : 'font-medium text-crit'}`}>
+          {integrity.data.ok ? `Audit trail intact: ${integrity.data.checked.toLocaleString('en-IN')} records verified.` : `Audit trail tampering detected at record #${integrity.data.brokenAtId}. Investigate immediately.`}
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+function ColocationPanel() {
+  const q = useQuery({ queryKey: ['colo', 'overview'], queryFn: () => api.get<ColoOverviewT>('/colocation/overview'), refetchInterval: 60_000 });
+  const c = q.data;
+  if (!c) return q.error ? <ErrorNote error={q.error} /> : null;
+  return (
+    <Panel
+      title="Colocation and services"
+      className="@container h-full"
+      actions={
+        <Link to="/colocation" className="text-[13px] text-accent hover:underline">
+          Colocation
+        </Link>
+      }
+    >
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 @2xl:grid-cols-3">
+        <Stat label="Allocated space" value={`${c.units} U`} note={`${c.allocations} allocation${c.allocations === 1 ? '' : 's'}`} />
+        <Stat label="Contracted power" value={formatWattsShort(c.contractedPowerW)} note={`${formatWattsShort(c.measuredW + c.estimatedW)} in use`} />
+        <Stat label="Active services" value={c.activeServices} />
+        <Stat label="Active cross-connects" value={c.activeCrossConnects} />
+        <Stat
+          label="Customer equipment now"
+          value={formatWattsShort(c.equipment.measuredW + c.equipment.estimatedW)}
+          note={`${c.equipment.devices} devices${c.equipment.estimatedW ? `, ${formatWattsShort(c.equipment.estimatedW)} estimated` : ''}`}
+        />
+        <Stat
+          label="Customer traffic now"
+          value={c.bandwidth?.ports ? `↓ ${bps(c.bandwidth.inBps)}` : '—'}
+          note={c.bandwidth?.ports ? `↑ ${bps(c.bandwidth.outBps)} · ${c.bandwidth.ports} port${c.bandwidth.ports === 1 ? '' : 's'}` : 'No monitored customer ports'}
+        />
+      </dl>
+    </Panel>
   );
 }
 
 function StaffOverview() {
   const { me, can } = useAuth();
   const q = useQuery({ queryKey: ['overview'], queryFn: () => api.get<Overview>('/overview'), refetchInterval: 60_000 });
-  const integrity = useQuery({
-    queryKey: ['audit-integrity'],
-    queryFn: () => api.get<{ ok: boolean; checked: number; brokenAtId: number | null } | null>('/overview/audit-integrity'),
-    enabled: can('audit.read'),
-  });
   const o = q.data;
   return (
     <>
-      <PageHeader
-        title="Overview"
-        description={`${me!.organization.name}. Bandwidth and power come from the devices themselves; power estimates are labelled as estimates. Nothing on this page is sample data.`}
-      />
+      <PageHeader title="Overview" description={`${me!.organization.name}. Bandwidth and power come from the devices themselves; estimates are labelled. Updated ${o ? formatDateTime(o.generatedAt, me!.organization.timezone) : '…'}.`} />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
       {o && (
-        <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
-          <div className="flex flex-col gap-5">
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+          {/* Two columns that end level: the last panel of each takes up any difference. */}
+          <div className="flex flex-col gap-5 xl:col-span-8 [&>*:last-child]:flex-1">
             {can('monitoring.read') && <BandwidthPanel />}
-            {can('power.read') && <PowerPanel />}
             {can('dcim.read') && <PhysicalPanel />}
-            <NetworkPanel />
-            <Panel title="Customers and access">
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
-                {o.customers && <Stat label="Active customers" value={o.customers.active} note={`${o.customers.suspended} suspended, ${o.customers.closed} closed`} />}
-                {o.users && <Stat label="Staff users" value={o.users.staff} note={o.users.disabled ? `${o.users.disabled} disabled` : 'Active accounts'} />}
-                {o.users && <Stat label="Portal users" value={o.users.customer} note="Customer accounts" />}
-                {o.activeSessions !== null && <Stat label="Signed-in sessions" value={o.activeSessions} note="Across all users" />}
-              </dl>
-              {o.users && o.users.staffWithoutMfa > 0 && (
-                <p className="mt-4 rounded-md bg-warn-soft px-3 py-2 text-[13px] text-warn">
-                  {o.users.staffWithoutMfa} staff account{o.users.staffWithoutMfa === 1 ? ' has' : 's have'} no two-step sign-in.{' '}
-                  {can('settings.write') ? (
-                    <Link to="/settings" className="font-medium underline">
-                      Require it for all staff
-                    </Link>
-                  ) : (
-                    'Ask an administrator to require it.'
-                  )}
-                </p>
-              )}
-            </Panel>
-            {o.audit && (
-              <Panel
-                title="Security activity, last 24 hours"
-                actions={
-                  <Link to="/audit" className="text-[13px] text-accent hover:underline">
-                    Open audit log
-                  </Link>
-                }
-              >
-                <dl className="grid grid-cols-3 gap-6">
-                  <Stat label="Recorded events" value={o.audit.events24h} />
-                  <Stat label="Failed sign-ins" value={o.audit.failedLogins24h} tone={o.audit.failedLogins24h > 20 ? 'warn' : undefined} />
-                  <Stat label="Access denied" value={o.audit.denied24h} tone={o.audit.denied24h > 0 ? 'warn' : undefined} />
-                </dl>
-                {integrity.data && (
-                  <p className={`mt-4 text-[13px] ${integrity.data.ok ? 'text-ok' : 'text-crit'}`}>
-                    {integrity.data.ok
-                      ? `Audit trail intact: all ${integrity.data.checked} records verified.`
-                      : `Audit trail tampering detected at record #${integrity.data.brokenAtId}. Investigate immediately.`}
-                  </p>
-                )}
-                <ErrorNote error={integrity.error} className="mt-3" />
-              </Panel>
-            )}
-            <p className="text-[12.5px] text-ink-3">Updated {formatDateTime(o.generatedAt, me!.organization.timezone)}</p>
           </div>
-          <Panel title="Build progress" flush>
-            <Roadmap />
-          </Panel>
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 xl:col-span-4 xl:flex xl:flex-col [&>*:last-child]:flex-1">
+            <AttentionPanel o={o} />
+            {can('power.read') && <PowerPanel />}
+            <NetworkPanel />
+          </div>
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 xl:col-span-12">
+            {can('services.read') && <ColocationPanel />}
+            <Panel
+              title="Customers and access"
+              className="@container h-full"
+              actions={
+                can('customers.read') && (
+                  <Link to="/customers" className="text-[13px] text-accent hover:underline">
+                    Customers
+                  </Link>
+                )
+              }
+            >
+              <dl className="grid grid-cols-2 gap-x-6 gap-y-5 @2xl:grid-cols-3">
+                {o.customers && <Stat label="Active customers" value={o.customers.active} note={`${o.customers.suspended} suspended, ${o.customers.closed} closed`} />}
+                {o.users && <Stat label="Portal users" value={o.users.customer} note="Customer accounts" />}
+                {o.users && <Stat label="Staff users" value={o.users.staff} note={o.users.disabled ? `${o.users.disabled} disabled` : 'Active accounts'} />}
+                {o.activeSessions !== null && <Stat label="Signed-in sessions" value={o.activeSessions} note="Across all users" />}
+                {o.audit && <Stat label="Failed sign-ins, 24 h" value={o.audit.failedLogins24h} tone={o.audit.failedLogins24h > 20 ? 'warn' : undefined} note={`${o.audit.events24h} events recorded`} />}
+                {o.audit && (
+                  <Stat
+                    label="Access denied, 24 h"
+                    value={o.audit.denied24h}
+                    tone={o.audit.denied24h > 0 ? 'warn' : undefined}
+                    note={
+                      <Link to="/audit" className="text-accent hover:underline">
+                        Audit log
+                      </Link>
+                    }
+                  />
+                )}
+              </dl>
+            </Panel>
+          </div>
         </div>
       )}
     </>
@@ -487,48 +593,194 @@ function StaffOverview() {
 }
 
 function CustomerOverview() {
+  const { can } = useAuth();
   const q = useQuery({ queryKey: ['my-customer'], queryFn: () => api.get<Customer>('/customers/me') });
+  const colo = useQuery({ queryKey: ['colo', 'overview'], queryFn: () => api.get<ColoOverviewT>('/colocation/overview'), enabled: can('services.read'), refetchInterval: 60_000 });
   const c = q.data;
+  const k = colo.data;
   return (
     <>
-      <PageHeader title="Your account" description="Bandwidth is on the Network Monitoring page and power on the Power page." />
+      <PageHeader title="Your account" description="Your equipment, space, power and bandwidth at a glance." />
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
-      {c && (
-        <Panel title={c.name} actions={<Chip tone={c.status === 'active' ? 'ok' : 'warn'}>{c.status === 'active' ? 'Active' : c.status === 'suspended' ? 'Suspended' : 'Closed'}</Chip>}>
-          <dl className="grid gap-4 sm:grid-cols-3">
-            <div>
-              <dt className="text-[13px] text-ink-2">Account code</dt>
-              <dd className="font-mono">{c.code}</dd>
-            </div>
-            <div>
-              <dt className="text-[13px] text-ink-2">Contact email</dt>
-              <dd>{c.contactEmail ?? '—'}</dd>
-            </div>
-            <div>
-              <dt className="text-[13px] text-ink-2">Phone</dt>
-              <dd>{c.phone ?? '—'}</dd>
-            </div>
-          </dl>
-        </Panel>
-      )}
-      <div className="mt-5">
-        <CustomerEquipment embedded />
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+        {c && (
+          <Panel title={c.name} className="h-full xl:col-span-4" actions={<Chip tone={c.status === 'active' ? 'ok' : 'warn'}>{c.status === 'active' ? 'Active' : c.status === 'suspended' ? 'Suspended' : 'Closed'}</Chip>}>
+            <dl className="grid grid-cols-2 gap-4">
+              <div>
+                <dt className="text-[13px] text-ink-2">Account code</dt>
+                <dd className="font-mono">{c.code}</dd>
+              </div>
+              <div>
+                <dt className="text-[13px] text-ink-2">Phone</dt>
+                <dd>{c.phone ?? '—'}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-[13px] text-ink-2">Contact email</dt>
+                <dd className="truncate">{c.contactEmail ?? '—'}</dd>
+              </div>
+            </dl>
+            <p className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
+              <Link to="/ipam" className="text-accent hover:underline">
+                IP addresses
+              </Link>
+              <Link to="/network-monitoring" className="text-accent hover:underline">
+                Bandwidth
+              </Link>
+              <Link to="/power" className="text-accent hover:underline">
+                Power
+              </Link>
+              <Link to="/tickets" className="text-accent hover:underline">
+                Tickets
+              </Link>
+            </p>
+          </Panel>
+        )}
+        {k && (
+          <Panel title="At a glance" className="@container h-full xl:col-span-8">
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-5 @2xl:grid-cols-4">
+              <Stat label="Equipment" value={k.equipment.devices} note={k.units ? `${k.units} U of rack space` : 'No rack space contracted'} />
+              <Stat label="Power now" value={formatWattsShort(k.equipment.measuredW + k.equipment.estimatedW)} note={k.equipment.estimatedW ? `${formatWattsShort(k.equipment.estimatedW)} estimated` : 'All measured'} />
+              <Stat
+                label="Bandwidth now"
+                value={k.bandwidth && k.bandwidth.ports ? `↓ ${bps(k.bandwidth.inBps)}` : '—'}
+                note={k.bandwidth && k.bandwidth.ports ? `↑ ${bps(k.bandwidth.outBps)} · ${k.bandwidth.ports} port${k.bandwidth.ports === 1 ? '' : 's'}` : 'No monitored ports'}
+              />
+              <Stat label="Open requests" value={k.open.tickets + k.open.crossConnects + k.open.shipments + k.open.visits} note={`${k.open.tickets} tickets, ${k.activeServices} active services`} />
+            </dl>
+          </Panel>
+        )}
+        <CustomerSpace />
+        <CustomerTickets />
+        <CustomerSubnets />
+        <div className="xl:col-span-12">
+          <CustomerEquipment embedded />
+        </div>
       </div>
-      <p className="mt-5 text-[13px]">
-        <Link to="/ipam" className="text-accent hover:underline">
-          View your IP addresses
-        </Link>
-        {' · '}
-        <Link to="/network-monitoring" className="text-accent hover:underline">
-          View your bandwidth
-        </Link>
-        {' · '}
-        <Link to="/power" className="text-accent hover:underline">
-          View your power
-        </Link>
-      </p>
     </>
+  );
+}
+
+function CustomerSpace() {
+  const { can } = useAuth();
+  const q = useQuery({ queryKey: ['colo', 'allocations', 'mine'], queryFn: () => api.get<AllocationT[]>('/colocation/allocations'), enabled: can('services.read') });
+  if (!can('services.read')) return null;
+  const rows = (q.data ?? []).filter((a) => a.active);
+  return (
+    <Panel
+      title="Your rack space"
+      className="h-full xl:col-span-4"
+      flush
+      actions={
+        <Link to="/colocation" className="text-[13px] text-accent hover:underline">
+          Colocation
+        </Link>
+      }
+    >
+      {q.isLoading && <Loading />}
+      {q.data && !rows.length && <p className="px-4 py-3 text-[13px] text-ink-2">No rack space is contracted.</p>}
+      <ul className="divide-y divide-rule">
+        {rows.map((a) => {
+          const used = a.power ? a.power.measuredW + a.power.estimatedW : null;
+          const pct = used !== null && a.contractedPowerW ? Math.min(100, (used / a.contractedPowerW) * 100) : null;
+          return (
+            <li key={a.id} className="px-4 py-3">
+              <div className="flex justify-between gap-3">
+                <span className="font-medium">
+                  {a.datacenterCode} · rack {a.rackName}
+                </span>
+                <span className="text-[13px] text-ink-2">
+                  U{a.startU}–{a.endU} ({a.units} U)
+                </span>
+              </div>
+              <div className="mt-1.5 flex items-center gap-3 text-[12.5px] text-ink-2">
+                <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-sunken">
+                  <span className={`block h-full rounded-full ${a.power?.overContract ? 'bg-crit' : 'bg-accent'}`} style={{ width: `${pct ?? 0}%` }} />
+                </span>
+                <span className="whitespace-nowrap tabular-nums">
+                  {used !== null ? formatWattsShort(used) : '—'} of {formatWattsShort(a.contractedPowerW)}
+                </span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </Panel>
+  );
+}
+
+function CustomerTickets() {
+  const { can } = useAuth();
+  const q = useQuery({ queryKey: ['tickets', 'open', 'mine'], queryFn: () => api.get<{ items: TicketT[]; total: number }>('/tickets?status=open&pageSize=6'), enabled: can('tickets.read') });
+  if (!can('tickets.read')) return null;
+  const rows = q.data?.items ?? [];
+  return (
+    <Panel
+      title={`Open tickets${q.data ? ` (${q.data.total})` : ''}`}
+      className="h-full xl:col-span-4"
+      flush
+      actions={
+        <Link to="/tickets" className="text-[13px] text-accent hover:underline">
+          All tickets
+        </Link>
+      }
+    >
+      {q.isLoading && <Loading />}
+      {q.data && !rows.length && <p className="px-4 py-3 text-[13px] text-ink-2">No open tickets.</p>}
+      <ul className="divide-y divide-rule">
+        {rows.map((t) => (
+          <li key={t.id}>
+            <Link to={`/tickets/${t.id}`} className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-sunken/50">
+              <span className="min-w-0">
+                <span className="block truncate font-medium">
+                  #{t.number} {t.subject}
+                </span>
+                <span className="text-[12px] text-ink-3">{formatDateTime(t.updatedAt)}</span>
+              </span>
+              <Chip tone={t.status === 'waiting_customer' ? 'warn' : 'neutral'}>{t.status === 'waiting_customer' ? 'Waiting for you' : t.status === 'in_progress' ? 'In progress' : 'Open'}</Chip>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+function CustomerSubnets() {
+  const { can } = useAuth();
+  const q = useQuery({ queryKey: ['ipam', 'prefixes', 'mine'], queryFn: () => api.get<PrefixT[]>('/ipam/prefixes'), enabled: can('ipam.read') });
+  if (!can('ipam.read')) return null;
+  const rows = q.data ?? [];
+  return (
+    <Panel
+      title="Your IP subnets"
+      className="h-full xl:col-span-4"
+      flush
+      actions={
+        <Link to="/ipam" className="text-[13px] text-accent hover:underline">
+          IP addresses
+        </Link>
+      }
+    >
+      {q.isLoading && <Loading />}
+      {q.data && !rows.length && <p className="px-4 py-3 text-[13px] text-ink-2">No subnets are assigned to you.</p>}
+      <ul className="divide-y divide-rule">
+        {rows.slice(0, 8).map((p) => (
+          <li key={p.id} className="px-4 py-2.5">
+            <div className="flex justify-between gap-3">
+              <span className="font-mono text-[13px]">{p.prefix}</span>
+              <span className="text-[12.5px] text-ink-2 tabular-nums">
+                {p.usedAddresses} / {p.usable} used
+              </span>
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-sunken">
+              <span className="block h-full rounded-full bg-accent" style={{ width: `${Math.min(100, p.addressUtilization)}%` }} />
+            </div>
+            {p.gateway && <p className="mt-1 text-[12px] text-ink-3">Gateway {p.gateway}</p>}
+          </li>
+        ))}
+      </ul>
+    </Panel>
   );
 }
 

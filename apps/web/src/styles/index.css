@@ -316,3 +316,13 @@ body::after {
   background: #4fdc96;
   box-shadow: 0 0 0 2px rgb(79 220 150 / 0.18), 0 0 6px rgb(79 220 150 / 0.55);
 }
+
+/*
+ * Grid items default to min-width: auto, so a wide table or chart inside a panel
+ * stretched the whole column past the screen on phones instead of scrolling
+ * inside its own panel. Letting grid items shrink keeps every page within the
+ * screen; tables still scroll sideways in their panel.
+ */
+main .grid > * {
+  min-width: 0;
+}
