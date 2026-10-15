@@ -141,9 +141,13 @@ export function DeviceSheetPage() {
         {/* Header */}
         <div className="flex items-start gap-[5mm] border-b-[2pt] border-black pb-[3mm]">
           <div className="min-w-0 flex-1">
-            <p style={{ fontSize: '8pt', letterSpacing: '.06em', textTransform: 'uppercase', color: '#444' }}>
-              {me?.organization.name} · Equipment datasheet
-            </p>
+            <div className="flex items-end justify-between gap-[4mm]" style={{ marginBottom: '2.5mm' }}>
+              <img src="/brand-logo.png" alt={me?.organization.name ?? 'Logo'} style={{ height: '13mm', width: 'auto' }} />
+              <p style={{ fontSize: '8pt', letterSpacing: '.06em', textTransform: 'uppercase', color: '#444', textAlign: 'right' }}>
+                Equipment datasheet
+                <span style={{ display: 'block', textTransform: 'none', letterSpacing: 0 }}>{me?.organization.name}</span>
+              </p>
+            </div>
             <p style={{ fontSize: '17pt', fontWeight: 700, lineHeight: 1.15, marginTop: '1mm' }} className="truncate">
               {title}
             </p>
