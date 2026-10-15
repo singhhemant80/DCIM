@@ -188,6 +188,8 @@ export interface DeviceT {
   eolDate?: string | null;
   notes?: string | null;
   custom?: Record<string, string | number | boolean | null>;
+  /** When the front photo was last changed (device detail only); null without a photo. */
+  photoUpdatedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

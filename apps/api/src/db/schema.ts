@@ -1005,6 +1005,22 @@ export const deviceHardware = pgTable('device_hardware', {
   health: text('health'),
 });
 
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' });
+
+/** A photo of the device's front panel (one per device; JPEG, PNG or WebP, at most 1 MB). */
+export const devicePhotos = pgTable('device_photos', {
+  deviceId: uuid('device_id')
+    .primaryKey()
+    .references(() => devices.id, { onDelete: 'cascade' }),
+  orgId: orgRef(),
+  contentType: text('content_type').notNull(),
+  data: bytea('data').notNull(),
+  size: integer('size').notNull(),
+  uploadedBy: text('uploaded_by'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
 /** Equipment fitted with a device: cables, transceivers, rail kits, trays… */
 export const deviceAccessories = pgTable(
   'device_accessories',

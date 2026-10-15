@@ -1,7 +1,8 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, Put, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
-import { accessorySchema, hardwareApplySchema } from '@crapplet/shared';
+import { accessorySchema, devicePhotoSchema, hardwareApplySchema } from '@crapplet/shared';
 import { ApiZodBody, ZodPipe } from '../common/zod';
 import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly } from '../auth/decorators';
 import type { Principal, RequestMeta } from '../auth/principal';
@@ -38,6 +39,35 @@ export class DeviceHardwareController {
   @ApiOperation({ summary: 'Copy chosen fields (serial, CPU, RAM, disks, NICs, firmware) from the last BMC read into the device record.' })
   apply(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(hardwareApplySchema)) b: z.infer<typeof hardwareApplySchema>, @ReqMeta() m: RequestMeta) {
     return this.svc.apply(p, id, b, m);
+  }
+
+  @Get('photo')
+  @RequirePermissions('dcim.read')
+  @ApiOperation({ summary: 'The front photo of the device (image bytes).' })
+  async photo(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Res() res: Response) {
+    const row = await this.svc.photo(p, id);
+    res.setHeader('Content-Type', row.contentType);
+    res.setHeader('Content-Length', String(row.size));
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'inline');
+    res.end(row.data);
+  }
+
+  @Put('photo')
+  @StaffOnly()
+  @RequirePermissions('dcim.write')
+  @ApiZodBody(devicePhotoSchema)
+  putPhoto(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(devicePhotoSchema)) b: z.infer<typeof devicePhotoSchema>, @ReqMeta() m: RequestMeta) {
+    return this.svc.putPhoto(p, id, b, m);
+  }
+
+  @Delete('photo')
+  @StaffOnly()
+  @RequirePermissions('dcim.write')
+  @HttpCode(204)
+  deletePhoto(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    return this.svc.deletePhoto(p, id, m);
   }
 
   @Get('accessories')

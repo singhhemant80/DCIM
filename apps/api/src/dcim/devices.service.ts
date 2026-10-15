@@ -34,8 +34,7 @@ import {
   rackReservations,
   racks,
   rooms,
-  type Device,
-} from '../db/schema';
+  type Device, devicePhotos } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { deviceReachabilityView, type ReachabilityKind } from './reachability';
 import { rethrowDbError } from '../common/pg-errors';
@@ -164,7 +163,8 @@ export class DevicesService {
     const [row] = await this.baseQuery(and(eq(devices.id, id), tenantFilter(p, scopeCols)));
     if (!row) throw NOT_FOUND();
     const reach = await this.reachability(p, [row.device]);
-    return { ...this.view(p, row), reachability: reach.get(row.device.id)! };
+    const [photo] = await this.db.select({ updatedAt: devicePhotos.updatedAt }).from(devicePhotos).where(eq(devicePhotos.deviceId, id));
+    return { ...this.view(p, row), reachability: reach.get(row.device.id)!, photoUpdatedAt: photo?.updatedAt ?? null };
   }
 
   /**

@@ -1,9 +1,9 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import type { z } from 'zod';
-import { ACCESSORY_LABELS, type AccessoryInput, type HardwareInventory, type hardwareApplySchema } from '@crapplet/shared';
+import { ACCESSORY_LABELS, type AccessoryInput, type DevicePhotoInput, type HardwareInventory, type hardwareApplySchema } from '@crapplet/shared';
 import { DB, type Db, type DbOrTx } from '../db/db';
-import { deviceAccessories, deviceCredentials, deviceEvents, deviceHardware, devices, sparePartMovements, spareParts, type Device } from '../db/schema';
+import { deviceAccessories, deviceCredentials, deviceEvents, deviceHardware, devicePhotos, devices, sparePartMovements, spareParts, type Device } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import type { Principal, RequestMeta } from '../auth/principal';
 
@@ -205,6 +205,48 @@ export class HardwareService {
 
   private label(i: { kind: string; quantity: number; description?: string | null }) {
     return `${i.quantity} × ${ACCESSORY_LABELS[i.kind as keyof typeof ACCESSORY_LABELS] ?? i.kind}${i.description ? ` (${i.description})` : ''}`;
+  }
+
+  /* ---------------------------------------------------------------- front photo */
+
+  async photo(p: Principal, id: string) {
+    await this.device(p, id);
+    const [row] = await this.db.select().from(devicePhotos).where(eq(devicePhotos.deviceId, id));
+    if (!row) throw new NotFoundException({ error: 'not_found', message: 'No photo' });
+    return row;
+  }
+
+  /** Stores the photo after checking that the bytes really are a JPEG, PNG or WebP image. */
+  async putPhoto(p: Principal, id: string, i: DevicePhotoInput, meta: RequestMeta) {
+    await this.device(p, id, true);
+    const m = /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(i.image)!;
+    const data = Buffer.from(m[2]!, 'base64');
+    const type = data.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))
+      ? 'image/jpeg'
+      : data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+        ? 'image/png'
+        : data.subarray(0, 4).toString('latin1') === 'RIFF' && data.subarray(8, 12).toString('latin1') === 'WEBP'
+          ? 'image/webp'
+          : null;
+    if (!type) throw new BadRequestException({ error: 'invalid_image', message: 'The file is not a JPEG, PNG or WebP image' });
+    if (data.length > 1_048_576) throw new BadRequestException({ error: 'too_large', message: 'The photo is too large (at most 1 MB)' });
+    await this.db.transaction(async (tx) => {
+      const values = { contentType: type, data, size: data.length, uploadedBy: p.email, updatedAt: new Date() };
+      await tx.insert(devicePhotos).values({ deviceId: id, orgId: p.orgId, ...values }).onConflictDoUpdate({ target: devicePhotos.deviceId, set: values });
+      await this.event(tx, p, id, 'photo', 'Front photo updated', { size: data.length });
+      await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'device.photo.put', target: { type: 'device', id }, outcome: 'success', meta, metadata: { contentType: type, size: data.length } }, tx);
+    });
+    return { hasPhoto: true, photoUpdatedAt: new Date().toISOString() };
+  }
+
+  async deletePhoto(p: Principal, id: string, meta: RequestMeta) {
+    await this.device(p, id, true);
+    await this.db.transaction(async (tx) => {
+      const rows = await tx.delete(devicePhotos).where(eq(devicePhotos.deviceId, id)).returning({ id: devicePhotos.deviceId });
+      if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'No photo' });
+      await this.event(tx, p, id, 'photo', 'Front photo removed');
+      await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'device.photo.delete', target: { type: 'device', id }, outcome: 'success', meta }, tx);
+    });
   }
 
   async addAccessory(p: Principal, id: string, i: AccessoryInput, meta: RequestMeta) {

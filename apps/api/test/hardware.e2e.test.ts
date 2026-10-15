@@ -245,3 +245,37 @@ describe('accessories', () => {
 });
 
 void deviceHardware;
+
+describe('front photo', () => {
+  // A real 1×1 PNG.
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const dataUrl = (b: Buffer, t = 'image/png') => `data:${t};base64,${b.toString('base64')}`;
+
+  it('staff upload it; staff and the owning customer see it; the bytes are checked', async () => {
+    expect((await admin.put(`${D}/devices/${ids.srv}/photo`, { image: dataUrl(Buffer.from('<svg onload=alert(1)>')) })).status).toBe(400);
+    expect((await admin.put(`${D}/devices/${ids.srv}/photo`, { image: 'data:image/svg+xml;base64,PHN2Zz4=' })).status).toBe(400);
+    expect((await acme.put(`${D}/devices/${ids.srv}/photo`, { image: dataUrl(png) })).status).toBe(403);
+    // Bodies over 1 MB reach validation on this route (the global limit is 1 MB); over 1 MB of image is refused.
+    const big = await admin.put(`${D}/devices/${ids.srv}/photo`, { image: dataUrl(Buffer.concat([png, Buffer.alloc(1_050_000, 7)])) });
+    expect(big.status).toBe(400);
+    expect(JSON.stringify(big.body)).toMatch(/1 MB|too large|large/i);
+    await ok(admin.put(`${D}/devices/${ids.srv}/photo`, { image: dataUrl(png) }));
+    const res = await admin.get(`${D}/devices/${ids.srv}/photo`).buffer(true).parse((r, cb) => {
+      const chunks: Buffer[] = [];
+      r.on('data', (c: Buffer) => chunks.push(c));
+      r.on('end', () => cb(null, Buffer.concat(chunks)));
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('image/png');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect((res.body as Buffer).equals(png)).toBe(true);
+    expect((await acme.get(`${D}/devices/${ids.srv}/photo`)).status).toBe(200);
+    expect((await ok(admin.get(`${D}/devices/${ids.srv}`))).photoUpdatedAt).toBeTruthy();
+    expect((await admin.get(`${D}/devices/${ids.plain}/photo`)).status).toBe(404);
+    // A PNG declared as JPEG is stored as what it really is.
+    await ok(admin.put(`${D}/devices/${ids.srv}/photo`, { image: dataUrl(png, 'image/jpeg') }));
+    expect((await admin.get(`${D}/devices/${ids.srv}/photo`)).headers['content-type']).toBe('image/png');
+    expect((await admin.delete(`${D}/devices/${ids.srv}/photo`)).status).toBe(204);
+    expect((await admin.get(`${D}/devices/${ids.srv}/photo`)).status).toBe(404);
+  });
+});

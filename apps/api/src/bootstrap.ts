@@ -38,6 +38,8 @@ export async function createApp(config: AppConfig, logger: Logger): Promise<INes
     '/api/v1/billing/whmcs',
     express.json({ limit: '8mb', verify: (req, _res, buf) => ((req as unknown as { rawBody: Buffer }).rawBody = Buffer.from(buf)) }),
   );
+  // Device front photos (up to 1 MB) arrive base64-encoded: 1.5 MB on that route only.
+  app.use(/^\/api\/v1\/dcim\/devices\/[0-9a-f-]{36}\/photo$/, express.json({ limit: '1.5mb' }));
   app.useBodyParser('json', { limit: '1mb' });
   app.use(
     helmet({

@@ -24,7 +24,7 @@ Your role decides what you can do:
 | Page | Contents |
 |---|---|
 | **Overview** | A summary of your equipment, power and bandwidth |
-| **Servers & Hardware** | Your servers and devices with their rack position, BMC (iDRAC/iLO) and server addresses, reachability, and power now with energy and cost per period. On a server's page: serial number, firmware and warranty; the hardware read from its BMC (CPUs, memory modules, disks and RAID, power supplies, fans and temperatures, network ports, health and the BMC event log); its IP addresses; the switch ports it is cabled to with live traffic; and the cables and accessories fitted with it |
+| **Servers & Hardware** | Your servers and devices with their rack position, BMC (iDRAC/iLO) and server addresses, reachability, and power now with energy and cost per period. On a server's page: a photo of its front (if the datacenter has added one), serial number, firmware and warranty; the hardware read from its BMC (CPUs, memory modules, disks and RAID, power supplies, fans and temperatures, network ports, health and the BMC event log); its IP addresses; the switch ports it is cabled to with live traffic; and the cables and accessories fitted with it |
 | **IP Address Management** | Your IP addresses and prefixes |
 | **Network Monitoring** | Traffic on the ports connected to your equipment, live and as history, with the 95th percentile |
 | **Power Consumption** | Power and energy per server and in total, measured or estimated, for any date range. Amounts in money appear only if the datacenter shows them |
@@ -33,6 +33,10 @@ Your role decides what you can do:
 | **Remote Hands & Tickets** | Requests to the datacenter team (remote hands, receiving goods, visits) with replies |
 | **Maintenance & Incidents** | Notices that affect your equipment |
 | **Reports** | CSV and PDF reports for your account |
+
+On a server's page, **Datasheet** opens a one-page A4 summary of the server, with its
+photo and a QR code, ready to print or save as PDF. In **Servers & Hardware** you
+can tick several servers and print their datasheets together.
 
 All lists can be filtered by date. Figures marked **estimated** come from the
 equipment's typical draw because no meter reads that device. **Measured**

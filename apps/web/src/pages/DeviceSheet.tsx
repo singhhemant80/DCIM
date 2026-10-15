@@ -9,6 +9,7 @@ import type { DeviceT } from '../lib/dcim';
 import type { DevicePowerT, EnergyT } from '../lib/power';
 import type { PortRateT } from '../lib/monitoring';
 import { Button, ErrorNote, Loading } from '../components/ui';
+import { photoUrl } from '../components/DevicePhoto';
 
 /**
  * Equipment datasheet: everything about one device on A4 paper, with a QR
@@ -132,9 +133,9 @@ function DeviceSheet({ id }: { id: string }) {
         <div className="flex items-start gap-[5mm] border-b-[2pt] border-black pb-[3mm]">
           <div className="min-w-0 flex-1">
             <div className="flex items-end justify-between gap-[4mm]" style={{ marginBottom: '2.5mm' }}>
-              <img src="/brand-logo.png" alt={me?.organization.name ?? 'Logo'} style={{ height: '13mm', width: 'auto' }} />
-              <p style={{ fontSize: '8pt', letterSpacing: '.06em', textTransform: 'uppercase', color: '#444', textAlign: 'right' }}>
-                Equipment datasheet
+              <img src="/brand-logo.png" alt={me?.organization.name ?? 'Logo'} style={{ height: '12mm', width: 'auto', flexShrink: 0 }} />
+              <p style={{ fontSize: '8pt', letterSpacing: '.06em', textTransform: 'uppercase', color: '#444', textAlign: 'right', minWidth: '30mm' }}>
+                <span style={{ whiteSpace: 'nowrap' }}>Equipment datasheet</span>
                 <span style={{ display: 'block', textTransform: 'none', letterSpacing: 0 }}>{me?.organization.name}</span>
               </p>
             </div>
@@ -156,6 +157,12 @@ function DeviceSheet({ id }: { id: string }) {
               <b>State</b> {LIFECYCLE_LABELS[d.lifecycleState]}
             </p>
           </div>
+          {d.photoUpdatedAt && (
+            <figure className="shrink-0 self-end text-center" style={{ margin: 0, maxWidth: '56mm' }}>
+              <img src={photoUrl(d.id, d.photoUpdatedAt)} alt="Front of the device" style={{ maxHeight: '27mm', maxWidth: '56mm', margin: '0 auto', objectFit: 'contain', border: '.5pt solid #ccc' }} />
+              <figcaption style={{ fontSize: '6.5pt', color: '#444', marginTop: '1mm' }}>Front view</figcaption>
+            </figure>
+          )}
           {label.data && (
             <div className="shrink-0 text-center">
               <div className="size-[26mm] [&_svg]:size-full" dangerouslySetInnerHTML={{ __html: label.data.qrSvg }} />

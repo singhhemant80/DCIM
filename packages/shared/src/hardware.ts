@@ -156,3 +156,12 @@ export const accessorySchema = z.object({
   sparePartId: z.string().uuid().nullable().optional(),
 });
 export type AccessoryInput = z.infer<typeof accessorySchema>;
+
+/** A device front photo, as a data URL (the browser shrinks it before upload). */
+export const devicePhotoSchema = z.object({
+  image: z
+    .string()
+    .max(1_450_000, 'The photo is too large (at most 1 MB)')
+    .regex(/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/, 'Upload a JPEG, PNG or WebP image'),
+});
+export type DevicePhotoInput = z.infer<typeof devicePhotoSchema>;

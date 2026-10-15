@@ -11,6 +11,7 @@ import { PowerControlPanel } from '../components/PowerControl';
 import { AccessoriesPanel, BmcHardwarePanel } from '../components/DeviceHardware';
 import { ConsolePanel } from '../components/Console';
 import { DeviceAddressesPanel, DevicePortsPanel } from '../components/DeviceNetwork';
+import { DevicePhotoPanel } from '../components/DevicePhoto';
 import { Button, Chip, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Textarea } from '../components/ui';
 import { DeviceForm } from './Hardware';
 import { formatKwh, formatWattsShort } from '@crapplet/shared';
@@ -380,6 +381,7 @@ export function DeviceDetailPage() {
               ]}
             />
           </Panel>
+          <DevicePhotoPanel deviceId={d.id} photoUpdatedAt={d.photoUpdatedAt} canWrite={canWrite} />
           <Panel title="Hardware">
             <Facts
               items={[
