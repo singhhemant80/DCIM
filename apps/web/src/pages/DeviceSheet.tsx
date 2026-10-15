@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ACCESSORY_LABELS, CATEGORY_LABELS, formatBitRate, formatKwh, formatWattsShort, IP_STATUS_LABELS, LIFECYCLE_LABELS, type AccessoryKind, type HardwareInventory, type HwHealth, type IpStatus } from '@crapplet/shared';
@@ -54,14 +54,14 @@ const PRINT_CSS = `
   body *:not(#sheets):not(#sheets *) { background: transparent !important; box-shadow: none !important; backdrop-filter: none !important; }
   #sheets, #sheets * { visibility: visible; }
   #sheets { position: absolute; left: 0; top: 0; width: 100%; }
-  .sheet { width: 100% !important; box-shadow: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; }
+  .sheet { zoom: 1 !important; width: 100% !important; box-shadow: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; }
   .sheet + .sheet { break-before: page; }
   .no-print { display: none !important; }
   .sheet-section { break-inside: avoid; }
   .sheet table { break-inside: auto; }
   .sheet tr { break-inside: avoid; }
 }
-.sheet { color: #111; font-family: var(--font-sans), system-ui, sans-serif; font-size: 8.5pt; line-height: 1.3; }
+.sheet { zoom: var(--sheet-zoom, 1); color: #111; font-family: var(--font-sans), system-ui, sans-serif; font-size: 8.5pt; line-height: 1.3; }
 .sheet h2 { font-size: 9.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1.2pt solid #111; padding-bottom: 1mm; margin: 3mm 0 1.2mm; }
 .sheet table { width: 100%; border-collapse: collapse; font-size: 7.5pt; }
 .sheet th { text-align: left; font-weight: 600; background: #f1f1f4; border: .5pt solid #bbb; padding: .6mm 1.5mm; }
@@ -128,7 +128,7 @@ function DeviceSheet({ id }: { id: string }) {
 
   return (
     <>
-      <div className="sheet mx-auto mb-6 w-[210mm] max-w-full rounded-md bg-white p-[12mm] shadow-xl">
+      <div className="sheet mx-auto mb-6 w-[210mm] rounded-md bg-white p-[12mm] shadow-xl">
         {/* Header */}
         <div className="flex items-start gap-[5mm] border-b-[2pt] border-black pb-[3mm]">
           <div className="min-w-0 flex-1">
@@ -468,6 +468,29 @@ function Toolbar({ back, count }: { back: ReactNode; count?: number }) {
   );
 }
 
+/**
+ * On a narrow screen (a phone) the A4 sheet is shown whole and scaled down, like a
+ * PDF preview, instead of squeezing its columns; printing always uses full size.
+ */
+function SheetsFrame({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const A4_PX = (210 / 25.4) * 96;
+    const fit = () => el.style.setProperty('--sheet-zoom', String(Math.min(1, el.clientWidth / A4_PX)));
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <div id="sheets" ref={ref}>
+      {children}
+    </div>
+  );
+}
+
 export function DeviceSheetPage() {
   const { id = '' } = useParams();
   return (
@@ -480,9 +503,9 @@ export function DeviceSheetPage() {
           </Link>
         }
       />
-      <div id="sheets">
+      <SheetsFrame>
         <DeviceSheet id={id} />
-      </div>
+      </SheetsFrame>
     </>
   );
 }
@@ -503,11 +526,11 @@ export function DeviceSheetsPage() {
         }
       />
       {!ids.length && <p className="text-[13px] text-ink-2">Select devices in the list first.</p>}
-      <div id="sheets">
+      <SheetsFrame>
         {ids.map((id) => (
           <DeviceSheet key={id} id={id} />
         ))}
-      </div>
+      </SheetsFrame>
     </>
   );
 }
