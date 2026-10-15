@@ -36,13 +36,12 @@ beforeAll(async () => {
 afterAll(async () => ctx?.close());
 
 describe('customer portal', () => {
-  it('lists only their servers, with energy per server and no addresses', async () => {
+  it('lists only their servers, with energy per server and their BMC address', async () => {
     const list = await ok(acme.get(`${D}/devices?withStatus=true&period=24h`));
     expect(list.items.map((d: { assetTag: string }) => d.assetTag)).toEqual(['CUST-1']);
     const s = list.items[0].status;
     expect(s.power).toMatchObject({ energyKwh: 0.4, cost: [] });
-    expect(s.reachability.mgmt.target).toBeUndefined();
-    expect(JSON.stringify(list)).not.toMatch(/10\.9\.9\.9/);
+    expect(list.items[0].mgmtAddress).toBe('10.9.9.9');
     expect(list.totals).toMatchObject({ energyKwh: 0.4, cost: [] });
   });
 

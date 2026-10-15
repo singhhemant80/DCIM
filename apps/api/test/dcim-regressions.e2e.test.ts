@@ -173,11 +173,13 @@ describe('audit and search', () => {
     expect(a!.metadata).toMatchObject({ before: { customerId: null, supplier: null }, after: { customerId: ctx.customers.acme, supplier: 'Dell India' } });
   });
 
-  it('customers cannot search by the staff-only management address', async () => {
+  it('customers can search their own equipment by its management address, never anyone else\'s', async () => {
     await dev('srv', { ownership: 'customer', customerId: ctx.customers.acme, mgmtAddress: '10.99.88.7' });
+    await dev('srv', { mgmtAddress: '10.99.88.8' });
     const res = await ok(acme.get(`${V}/devices?q=10.99.88`));
-    expect(res.total).toBe(0);
+    expect(res.total).toBe(1);
+    expect(res.items[0].mgmtAddress).toBe('10.99.88.7');
     const staff = await ok(admin.get(`${V}/devices?q=10.99.88`));
-    expect(staff.total).toBe(1);
+    expect(staff.total).toBe(2);
   });
 });

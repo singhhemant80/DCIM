@@ -41,6 +41,8 @@ export const rateHistoryQuerySchema = z.object({ range: z.enum([...RATE_RANGES, 
 export const portListQuerySchema = paginationSchema.extend({
   q: z.string().trim().max(100).optional(),
   deviceId: z.string().uuid().optional(),
+  /** Ports of this device and the switch/router ports cabled to it (where a server's traffic is measured). */
+  servingDeviceId: z.string().uuid().optional(),
   datacenterId: z.string().uuid().optional(),
   sort: z.enum(['utilization', 'traffic', 'name', 'errors']).default('traffic'),
   /** Only ports that count towards totals (uplinks/transit). */

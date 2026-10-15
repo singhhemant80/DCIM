@@ -116,10 +116,11 @@ describe('hardware from the BMC', () => {
     expect(h.inventory.system.sku).toBe('HH90TAG');
   });
 
-  it('the customer who owns the server sees the components but not the BMC log, and cannot refresh', async () => {
+  it('the customer who owns the server sees the components and its event log, and cannot refresh', async () => {
     const h = await ok(acme.get(`${D}/devices/${ids.srv}/hardware`));
     expect(h.inventory.drives).toHaveLength(2);
-    expect(h.inventory.logs).toEqual([]);
+    expect(h.inventory.logs.length).toBeGreaterThan(0);
+    expect(h.inventory.warnings).toEqual([]);
     expect(h.differences).toEqual([]);
     expect((await acme.post(`${D}/devices/${ids.srv}/hardware/refresh`)).status).toBe(403);
     expect((await acme.get(`${D}/devices/${ids.plain}/hardware`)).status).toBe(404);

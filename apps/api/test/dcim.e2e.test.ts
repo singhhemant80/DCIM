@@ -272,7 +272,7 @@ describe('tenant isolation for devices', () => {
     expect(mine).toBeTruthy();
     expect(mine).not.toHaveProperty('purchaseCost');
     expect(mine).not.toHaveProperty('notes');
-    expect(mine).not.toHaveProperty('mgmtAddress');
+    expect(mine).toHaveProperty('mgmtAddress');
   });
 
   it('another customer’s device is not found, and staff-only routes are refused', async () => {

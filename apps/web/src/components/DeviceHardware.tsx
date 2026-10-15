@@ -102,7 +102,7 @@ export function BmcHardwarePanel({ deviceId, canWrite, staff }: { deviceId: stri
   const inv = h.inventory;
   const busy = !!h.requestedAt || h.status === 'running' || h.status === 'pending';
   const logs = inv?.logs ?? [];
-  const tabs = TABS.filter((t) => t.key !== 'logs' || staff).map((t) => (t.key === 'logs' && logs.length ? { ...t, label: `Event log (${logs.length})` } : t));
+  const tabs = TABS.map((t) => (t.key === 'logs' && logs.length ? { ...t, label: `Event log (${logs.length})` } : t));
   return (
     <Panel
       title={

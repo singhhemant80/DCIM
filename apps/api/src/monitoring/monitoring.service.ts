@@ -76,6 +76,8 @@ export class MonitoringService {
       fresh,
       /** Why the latest poll gave no rate (first sample, reset, gap, implausible…). */
       lastSkip: (r.last_skip as string | null) ?? null,
+      /** The port at the other end of the cable, e.g. "eno1 on srv5". */
+      peer: (r.peer as string | null) ?? null,
       inBps: v('in_bps'),
       outBps: v('out_bps'),
       utilIn: v('util_in'),
@@ -91,7 +93,13 @@ export class MonitoringService {
              coalesce(c.speed_bps, i.speed_bps) as speed_bps,
              coalesce(d.hostname, d.asset_tag) as device_name, b.datacenter_id,
              m.enabled as polling_enabled, m.interval_seconds,
-             c.sampled_at, c.last_rate_at, c.in_bps, c.out_bps, c.util_in, c.util_out, c.errors_ps, c.discards_ps, c.oper_up, c.last_skip
+             c.sampled_at, c.last_rate_at, c.in_bps, c.out_bps, c.util_in, c.util_out, c.errors_ps, c.discards_ps, c.oper_up, c.last_skip,
+             (select pi.name || ' on ' || coalesce(pd.hostname, pd.asset_tag)
+                from cable_ends e1 join cable_ends e2 on e2.cable_id = e1.cable_id and e2.interface_id <> e1.interface_id
+                join interfaces pi on pi.id = e2.interface_id join devices pd on pd.id = pi.device_id
+               where e1.interface_id = i.id
+                 ${p.userType === 'staff' ? sql`` : sql`and (pd.customer_id is null or pd.customer_id = ${p.customerId ?? null})`}
+               limit 1) as peer
         from interfaces i
         join devices d on d.id = i.device_id
         join device_monitoring m on m.device_id = d.id
@@ -105,6 +113,9 @@ export class MonitoringService {
     const conds: SQL[] = [sql`true`];
     if (q.q) conds.push(sql`(i.name ilike ${'%' + q.q + '%'} or i.description ilike ${'%' + q.q + '%'} or d.hostname ilike ${'%' + q.q + '%'} or d.asset_tag ilike ${'%' + q.q + '%'})`);
     if (q.deviceId) conds.push(sql`i.device_id = ${q.deviceId}`);
+    if (q.servingDeviceId)
+      conds.push(sql`(i.device_id = ${q.servingDeviceId} or exists (select 1 from cable_ends e1 join cable_ends e2 on e2.cable_id = e1.cable_id and e2.interface_id <> e1.interface_id
+                        join interfaces si on si.id = e2.interface_id where e1.interface_id = i.id and si.device_id = ${q.servingDeviceId}))`);
     if (q.datacenterId) conds.push(sql`b.datacenter_id = ${q.datacenterId}`);
     if (q.totalsOnly === 'true') conds.push(sql`i.count_in_totals`);
     const where = sql.join(conds, sql` and `);

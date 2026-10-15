@@ -108,9 +108,8 @@ export class DevicesService {
     const conds: SQL[] = [tenantFilter(p, scopeCols)];
     if (q.q) {
       const like = `%${q.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
-      // Management addresses are staff-only data, so customers can't search by them either.
-      const fields = [ilike(devices.assetTag, like), ilike(devices.hostname, like), ilike(devices.serial, like), ilike(deviceModels.name, like)];
-      if (p.userType === 'staff') fields.push(ilike(devices.mgmtAddress, like), ilike(devices.serverAddress, like));
+      // Customers see the addresses of their own equipment, so they can search by them too (the tenant filter still applies).
+      const fields = [ilike(devices.assetTag, like), ilike(devices.hostname, like), ilike(devices.serial, like), ilike(deviceModels.name, like), ilike(devices.mgmtAddress, like), ilike(devices.serverAddress, like)];
       conds.push(or(...fields)!);
     }
     if (q.state) conds.push(eq(devices.lifecycleState, q.state));
@@ -224,7 +223,8 @@ export class DevicesService {
           d.lifecycleState,
           { mgmt: !!d.mgmtAddress?.trim() || withCred.has(d.id), server: !!d.serverAddress?.trim() || !!d.hostname?.trim().includes('.') },
           rows.get(d.id) ?? {},
-          p.userType === 'staff',
+          // Anyone who can see the device sees its addresses (customers: their own equipment only).
+          true,
           now,
         ),
       ]),
@@ -304,6 +304,12 @@ export class DevicesService {
       raid: d.raid,
       nics: d.nics,
       os: d.os,
+      // The owner of the equipment sees its BMC and server addresses and firmware.
+      mgmtType: d.mgmtType,
+      mgmtAddress: d.mgmtAddress,
+      serverAddress: d.serverAddress,
+      biosVersion: d.biosVersion,
+      bmcFirmware: d.bmcFirmware,
       warrantyExpires: d.warrantyExpires,
       createdAt: d.createdAt,
       updatedAt: d.updatedAt,
@@ -311,11 +317,6 @@ export class DevicesService {
     if (p.userType !== 'staff') return base;
     return {
       ...base,
-      mgmtType: d.mgmtType,
-      mgmtAddress: d.mgmtAddress,
-      serverAddress: d.serverAddress,
-      biosVersion: d.biosVersion,
-      bmcFirmware: d.bmcFirmware,
       purchaseDate: d.purchaseDate,
       supplier: d.supplier,
       purchaseCost: d.purchaseCost === null ? null : Number(d.purchaseCost),

@@ -10,6 +10,7 @@ import { daysUntil, STATE_TONE, useRacks, type DeviceT, type EventT } from '../l
 import { PowerControlPanel } from '../components/PowerControl';
 import { AccessoriesPanel, BmcHardwarePanel } from '../components/DeviceHardware';
 import { ConsolePanel } from '../components/Console';
+import { DeviceAddressesPanel, DevicePortsPanel } from '../components/DeviceNetwork';
 import { Button, Chip, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Textarea } from '../components/ui';
 import { DeviceForm } from './Hardware';
 import { formatKwh, formatWattsShort } from '@crapplet/shared';
@@ -365,13 +366,10 @@ export function DeviceDetailPage() {
                   : []),
                 ['Serial number', d.serial && <span className="font-mono">{d.serial}</span>],
                 ['Operating system', d.os],
-                ...(staff
-                  ? ([
-                      ['Management', d.mgmtAddress ? <span className="font-mono">{`${d.mgmtType?.toUpperCase() ?? ''} ${d.mgmtAddress}`.trim()}</span> : null],
-                      ['Server address', d.serverAddress ? <span className="font-mono">{d.serverAddress}</span> : null],
-                      ['Firmware', [d.biosVersion && `BIOS ${d.biosVersion}`, d.bmcFirmware && `BMC ${d.bmcFirmware}`].filter(Boolean).join(', ')],
-                    ] as [string, ReactNode][])
-                  : []),
+                ['BMC (management)', d.mgmtAddress ? <span className="font-mono">{`${d.mgmtType?.toUpperCase() ?? ''} ${d.mgmtAddress}`.trim()}</span> : null],
+                ['Server address', d.serverAddress ? <span className="font-mono">{d.serverAddress}</span> : null],
+                ['Firmware', [d.biosVersion && `BIOS ${d.biosVersion}`, d.bmcFirmware && `BMC ${d.bmcFirmware}`].filter(Boolean).join(', ')],
+                ...(!staff && d.warrantyExpires ? ([['Warranty until', d.warrantyExpires]] as [string, ReactNode][]) : []),
               ]}
             />
           </Panel>
@@ -409,6 +407,8 @@ export function DeviceDetailPage() {
             )}
           </Panel>
           {(d.category === 'server' || d.category === 'gpu_server' || d.category === 'storage') && <BmcHardwarePanel deviceId={d.id} canWrite={canWrite} staff={staff} />}
+          {can('ipam.read') && <DeviceAddressesPanel deviceId={d.id} />}
+          {can('monitoring.read') && <DevicePortsPanel deviceId={d.id} />}
           <AccessoriesPanel deviceId={d.id} canWrite={canWrite} />
           {can('power.read') && d.lifecycleState !== 'retired' && <DevicePowerPanel id={d.id} />}
           {can('hardware.control') && d.category === 'server' && d.lifecycleState !== 'retired' && <PowerControlPanel deviceId={d.id} />}

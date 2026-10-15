@@ -24,7 +24,7 @@ Your role decides what you can do:
 | Page | Contents |
 |---|---|
 | **Overview** | A summary of your equipment, power and bandwidth |
-| **Servers & Hardware** | Your servers and devices with their rack position, management (BMC) and OS addresses, reachability, and power now with energy and cost per period. On a server's page: the hardware read from its BMC (CPUs, memory, disks, power supplies, health) and the cables and accessories fitted with it |
+| **Servers & Hardware** | Your servers and devices with their rack position, BMC (iDRAC/iLO) and server addresses, reachability, and power now with energy and cost per period. On a server's page: serial number, firmware and warranty; the hardware read from its BMC (CPUs, memory modules, disks and RAID, power supplies, fans and temperatures, network ports, health and the BMC event log); its IP addresses; the switch ports it is cabled to with live traffic; and the cables and accessories fitted with it |
 | **IP Address Management** | Your IP addresses and prefixes |
 | **Network Monitoring** | Traffic on the ports connected to your equipment, live and as history, with the 95th percentile |
 | **Power Consumption** | Power and energy per server and in total, measured or estimated, for any date range. Amounts in money appear only if the datacenter shows them |

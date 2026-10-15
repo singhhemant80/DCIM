@@ -104,8 +104,8 @@ export class HardwareService {
       nextAt: h?.nextAt ?? null,
       lastError: h?.lastError ?? null,
       health: h?.health ?? null,
-      // Customers see components, not the BMC's raw event log.
-      inventory: inv && p.userType !== 'staff' ? { ...inv, logs: [], warnings: [] } : inv,
+      // Customers see everything about their own server, including its event log; collection warnings are staff-only.
+      inventory: inv && p.userType !== 'staff' ? { ...inv, warnings: [] } : inv,
       /** What "copy to record" would change, field by field. */
       differences: inv && p.userType === 'staff' ? this.differences(d, inv) : [],
     };

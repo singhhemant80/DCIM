@@ -393,6 +393,14 @@ describe('tenancy', () => {
     expect((await acme.get(`${M}/devices`)).status).toBe(403);
     expect((await acme.get(`${A}`)).status).toBe(403);
   });
+  it("a server's page lists the switch ports cabled to it, with the cable peer", async () => {
+    const serving = await ok(acme.get(`${M}/ports?servingDeviceId=${ids.s1}`));
+    expect(serving.items).toHaveLength(1);
+    expect(serving.items[0]).toMatchObject({ interfaceId: ids.swif.ether1, name: 'ether1', peer: 'eth0 on acme-srv' });
+    expect((await ok(admin.get(`${M}/ports?servingDeviceId=${ids.s1}`))).items).toHaveLength(1);
+    // Another customer gets nothing for it.
+    expect((await ok(globex.get(`${M}/ports?servingDeviceId=${ids.s1}`))).items).toEqual([]);
+  });
 });
 
 describe('alerts, maintenance and notifications', () => {
