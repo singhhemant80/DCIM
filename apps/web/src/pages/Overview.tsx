@@ -372,7 +372,7 @@ interface Overview {
   audit: { events24h: number; failedLogins24h: number; denied24h: number } | null;
 }
 
-const PHASES = [
+const PHASES: { n: number; name: string; scope: string; done?: boolean }[] = [
   { n: 1, name: 'Foundation', scope: 'Sign-in, roles, tenants, audit log' },
   { n: 2, name: 'Physical DCIM', scope: 'Datacenters, rooms, racks, hardware lifecycle' },
   { n: 3, name: 'Network and IPAM', scope: 'Devices, interfaces, VLANs, IPv4/IPv6' },
@@ -381,7 +381,8 @@ const PHASES = [
   { n: 6, name: 'Provisioning', scope: 'OS installs, Proxmox, Virtualizor' },
   { n: 7, name: 'Colocation and portal', scope: 'Customer self-service, remote hands' },
   { n: 8, name: 'Billing and automation', scope: 'WHMCS, workflows, reports' },
-  { n: 9, name: 'Production readiness', scope: 'Hardening, install validation, acceptance' },
+  // No section of its own (installer, backups, install check): marked done explicitly.
+  { n: 9, name: 'Production readiness', scope: 'Hardening, install validation, acceptance', done: true },
 ];
 
 function Roadmap() {
@@ -390,7 +391,7 @@ function Roadmap() {
   return (
     <ol className="divide-y divide-rule">
       {PHASES.map((p) => {
-        const live = done.has(p.n) && !pending.has(p.n);
+        const live = p.done || (done.has(p.n) && !pending.has(p.n));
         return (
           <li key={p.n} className="flex items-center gap-3 px-4 py-2.5">
             <span className="w-14 flex-none text-[12.5px] text-ink-3">Phase {p.n}</span>
