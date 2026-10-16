@@ -57,6 +57,7 @@ export function deviceRequest(
     /** Resolve error statuses (with the parsed body) instead of rejecting. */ rawErrors?: boolean;
     /** A non-JSON body (e.g. a WS-Management SOAP envelope); the answer is returned as `text`. */ raw?: { data: string; contentType: string };
     /** Internal: redirects followed so far. */ hops?: number;
+    /** Internal: already retried after a connection reset. */ retried?: boolean;
   },
 ): Promise<{ status: number; json: unknown; text?: string }> {
   const scheme = t.params.scheme ?? 'https';
@@ -70,7 +71,10 @@ export function deviceRequest(
         port: t.port ?? opts.defaultPort,
         method,
         path,
-        headers: { Accept: opts.raw ? '*/*' : 'application/json', ...(payload ? { 'Content-Type': opts.raw?.contentType ?? 'application/json', 'Content-Length': String(payload.length) } : {}), ...opts.headers },
+        // A fresh connection per request: BMCs and switches often drop idle
+        // keep-alive sockets without notice, and reusing one gives ECONNRESET.
+        agent: false,
+        headers: { Accept: opts.raw ? '*/*' : 'application/json', Connection: 'close', ...(payload ? { 'Content-Type': opts.raw?.contentType ?? 'application/json', 'Content-Length': String(payload.length) } : {}), ...opts.headers },
         timeout,
         ...(scheme === 'https' ? { rejectUnauthorized: t.params.verifyTls !== false, servername: /^[\d.:[\]]+$/.test(t.host) ? undefined : t.host } : {}),
       },
@@ -158,8 +162,27 @@ export function deviceRequest(
     req.on('timeout', () => req.destroy(timedOut()));
     req.on('error', (e: NodeJS.ErrnoException) => {
       if (e instanceof DeviceHttpError) return reject(e);
+      // A connection reset before any answer is tried once more for reads
+      // (embedded web servers reset connections when busy or just restarted).
+      if (method === 'GET' && !opts.retried && (e.code === 'ECONNRESET' || e.code === 'EPIPE' || /socket hang up/i.test(e.message))) {
+        clearTimeout(deadline);
+        setTimeout(() => deviceRequest(t, method, path, { ...opts, retried: true }).then(resolve, reject), 300);
+        return;
+      }
       const tls = /certificate|self[- ]signed|SSL|TLS/i.test(e.message);
-      reject(new DeviceHttpError(tls ? `TLS error: ${e.message} (install a trusted certificate or disable verification for this credential)` : e.code ? `${e.code}: cannot reach ${t.host}` : e.message, null));
+      const reset = e.code === 'ECONNRESET' || /socket hang up/i.test(e.message);
+      reject(
+        new DeviceHttpError(
+          tls
+            ? `TLS error: ${e.message} (install a trusted certificate or disable verification for this credential)`
+            : reset
+              ? `${e.code ?? 'ECONNRESET'}: ${t.host}:${t.port ?? opts.defaultPort} closed the connection (twice). The device is reachable but refused this request: check the protocol (HTTP/HTTPS) and port, whether the BMC limits sessions or allowed addresses (IP blocking / access list), or reset the BMC`
+              : e.code
+                ? `${e.code}: cannot reach ${t.host}`
+                : e.message,
+          null,
+        ),
+      );
     });
     if (payload) req.write(payload);
     req.end();

@@ -1,4 +1,7 @@
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
+import { deviceRequest } from '../src/worker/adapters/http';
 import { redfishAdapter } from '../src/worker/adapters/redfish';
 import { deviceErrorText } from '../src/worker/adapters/http';
 import { startRedfish } from './simulators/power-devices';
@@ -72,6 +75,39 @@ describe('Redfish when the BMC fails on its system list', () => {
       expect(r.message).not.toMatch(/Note/);
     } finally {
       await sim.close();
+    }
+  });
+
+  it('uses a fresh connection per request and retries one reset', async () => {
+    let n = 0;
+    const perSocket = new WeakMap<object, number>();
+    const server = http.createServer((req, res) => {
+      const c = (perSocket.get(req.socket) ?? 0) + 1;
+      perSocket.set(req.socket, c);
+      // Like a BMC that drops reused keep-alive sockets, and resets the very first connection.
+      if (c > 1 || ++n === 1) return req.socket.destroy();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ n }));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const t = { host: '127.0.0.1', port, username: 'u', params: { scheme: 'http' }, secret: {} } as never;
+      for (let i = 0; i < 3; i++) expect((await deviceRequest(t, 'GET', '/x', { defaultPort: 80 })).status).toBe(200);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('a device that keeps resetting gets a clear message', async () => {
+    const server = http.createServer((req) => req.socket.destroy());
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const t = { host: '127.0.0.1', port, username: 'u', params: { scheme: 'http' }, secret: {} } as never;
+      await expect(deviceRequest(t, 'GET', '/x', { defaultPort: 80 })).rejects.toThrow(/closed the connection \(twice\)\. The device is reachable/);
+    } finally {
+      await new Promise((r) => server.close(r));
     }
   });
 
