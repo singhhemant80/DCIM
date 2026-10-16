@@ -357,6 +357,9 @@ function FlowSources() {
         <ul className="mt-2 list-disc pl-5 text-[12.5px] text-ink-3">
           <li>Then add the router above with the address it sends from (shown under "not registered" once flows arrive).</li>
           <li>The 1-minute active timeout makes long downloads show up every minute instead of every 30 minutes (the RouterOS default).</li>
+          <li>
+            If RouterOS answers <span className="font-mono">cache too big to fit in memory</span>, the flow cache is larger than the router's free memory: set a smaller one first (<span className="font-mono">/ip traffic-flow set cache-entries=16k</span>, or 4k on small routers), then run the first command again. A smaller cache only means flows are sent a little more often.
+          </li>
           <li>Allow UDP port {port} from the router on this server's firewall. The installer opens it when firewalld or ufw is active.</li>
           <li>Reading flows is passive: NexoraDC never changes the router.</li>
         </ul>
