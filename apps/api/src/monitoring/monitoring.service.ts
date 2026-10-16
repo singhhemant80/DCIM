@@ -1,10 +1,10 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
-import { RANGE_RESOLUTION, type DeviceMonitoringInput, type RateRange } from '@crapplet/shared';
+import { DASHBOARD_MAX_ITEMS, RANGE_RESOLUTION, type DeviceMonitoringInput, type RateRange } from '@crapplet/shared';
 import { z } from 'zod';
 import { dayRange } from '../common/date-range';
 import { DB, type Db } from '../db/db';
-import { deviceCredentials, deviceMonitoring, monitoringSettings } from '../db/schema';
+import { deviceCredentials, deviceMonitoring, monitorDashboardItems, monitoringSettings } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { notFound, ownDatacenter, ownDevice } from '../network/common';
@@ -106,6 +106,82 @@ export class MonitoringService {
         left join interface_counters c on c.interface_id = i.id
         left join racks r on r.id = d.rack_id left join rooms rm on rm.id = r.room_id left join buildings b on b.id = rm.building_id
        where i.monitored and ${MonitoringService.visible(p)} and ${where}`;
+  }
+
+  /* ------------------------------------------------------------ dashboard */
+
+  /**
+   * The interface dashboard: pinned interfaces in order, each with its latest
+   * measured rates, or why there are none (device not polled, port excluded).
+   */
+  async dashboard(p: Principal) {
+    const items = (
+      await this.db.execute<{ id: string; interface_id: string; position: number; added_by: string | null; name: string; description: string | null; device_id: string; device_name: string; speed_bps: string | null; monitored: boolean; polling: boolean | null }>(sql`
+        select x.id, x.interface_id, x.position, x.added_by, i.name, i.description, i.device_id, coalesce(d.hostname, d.asset_tag) as device_name,
+               i.speed_bps, i.monitored, m.enabled as polling
+          from monitor_dashboard_items x
+          join interfaces i on i.id = x.interface_id
+          join devices d on d.id = i.device_id
+          left join device_monitoring m on m.device_id = i.device_id
+         where x.org_id = ${p.orgId} and i.org_id = ${p.orgId}
+         order by x.position, x.created_at`)
+    ).rows;
+    const ids = items.map((x) => x.interface_id);
+    const ports = new Map<string, ReturnType<typeof MonitoringService.portView>>();
+    if (ids.length) {
+      const r = await this.db.execute(this.portSelect(p, sql`i.id in (${sql.join(ids.map((x) => sql`${x}::uuid`), sql`, `)})`));
+      for (const row of r.rows as Record<string, unknown>[]) {
+        const v = MonitoringService.portView(row);
+        ports.set(v.interfaceId, v);
+      }
+    }
+    return items.map((x) => ({
+      id: x.id,
+      interfaceId: x.interface_id,
+      position: x.position,
+      addedBy: x.added_by,
+      name: x.name,
+      description: x.description,
+      deviceId: x.device_id,
+      deviceName: x.device_name,
+      // Why a pinned interface has no figures: said plainly instead of showing zero.
+      state: ports.has(x.interface_id) ? ('polled' as const) : x.polling === null ? ('device_not_polled' as const) : !x.monitored ? ('port_excluded' as const) : ('polling_paused' as const),
+      port: ports.get(x.interface_id) ?? null,
+    }));
+  }
+
+  async dashboardAdd(p: Principal, interfaceIds: string[], meta: RequestMeta) {
+    const unique = [...new Set(interfaceIds)];
+    return this.db.transaction(async (tx) => {
+      // Serialize concurrent additions for this organization so the limit holds.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('monitor_dashboard:' || ${p.orgId}))`);
+      const found = await tx.execute<{ id: string }>(sql`select id from interfaces where org_id = ${p.orgId} and id in (${sql.join(unique.map((x) => sql`${x}::uuid`), sql`, `)})`);
+      if (found.rows.length !== unique.length) throw notFound('Interface');
+      const [{ n, top } = { n: 0, top: 0 }] = (await tx.execute<{ n: number; top: number }>(sql`select count(*)::int as n, coalesce(max(position), 0)::int as top from monitor_dashboard_items where org_id = ${p.orgId}`)).rows;
+      const existing = new Set((await tx.select({ id: monitorDashboardItems.interfaceId }).from(monitorDashboardItems).where(eq(monitorDashboardItems.orgId, p.orgId))).map((r) => r.id));
+      const fresh = unique.filter((x) => !existing.has(x));
+      if (n + fresh.length > DASHBOARD_MAX_ITEMS) throw new BadRequestException({ error: 'dashboard_full', message: `The dashboard holds up to ${DASHBOARD_MAX_ITEMS} interfaces; remove some first` });
+      if (fresh.length) {
+        await tx.insert(monitorDashboardItems).values(fresh.map((interfaceId, k) => ({ orgId: p.orgId, interfaceId, position: top + k + 1, addedBy: p.email })));
+        await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'monitoring.dashboard.add', target: { type: 'monitoring_dashboard', id: null }, outcome: 'success', meta, metadata: { interfaceIds: fresh } }, tx);
+      }
+      return { added: fresh.length, alreadyThere: unique.length - fresh.length };
+    });
+  }
+
+  async dashboardRemove(p: Principal, interfaceId: string, meta: RequestMeta) {
+    const r = await this.db.delete(monitorDashboardItems).where(and(eq(monitorDashboardItems.orgId, p.orgId), eq(monitorDashboardItems.interfaceId, interfaceId))).returning();
+    if (!r.length) throw notFound('Dashboard item');
+    await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'monitoring.dashboard.remove', target: { type: 'monitoring_dashboard', id: null }, outcome: 'success', meta, metadata: { interfaceId } });
+  }
+
+  async dashboardOrder(p: Principal, interfaceIds: string[]) {
+    await this.db.transaction(async (tx) => {
+      for (const [k, id] of interfaceIds.entries()) {
+        await tx.update(monitorDashboardItems).set({ position: k + 1 }).where(and(eq(monitorDashboardItems.orgId, p.orgId), eq(monitorDashboardItems.interfaceId, id)));
+      }
+    });
+    return this.dashboard(p);
   }
 
   /** Monitored ports with their latest measured rates. */

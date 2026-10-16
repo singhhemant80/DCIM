@@ -232,3 +232,18 @@ export function withFast(p: PortRateT, fast: Map<string, LiveSample[]>): PortRat
   const util = (v: number | null) => (v !== null && p.speedBps ? Math.min(100, (v / p.speedBps) * 100) : null);
   return { ...p, inBps: l.inBps, outBps: l.outBps, utilIn: util(l.inBps), utilOut: util(l.outBps), fresh: true };
 }
+
+/** An interface pinned on the monitoring dashboard. */
+export interface DashboardItemT {
+  id: string;
+  interfaceId: string;
+  position: number;
+  addedBy: string | null;
+  name: string;
+  description: string | null;
+  deviceId: string;
+  deviceName: string;
+  /** Why there may be no figures: the device is not polled, the port is excluded, or polling is paused. */
+  state: 'polled' | 'device_not_polled' | 'port_excluded' | 'polling_paused';
+  port: PortRateT | null;
+}

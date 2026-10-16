@@ -1224,6 +1224,25 @@ export const channelKindEnum = pgEnum('channel_kind', ['email', 'webhook', 'slac
 export const notificationStatusEnum = pgEnum('notification_status', ['pending', 'sent', 'failed']);
 
 /** Polling configuration and health per device. */
+/**
+ * The interface dashboard on Network Monitoring: interfaces staff pinned to watch
+ * side by side (shared by the organization, like a NOC wall board).
+ */
+export const monitorDashboardItems = pgTable(
+  'monitor_dashboard_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    interfaceId: uuid('interface_id')
+      .notNull()
+      .references(() => interfaces.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull().default(0),
+    addedBy: text('added_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('monitor_dashboard_items_uq').on(t.orgId, t.interfaceId)],
+);
+
 export const deviceMonitoring = pgTable(
   'device_monitoring',
   {

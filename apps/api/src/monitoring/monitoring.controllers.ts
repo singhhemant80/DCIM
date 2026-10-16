@@ -8,6 +8,8 @@ import {
   alertListQuerySchema,
   alertRuleSchema,
   channelSchema,
+  dashboardAddSchema,
+  dashboardOrderSchema,
   deviceMonitoringSchema,
   maintenanceSchema,
   monitoringSettingsSchema,
@@ -62,6 +64,39 @@ export class MonitoringController {
       return { live: false, reason: 'The live feed is unavailable (Redis); the chart still updates with each poll' };
     }
     return { live: true, everySeconds: 1, until: new Date(Date.now() + LIVE_WATCH_TTL_MS).toISOString() };
+  }
+
+  @Get('dashboard')
+  @StaffOnly()
+  @RequirePermissions('monitoring.read')
+  @ApiOperation({ summary: 'Interfaces pinned to the monitoring dashboard, with their latest rates.' })
+  dashboard(@CurrentPrincipal() p: Principal) {
+    return this.svc.dashboard(p);
+  }
+
+  @Post('dashboard')
+  @StaffOnly()
+  @RequirePermissions('alerts.manage')
+  @ApiOperation({ summary: 'Pin interfaces to the dashboard (already pinned ones are skipped).' })
+  @ApiZodBody(dashboardAddSchema)
+  dashboardAdd(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(dashboardAddSchema)) b: Infer<typeof dashboardAddSchema>, @ReqMeta() m: RequestMeta) {
+    return this.svc.dashboardAdd(p, b.interfaceIds, m);
+  }
+
+  @Put('dashboard/order')
+  @StaffOnly()
+  @RequirePermissions('alerts.manage')
+  @ApiZodBody(dashboardOrderSchema)
+  dashboardOrder(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(dashboardOrderSchema)) b: Infer<typeof dashboardOrderSchema>) {
+    return this.svc.dashboardOrder(p, b.interfaceIds);
+  }
+
+  @Delete('dashboard/:interfaceId')
+  @StaffOnly()
+  @HttpCode(204)
+  @RequirePermissions('alerts.manage')
+  async dashboardRemove(@CurrentPrincipal() p: Principal, @Param('interfaceId', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    await this.svc.dashboardRemove(p, id, m);
   }
 
   @Get('ports')

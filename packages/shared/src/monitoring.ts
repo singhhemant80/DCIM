@@ -203,3 +203,9 @@ export const CHANNEL_SECRET_FIELDS: Record<ChannelKind, string[]> = {
   slack: ['webhookUrl'],
   telegram: ['botToken'],
 };
+
+/** Interfaces to pin on the monitoring dashboard (shared by the organization's staff). */
+export const dashboardAddSchema = z.object({ interfaceIds: z.array(z.string().uuid()).min(1).max(48) });
+/** The dashboard's interfaces in their new order. */
+export const dashboardOrderSchema = z.object({ interfaceIds: z.array(z.string().uuid()).max(48) });
+export const DASHBOARD_MAX_ITEMS = 48;

@@ -8,14 +8,25 @@ import { useAuth } from '../lib/auth';
 import { relativeTime } from '../lib/format';
 import { SKIP_LABELS, bps, pct, perSec, useMonitoringStream, withLive, LIVE_WINDOW_SECONDS, type LiveSample, type PortHistoryT, type PortRateT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
 import { RateChart } from '../components/RateChart';
+import { InterfaceDashboard } from '../components/InterfaceDashboard';
 import { Chip, EmptyState, ErrorNote, Input, Loading, PageHeader, Pagination, Panel, Select, Stat, Table, cx } from '../components/ui';
 
 const RANGE_LABELS: Record<RateRange, string> = { '1h': '1 hour', '6h': '6 hours', '24h': '24 hours', '7d': '7 days', '30d': '30 days' };
 const RANGE_MS: Record<RateRange, number> = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 };
 
 export function LiveBadge({ connected, feed }: { connected: boolean; feed: boolean | null }) {
-  if (!connected) return <Chip tone="warn" title="Reconnecting to the live feed; figures still refresh every 30 s">Reconnecting…</Chip>;
-  if (feed === false) return <Chip tone="warn" title="The server could not reach Redis; figures refresh every 30 s instead">Live feed unavailable</Chip>;
+  if (!connected)
+    return (
+      <Chip tone="warn" title="Reconnecting to the live feed; figures still refresh every 30 s">
+        Reconnecting…
+      </Chip>
+    );
+  if (feed === false)
+    return (
+      <Chip tone="warn" title="The server could not reach Redis; figures refresh every 30 s instead">
+        Live feed unavailable
+      </Chip>
+    );
   return (
     <Chip tone="ok" title="Rates update as soon as each device is polled">
       <span className="size-1.5 animate-pulse rounded-full bg-ok" aria-hidden /> Live
@@ -26,7 +37,12 @@ export function LiveBadge({ connected, feed }: { connected: boolean; feed: boole
 /** Utilization bar: the busier direction, coloured by level. */
 export function UtilBar({ p }: { p: PortRateT }) {
   const v = p.utilIn === null && p.utilOut === null ? null : Math.max(p.utilIn ?? 0, p.utilOut ?? 0);
-  if (v === null) return <span className="text-ink-3" title={p.speedBps ? 'No measurement' : 'Port speed unknown, so utilization is not computed'}>—</span>;
+  if (v === null)
+    return (
+      <span className="text-ink-3" title={p.speedBps ? 'No measurement' : 'Port speed unknown, so utilization is not computed'}>
+        —
+      </span>
+    );
   const tone = v >= 90 ? 'bg-crit' : v >= 70 ? 'bg-warn' : 'bg-ok';
   return (
     <span className="flex items-center gap-2" title={`In ${pct(p.utilIn)}, out ${pct(p.utilOut)}`}>
@@ -46,8 +62,18 @@ function StatusCell({ p }: { p: PortRateT }) {
 
 function UpdatedCell({ p }: { p: PortRateT }) {
   if (!p.sampledAt) return <span className="text-ink-3">{p.pollingEnabled ? 'Waiting for first poll' : 'Polling off'}</span>;
-  if (p.lastSkip) return <span className="text-ink-3" title={SKIP_LABELS[p.lastSkip] ?? p.lastSkip}>{relativeTime(p.sampledAt)} · no rate</span>;
-  if (!p.fresh) return <span className="text-warn" title="No recent measurement; the last rate is not shown">Stale ({relativeTime(p.lastRateAt)})</span>;
+  if (p.lastSkip)
+    return (
+      <span className="text-ink-3" title={SKIP_LABELS[p.lastSkip] ?? p.lastSkip}>
+        {relativeTime(p.sampledAt)} · no rate
+      </span>
+    );
+  if (!p.fresh)
+    return (
+      <span className="text-warn" title="No recent measurement; the last rate is not shown">
+        Stale ({relativeTime(p.lastRateAt)})
+      </span>
+    );
   return <span className="text-ink-3">{relativeTime(p.sampledAt)}</span>;
 }
 
@@ -89,12 +115,7 @@ function TotalsPanel() {
   }
   const now = Date.now();
   return (
-    <Panel
-      title="Total traffic (uplinks and transit)"
-      actions={
-        <PeriodPicker value={range} onChange={setRange} options={RATE_RANGES.filter((r) => r !== '1h' && r !== '6h')} labels={RANGE_LABELS} className="w-36" />
-      }
-    >
+    <Panel title="Total traffic (uplinks and transit)" actions={<PeriodPicker value={range} onChange={setRange} options={RATE_RANGES.filter((r) => r !== '1h' && r !== '6h')} labels={RANGE_LABELS} className="w-36" />}>
       <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
         <Stat label="Inbound now" value={bps(t.inBps)} />
         <Stat label="Outbound now" value={bps(t.outBps)} />
@@ -105,7 +126,8 @@ function TotalsPanel() {
         <>
           <RateChart label="Total traffic" points={hist.data.points.map((p) => ({ t: new Date(p.t).getTime(), inBps: p.inBps, outBps: p.outBps }))} stepSeconds={hist.data.stepSeconds} from={wFrom} to={wTo} p95={hist.data.p95} />
           <p className="mt-2 text-[12.5px] text-ink-3">
-            95th percentile over {periodLabel(range, RANGE_LABELS).toLowerCase()}: in {bps(hist.data.p95.inBps)}, out {bps(hist.data.p95.outBps)} ({hist.data.p95.samples} {hist.data.stepSeconds === 300 ? '5-minute' : 'hourly'} samples). Sums cover the ports that had data in each interval.
+            95th percentile over {periodLabel(range, RANGE_LABELS).toLowerCase()}: in {bps(hist.data.p95.inBps)}, out {bps(hist.data.p95.outBps)} ({hist.data.p95.samples} {hist.data.stepSeconds === 300 ? '5-minute' : 'hourly'} samples).
+            Sums cover the ports that had data in each interval.
           </p>
         </>
       ) : (
@@ -180,8 +202,18 @@ function PortDetail({ port, liveSamples, onClose }: { port: PortRateT; liveSampl
       }
     >
       <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-5">
-        <Stat label={liveNow ? 'In · live' : 'In now'} value={bps(liveNow ? lastLive!.inBps : port.inBps)} note={liveNow && port.speedBps ? `${pct(((lastLive!.inBps ?? 0) / port.speedBps) * 100)} of ${bps(port.speedBps)}` : port.utilIn !== null ? `${pct(port.utilIn)} of ${bps(port.speedBps)}` : port.speedBps ? undefined : 'Speed unknown'} />
-        <Stat label={liveNow ? 'Out · live' : 'Out now'} value={bps(liveNow ? lastLive!.outBps : port.outBps)} note={liveNow && port.speedBps ? `${pct(((lastLive!.outBps ?? 0) / port.speedBps) * 100)} of ${bps(port.speedBps)}` : port.utilOut !== null ? `${pct(port.utilOut)} of ${bps(port.speedBps)}` : undefined} />
+        <Stat
+          label={liveNow ? 'In · live' : 'In now'}
+          value={bps(liveNow ? lastLive!.inBps : port.inBps)}
+          note={
+            liveNow && port.speedBps ? `${pct(((lastLive!.inBps ?? 0) / port.speedBps) * 100)} of ${bps(port.speedBps)}` : port.utilIn !== null ? `${pct(port.utilIn)} of ${bps(port.speedBps)}` : port.speedBps ? undefined : 'Speed unknown'
+          }
+        />
+        <Stat
+          label={liveNow ? 'Out · live' : 'Out now'}
+          value={bps(liveNow ? lastLive!.outBps : port.outBps)}
+          note={liveNow && port.speedBps ? `${pct(((lastLive!.outBps ?? 0) / port.speedBps) * 100)} of ${bps(port.speedBps)}` : port.utilOut !== null ? `${pct(port.utilOut)} of ${bps(port.speedBps)}` : undefined}
+        />
         <Stat label="95th pct in" value={bps(d?.p95.inBps)} note={d ? `${d.p95.samples} × 5-min averages` : undefined} />
         <Stat label="95th pct out" value={bps(d?.p95.outBps)} />
         <Stat label="Errors / discards" value={`${perSec(port.errorsPs)} · ${perSec(port.discardsPs)}`} tone={(port.errorsPs ?? 0) > 0 ? 'warn' : undefined} />
@@ -190,30 +222,24 @@ function PortDetail({ port, liveSamples, onClose }: { port: PortRateT; liveSampl
         <div className="mb-1 flex items-center gap-2 text-[13px]">
           <span className={liveNow ? 'size-2 animate-pulse rounded-full bg-ok' : 'size-2 rounded-full bg-ink-3'} aria-hidden />
           <span className="font-medium">Live, every second</span>
-          <span className="text-ink-3">
-            {liveNow ? 'Read from the device once a second while this chart is open (not stored).' : watch && !watch.live ? watch.reason : 'Starting live view…'}
-          </span>
+          <span className="text-ink-3">{liveNow ? 'Read from the device once a second while this chart is open (not stored).' : watch && !watch.live ? watch.reason : 'Starting live view…'}</span>
         </div>
-        {!!liveSamples?.length && (
-          <RateChart label={`Live traffic on ${port.deviceName} ${port.name}`} points={liveSamples} stepSeconds={1} from={Date.now() - LIVE_WINDOW_SECONDS * 1000} to={Date.now()} />
-        )}
+        {!!liveSamples?.length && <RateChart label={`Live traffic on ${port.deviceName} ${port.name}`} points={liveSamples} stepSeconds={1} from={Date.now() - LIVE_WINDOW_SECONDS * 1000} to={Date.now()} />}
       </div>
       <div className="mb-1 text-[13px] font-medium">History</div>
       <ErrorNote error={h.error} />
       {h.isLoading && <Loading />}
-      {d && chartPoints.length === 0 && <EmptyState title="No measurements in this range">{range.period === '1h' || range.period === '6h' ? 'Rates appear after two polls of the device.' : 'Longer ranges use 5-minute and hourly aggregates, built every minute from the raw readings.'}</EmptyState>}
+      {d && chartPoints.length === 0 && (
+        <EmptyState title="No measurements in this range">
+          {range.period === '1h' || range.period === '6h' ? 'Rates appear after two polls of the device.' : 'Longer ranges use 5-minute and hourly aggregates, built every minute from the raw readings.'}
+        </EmptyState>
+      )}
       {d && chartPoints.length > 0 && (
         <>
-          <RateChart
-            label={`Traffic on ${port.deviceName} ${port.name}`}
-            points={chartPoints}
-            stepSeconds={d.stepSeconds}
-            from={wFrom}
-            to={wTo}
-            p95={d.p95}
-          />
+          <RateChart label={`Traffic on ${port.deviceName} ${port.name}`} points={chartPoints} stepSeconds={d.stepSeconds} from={wFrom} to={wTo} p95={d.p95} />
           <p className="mt-2 text-[12.5px] text-ink-3">
-            {d.resolution === 'raw' ? `Every poll (${d.stepSeconds} s), drawn live as each poll arrives.` : d.resolution === '5m' ? '5-minute averages (hover for the peak in each).' : 'Hourly averages (hover for the peak in each).'} All values are measured from interface counters. 95th percentile by nearest rank over 5-minute averages.
+            {d.resolution === 'raw' ? `Every poll (${d.stepSeconds} s), drawn live as each poll arrives.` : d.resolution === '5m' ? '5-minute averages (hover for the peak in each).' : 'Hourly averages (hover for the peak in each).'} All
+            values are measured from interface counters. 95th percentile by nearest rank over 5-minute averages.
             {d.points.some((p) => p.flags.includes('wrap')) && ' Some readings crossed a 32-bit counter wrap and were corrected.'}
           </p>
         </>
@@ -233,6 +259,8 @@ export function NetworkMonitoringPage() {
   const [page, setPage] = useState(1);
   const deviceId = params.get('device') ?? undefined;
   const selectedId = params.get('port');
+  const view = staff && params.get('view') === 'dashboard' ? 'dashboard' : 'ports';
+  const setView = (v: 'ports' | 'dashboard') => setParams(v === 'dashboard' ? { view: 'dashboard' } : {}, { replace: true });
   useEffect(() => {
     const h = setTimeout(() => setDebounced(q), 250);
     return () => clearTimeout(h);
@@ -266,100 +294,121 @@ export function NetworkMonitoringPage() {
         }
         actions={<LiveBadge connected={stream.connected} feed={stream.feed} />}
       />
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
-        {staff && !deviceId && <TotalsPanel />}
-        {detail && <PortDetail key={detail.interfaceId} port={detail} liveSamples={stream.fast.get(detail.interfaceId)} onClose={() => select(null)} />}
-        <Panel
-          flush
-          title={deviceId && rows[0] ? `Ports on ${rows[0].deviceName}` : 'Ports'}
-          actions={
-            <div className="flex flex-wrap items-center gap-2">
-              {deviceId && (
-                <button className="text-[13px] text-accent hover:underline" onClick={() => setParams({}, { replace: true })}>
-                  All devices
-                </button>
-              )}
-              <Input className="w-48" placeholder="Search port or device" value={q} onChange={(e) => (setQ(e.target.value), setPage(1))} aria-label="Search ports" />
-              <Select className="w-40" value={sort} onChange={(e) => (setSort(e.target.value as typeof sort), setPage(1))} aria-label="Sort">
-                <option value="traffic">Most traffic</option>
-                <option value="utilization">Highest utilization</option>
-                <option value="errors">Most errors</option>
-                <option value="name">Device and port</option>
-              </Select>
-              {staff && (
-                <label className="flex items-center gap-1.5 text-[13px] text-ink-2">
-                  <input type="checkbox" checked={totalsOnly} onChange={(e) => (setTotalsOnly(e.target.checked), setPage(1))} /> Uplinks only
-                </label>
-              )}
-            </div>
-          }
-        >
-          <ErrorNote error={ports.error} className="m-4" />
-          {ports.isLoading && <Loading />}
-          {ports.data && ports.data.total === 0 && (
-            <EmptyState title={debounced || totalsOnly ? 'No matching ports' : 'No monitored ports yet'}>
-              {staff ? (
-                <>
-                  Turn on polling for a router or switch in <Link to="/alerts?tab=polling" className="text-accent hover:underline">Monitoring &amp; Alerts → Polling</Link>. It uses the device's stored read-only credential (SNMP, RouterOS, FortiOS or NX-API) and matches counters to the ports in inventory by name.
-                </>
-              ) : (
-                'Traffic will appear here once the ports connected to your equipment are monitored.'
-              )}
-            </EmptyState>
-          )}
-          {rows.length > 0 && (
-            <Table label="Monitored ports">
-              <thead>
-                <tr>
-                  <th>Device</th>
-                  <th>Port</th>
-                  <th>Status</th>
-                  <th className="text-right">In</th>
-                  <th className="text-right">Out</th>
-                  <th>Utilization</th>
-                  <th className="text-right">Errors · discards</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((p) => (
-                  <tr key={p.interfaceId} className={cx('cursor-pointer hover:bg-sunken/60', p.interfaceId === selectedId && 'bg-accent-soft')} onClick={() => select(p.interfaceId)}>
-                    <td className="font-medium">{p.deviceName}</td>
-                    <td>
-                      <button className="font-mono text-[13px] text-accent hover:underline" onClick={(e) => (e.stopPropagation(), select(p.interfaceId))}>
-                        {p.name}
-                      </button>
-                      {p.countInTotals && staff && (
-                        <span className="ml-1.5">
-                          <Chip tone="accent" title="Counts towards totals">
-                            Σ
-                          </Chip>
-                        </span>
-                      )}
-                      {p.description && <span className="block max-w-[28ch] truncate text-[12px] text-ink-3">{p.description}</span>}
-                    </td>
-                    <td>
-                      <StatusCell p={p} />
-                    </td>
-                    <td className="text-right tabular-nums">{p.fresh ? bps(p.inBps) : <span className="text-ink-3">—</span>}</td>
-                    <td className="text-right tabular-nums">{p.fresh ? bps(p.outBps) : <span className="text-ink-3">—</span>}</td>
-                    <td>{p.fresh ? <UtilBar p={p} /> : <span className="text-ink-3">—</span>}</td>
-                    <td className={cx('text-right tabular-nums text-[13px]', (p.errorsPs ?? 0) > 0 && 'text-warn')}>{p.fresh ? `${perSec(p.errorsPs)} · ${perSec(p.discardsPs)}` : <span className="text-ink-3">—</span>}</td>
-                    <td className="text-[13px]">
-                      <UpdatedCell p={p} />
-                    </td>
+      {staff && (
+        <div role="tablist" aria-label="Network monitoring views" className="mb-4 flex w-fit gap-1 rounded-xl border border-rule bg-sunken p-1">
+          {(
+            [
+              ['ports', 'Ports'],
+              ['dashboard', 'Interface dashboard'],
+            ] as const
+          ).map(([k, l]) => (
+            <button key={k} role="tab" aria-selected={view === k} onClick={() => setView(k)} className={cx('h-8 rounded-lg px-3.5 text-[13.5px]', view === k ? 'bg-panel font-semibold text-ink shadow-sm' : 'text-ink-2 hover:text-ink')}>
+              {l}
+            </button>
+          ))}
+        </div>
+      )}
+      {view === 'dashboard' && <InterfaceDashboard live={stream.live} fast={stream.fast} />}
+      {view === 'ports' && (
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+          {staff && !deviceId && <TotalsPanel />}
+          {detail && <PortDetail key={detail.interfaceId} port={detail} liveSamples={stream.fast.get(detail.interfaceId)} onClose={() => select(null)} />}
+          <Panel
+            flush
+            title={deviceId && rows[0] ? `Ports on ${rows[0].deviceName}` : 'Ports'}
+            actions={
+              <div className="flex flex-wrap items-center gap-2">
+                {deviceId && (
+                  <button className="text-[13px] text-accent hover:underline" onClick={() => setParams({}, { replace: true })}>
+                    All devices
+                  </button>
+                )}
+                <Input className="w-48" placeholder="Search port or device" value={q} onChange={(e) => (setQ(e.target.value), setPage(1))} aria-label="Search ports" />
+                <Select className="w-40" value={sort} onChange={(e) => (setSort(e.target.value as typeof sort), setPage(1))} aria-label="Sort">
+                  <option value="traffic">Most traffic</option>
+                  <option value="utilization">Highest utilization</option>
+                  <option value="errors">Most errors</option>
+                  <option value="name">Device and port</option>
+                </Select>
+                {staff && (
+                  <label className="flex items-center gap-1.5 text-[13px] text-ink-2">
+                    <input type="checkbox" checked={totalsOnly} onChange={(e) => (setTotalsOnly(e.target.checked), setPage(1))} /> Uplinks only
+                  </label>
+                )}
+              </div>
+            }
+          >
+            <ErrorNote error={ports.error} className="m-4" />
+            {ports.isLoading && <Loading />}
+            {ports.data && ports.data.total === 0 && (
+              <EmptyState title={debounced || totalsOnly ? 'No matching ports' : 'No monitored ports yet'}>
+                {staff ? (
+                  <>
+                    Turn on polling for a router or switch in{' '}
+                    <Link to="/alerts?tab=polling" className="text-accent hover:underline">
+                      Monitoring &amp; Alerts → Polling
+                    </Link>
+                    . It uses the device's stored read-only credential (SNMP, RouterOS, FortiOS or NX-API) and matches counters to the ports in inventory by name.
+                  </>
+                ) : (
+                  'Traffic will appear here once the ports connected to your equipment are monitored.'
+                )}
+              </EmptyState>
+            )}
+            {rows.length > 0 && (
+              <Table label="Monitored ports">
+                <thead>
+                  <tr>
+                    <th>Device</th>
+                    <th>Port</th>
+                    <th>Status</th>
+                    <th className="text-right">In</th>
+                    <th className="text-right">Out</th>
+                    <th>Utilization</th>
+                    <th className="text-right">Errors · discards</th>
+                    <th>Updated</th>
                   </tr>
-                ))}
-              </tbody>
-            </Table>
-          )}
-          {ports.data && ports.data.total > ports.data.pageSize && (
-            <div className="border-t border-rule px-4 py-2">
-              <Pagination page={page} pageSize={ports.data.pageSize} total={ports.data.total} onPage={setPage} />
-            </div>
-          )}
-        </Panel>
-      </div>
+                </thead>
+                <tbody>
+                  {rows.map((p) => (
+                    <tr key={p.interfaceId} className={cx('cursor-pointer hover:bg-sunken/60', p.interfaceId === selectedId && 'bg-accent-soft')} onClick={() => select(p.interfaceId)}>
+                      <td className="font-medium">{p.deviceName}</td>
+                      <td>
+                        <button className="font-mono text-[13px] text-accent hover:underline" onClick={(e) => (e.stopPropagation(), select(p.interfaceId))}>
+                          {p.name}
+                        </button>
+                        {p.countInTotals && staff && (
+                          <span className="ml-1.5">
+                            <Chip tone="accent" title="Counts towards totals">
+                              Σ
+                            </Chip>
+                          </span>
+                        )}
+                        {p.description && <span className="block max-w-[28ch] truncate text-[12px] text-ink-3">{p.description}</span>}
+                      </td>
+                      <td>
+                        <StatusCell p={p} />
+                      </td>
+                      <td className="text-right tabular-nums">{p.fresh ? bps(p.inBps) : <span className="text-ink-3">—</span>}</td>
+                      <td className="text-right tabular-nums">{p.fresh ? bps(p.outBps) : <span className="text-ink-3">—</span>}</td>
+                      <td>{p.fresh ? <UtilBar p={p} /> : <span className="text-ink-3">—</span>}</td>
+                      <td className={cx('text-right tabular-nums text-[13px]', (p.errorsPs ?? 0) > 0 && 'text-warn')}>{p.fresh ? `${perSec(p.errorsPs)} · ${perSec(p.discardsPs)}` : <span className="text-ink-3">—</span>}</td>
+                      <td className="text-[13px]">
+                        <UpdatedCell p={p} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            )}
+            {ports.data && ports.data.total > ports.data.pageSize && (
+              <div className="border-t border-rule px-4 py-2">
+                <Pagination page={page} pageSize={ports.data.pageSize} total={ports.data.total} onPage={setPage} />
+              </div>
+            )}
+          </Panel>
+        </div>
+      )}
     </>
   );
 }

@@ -409,6 +409,34 @@ describe('tenancy', () => {
   });
 });
 
+describe('interface dashboard', () => {
+  it('staff pin interfaces, see their rates or why there are none, reorder and remove them', async () => {
+    expect((await ok(admin.get(`${M}/dashboard`)))).toEqual([]);
+    // Customers have no dashboard and cannot change it.
+    expect((await acme.get(`${M}/dashboard`)).status).toBe(403);
+    expect((await acme.post(`${M}/dashboard`, { interfaceIds: [ids.swif.ether1] })).status).toBe(403);
+    // A NOC engineer (alerts.manage) pins a polled switch port and a port on a server that is not polled.
+    const r = await ok(noc.post(`${M}/dashboard`, { interfaceIds: [ids.swif.ether1, ids.s1if.eth0, ids.swif.ether1] }));
+    expect(r).toEqual({ added: 2, alreadyThere: 0 });
+    expect(await ok(admin.post(`${M}/dashboard`, { interfaceIds: [ids.swif.ether1] }))).toEqual({ added: 0, alreadyThere: 1 });
+    const board = await ok(admin.get(`${M}/dashboard`));
+    expect(board.map((x: { interfaceId: string }) => x.interfaceId)).toEqual([ids.swif.ether1, ids.s1if.eth0]);
+    expect(board[0]).toMatchObject({ name: 'ether1', state: 'polled', port: { interfaceId: ids.swif.ether1, pollingEnabled: true } });
+    expect(board[1]).toMatchObject({ name: 'eth0', deviceName: 'acme-srv', state: 'device_not_polled', port: null });
+    // Unknown interface: nothing is added.
+    expect((await admin.post(`${M}/dashboard`, { interfaceIds: ['00000000-0000-4000-8000-000000000000'] })).status).toBe(404);
+    // Reorder, then remove.
+    const reordered = await ok(admin.put(`${M}/dashboard/order`, { interfaceIds: [ids.s1if.eth0, ids.swif.ether1] }));
+    expect(reordered.map((x: { interfaceId: string }) => x.interfaceId)).toEqual([ids.s1if.eth0, ids.swif.ether1]);
+    expect((await admin.delete(`${M}/dashboard/${ids.s1if.eth0}`)).status).toBe(204);
+    expect((await admin.delete(`${M}/dashboard/${ids.s1if.eth0}`)).status).toBe(404);
+    expect((await ok(admin.get(`${M}/dashboard`))).map((x: { interfaceId: string }) => x.interfaceId)).toEqual([ids.swif.ether1]);
+    // Changes are audited.
+    const audit = await ok(admin.get('/api/v1/audit?action=monitoring.dashboard.add'));
+    expect(audit.items.length).toBeGreaterThan(0);
+  });
+});
+
 describe('alerts, maintenance and notifications', () => {
   it('stores channels with write-only secrets', async () => {
     const wh = await ok(admin.post(`${A}/channels`, { kind: 'webhook', name: 'NOC hook', url: `http://127.0.0.1:${hook.port}/hook`, signingSecret: 'hook-signing-secret-1' }));
