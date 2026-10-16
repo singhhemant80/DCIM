@@ -41,6 +41,40 @@ describe('Redfish when the BMC fails on its system list', () => {
     }
   });
 
+  it('follows a redirect on the same host (e.g. /Systems to /Systems/)', async () => {
+    const sim = await startRedfish('root', 'pw', { redirectSystems: 'slash' });
+    try {
+      const r = await redfishAdapter().test(target(sim.port));
+      expect(r.ok).toBe(true);
+      expect(r.message).not.toMatch(/Note/);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('a redirect to HTTPS is reported with what to change, not followed', async () => {
+    const sim = await startRedfish('root', 'pw', { redirectSystems: 'https' });
+    try {
+      // The known system path still answers, so the test connects and says why the list failed.
+      const r = await redfishAdapter().test(target(sim.port));
+      expect(r.message).toMatch(/redirected \(HTTP 301\) to https:\/\/127\.0\.0\.1:8443\/redfish\/v1\/Systems; set this credential's protocol to HTTPS and port 8443/);
+      expect(sim.requests.some((q) => q.url.includes('8443'))).toBe(false);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('accepts absolute member links, using only their path on the credential host', async () => {
+    const sim = await startRedfish('root', 'pw', { absoluteLinks: true });
+    try {
+      const r = await redfishAdapter().test(target(sim.port));
+      expect(r.ok).toBe(true);
+      expect(r.message).not.toMatch(/Note/);
+    } finally {
+      await sim.close();
+    }
+  });
+
   it('device error text is taken from the Redfish body, single line and capped', () => {
     expect(deviceErrorText(JSON.stringify({ error: { message: 'General', '@Message.ExtendedInfo': [{ Message: 'Bad\nthing.', Resolution: 'Reset.' }] } }))).toBe('Bad thing. Reset.');
     expect(deviceErrorText(JSON.stringify({ error: { message: 'x'.repeat(400) } }))!.length).toBe(240);

@@ -13,7 +13,9 @@ import { dellMemoryViaWsman } from './dell-wsman';
 type Row = Record<string, unknown>;
 
 const odataId = (v: unknown): string | null => {
-  const id = v && typeof v === 'object' ? (v as Row)['@odata.id'] : null;
+  let id = v && typeof v === 'object' ? (v as Row)['@odata.id'] : null;
+  // Some BMCs give absolute links (https://host/redfish/v1/...); only the path is used, on the credential's own host.
+  if (typeof id === 'string') id = id.replace(/^https?:\/\/[^/]+(?=\/redfish\/)/i, '').replace(/#.*$/, '');
   // Only follow links inside the Redfish tree of the same host.
   return typeof id === 'string' && /^\/redfish\/v1\/[\w./:-]*$/.test(id) && !id.includes('..') ? id : null;
 };
@@ -42,13 +44,37 @@ const isAuth = (e: unknown) => e instanceof DeviceHttpError && (e.status === 401
  * itself still answers; then the well-known paths are read directly, and the
  * caller gets a note saying so. Read-only GETs only.
  */
+/** What a systems collection that gave no usable member looked like, for the error message (no values beyond link paths). */
+function describeCollection(coll: Row): string {
+  const keys = Object.keys(coll ?? {});
+  if (!keys.length) return 'the answer was empty';
+  if (!Array.isArray(coll.Members)) return `no Members in the answer; fields: ${keys.slice(0, 8).join(', ')}`;
+  if (!coll.Members.length) return `Members is empty${typeof coll['Members@odata.count'] === 'number' ? `, count ${coll['Members@odata.count']}` : ''}; the user may lack the privilege to see the system`;
+  const raw = (coll.Members as unknown[]).slice(0, 2).map((m) => String(m && typeof m === 'object' ? (m as Row)['@odata.id'] : m).slice(0, 80));
+  return `${coll.Members.length} member link(s) not usable: ${raw.join(', ')}`;
+}
+
 export async function findRedfishSystems(get: (path: string) => Promise<Row>): Promise<{ paths: string[]; note: string | null }> {
   let listErr: Error;
   try {
     const coll = await get('/redfish/v1/Systems');
     const list = Array.isArray(coll.Members) ? (coll.Members as unknown[]).map(odataId).filter((x): x is string => !!x) : [];
     if (list.length) return { paths: list, note: null };
-    listErr = new Error('The BMC answered but lists no systems');
+    listErr = new Error(`The BMC answered but lists no systems (${describeCollection(coll)})`);
+    // The service root may point to the systems somewhere else.
+    try {
+      const root = await get('/redfish/v1/');
+      const link = odataId(root.Systems);
+      if (link && link.replace(/\/$/, '') !== '/redfish/v1/Systems') {
+        const alt = await get(link);
+        const altList = Array.isArray(alt.Members) ? (alt.Members as unknown[]).map(odataId).filter((x): x is string => !!x) : [];
+        if (altList.length) return { paths: altList, note: null };
+      }
+      const product = [str(root.Vendor), str(root.Product), str(root.RedfishVersion) ? `Redfish ${str(root.RedfishVersion)}` : null].filter(Boolean).join(' ');
+      if (product) listErr = new Error(`${listErr.message}; service root: ${product}`);
+    } catch (e) {
+      if (isAuth(e)) throw e;
+    }
   } catch (e) {
     if (isAuth(e) || !(e instanceof DeviceHttpError) || e.status === null) throw e;
     listErr = e;
@@ -56,7 +82,8 @@ export async function findRedfishSystems(get: (path: string) => Promise<Row>): P
   for (const p of KNOWN_SYSTEM_PATHS) {
     try {
       const doc = await get(p);
-      if (doc && typeof doc === 'object' && (doc.Id !== undefined || doc.PowerState !== undefined || doc.Model !== undefined)) return { paths: [p], note: `the BMC's system list failed (${listErr.message}), so ${p} was read directly` };
+      if (doc && typeof doc === 'object' && (doc.Id !== undefined || doc.PowerState !== undefined || doc.Model !== undefined || /ComputerSystem/.test(String(doc['@odata.type'] ?? ''))))
+        return { paths: [p], note: `the BMC's system list failed (${listErr.message}), so ${p} was read directly` };
     } catch (e) {
       if (isAuth(e)) throw e;
     }

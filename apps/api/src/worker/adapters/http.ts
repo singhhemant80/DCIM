@@ -56,6 +56,7 @@ export function deviceRequest(
     defaultPort: number;
     /** Resolve error statuses (with the parsed body) instead of rejecting. */ rawErrors?: boolean;
     /** A non-JSON body (e.g. a WS-Management SOAP envelope); the answer is returned as `text`. */ raw?: { data: string; contentType: string };
+    /** Internal: redirects followed so far. */ hops?: number;
   },
 ): Promise<{ status: number; json: unknown; text?: string }> {
   const scheme = t.params.scheme ?? 'https';
@@ -95,6 +96,30 @@ export function deviceRequest(
               json = null;
             }
             return resolve({ status, json });
+          }
+          // Redirects: a GET to another path on the same host, scheme and port is
+          // followed (BMCs redirect e.g. /Systems to /Systems/); anything else is
+          // reported, since the request (with its credentials) would go elsewhere.
+          if (status >= 300 && status < 400) {
+            const loc = String(res.headers.location ?? '');
+            const port = t.port ?? opts.defaultPort;
+            let next: URL | null = null;
+            try {
+              next = loc ? new URL(loc, `${scheme}://${t.host.includes(':') && !t.host.startsWith('[') ? `[${t.host}]` : t.host}:${port}${path}`) : null;
+            } catch {
+              next = null;
+            }
+            const samePlace = next && next.protocol === `${scheme}:` && next.hostname.replace(/^\[|\]$/g, '') === t.host.replace(/^\[|\]$/g, '') && Number(next.port || (scheme === 'https' ? 443 : 80)) === port;
+            if (next && samePlace && method === 'GET' && (opts.hops ?? 0) < 3 && next.pathname + next.search !== path)
+              return deviceRequest(t, method, next.pathname + next.search, { ...opts, hops: (opts.hops ?? 0) + 1 }).then(resolve, reject);
+            const where = next ? `${next.protocol}//${next.host}${next.pathname}` : 'an unknown location';
+            const hint =
+              next && next.protocol !== `${scheme}:`
+                ? `; set this credential's protocol to ${next.protocol.replace(':', '').toUpperCase()}${next.port ? ` and port ${next.port}` : ''}`
+                : next && !samePlace
+                  ? '; check the address and port of this credential'
+                  : '';
+            return reject(new DeviceHttpError(`${path.split('?')[0]} redirected (HTTP ${status}) to ${where}${hint}`, status));
           }
           if (status === 401 || status === 403) return reject(new DeviceHttpError(`Authentication failed (HTTP ${status}); check the username, password or token and its permissions`, status));
           if (status === 404) return reject(new DeviceHttpError(`Not found (HTTP 404): ${path.split('?')[0]}`, status));

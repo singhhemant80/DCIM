@@ -32,6 +32,8 @@ export async function startRedfish(
     /** Like early iDRAC 9 firmware: no Memory or Storage collection, disks only under SimpleStorage. */ oldIdrac?: boolean;
     wsmanMemory?: boolean;
     /** Answer the /Systems collection with this error status (as a stuck iDRAC web service does), while the system itself still works. */ systemsError?: number;
+    /** Redirect /redfish/v1/Systems to /redfish/v1/Systems/ (same host), or to HTTPS (another scheme). */ redirectSystems?: 'slash' | 'https';
+    /** Give member links as absolute URLs. */ absoluteLinks?: boolean;
   } = {},
 ): Promise<MockRedfish> {
   let watts: number | null = opts.watts ?? 312;
@@ -207,6 +209,13 @@ export async function startRedfish(
       const c = all[req.url!.split('?')[0]!] as { Members?: { '@odata.id': string }[] } | undefined;
       if (c && Array.isArray(c.Members)) return send(200, { ...c, Members: c.Members.map((m) => ({ '@odata.id': m['@odata.id'], ...(all[m['@odata.id']] as object) })) });
     }
+    if (opts.redirectSystems && req.url === '/redfish/v1/Systems') {
+      inFlight--;
+      res.writeHead(opts.redirectSystems === 'slash' ? 308 : 301, { Location: opts.redirectSystems === 'slash' ? '/redfish/v1/Systems/' : `https://127.0.0.1:8443/redfish/v1/Systems` });
+      return res.end();
+    }
+    if (opts.redirectSystems === 'slash' && req.url === '/redfish/v1/Systems/') req.url = '/redfish/v1/Systems';
+    if (opts.absoluteLinks && req.url === '/redfish/v1/Systems') return send(200, { Members: [{ '@odata.id': `http://127.0.0.1:1${S}` }] });
     if (opts.systemsError && req.url!.split('?')[0] === '/redfish/v1/Systems')
       return send(opts.systemsError, {
         error: {
