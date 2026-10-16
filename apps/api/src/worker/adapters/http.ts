@@ -11,6 +11,33 @@ export class DeviceHttpError extends Error {
   }
 }
 
+/**
+ * The device's own explanation from an error body (Redfish `error.message` or
+ * `@Message.ExtendedInfo[].Message`, or a plain `error`/`message` string),
+ * single-line and capped. Device error bodies never contain our request
+ * headers, so no secret can come back through here.
+ */
+export function deviceErrorText(raw: string): string | null {
+  let j: unknown;
+  try {
+    j = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!j || typeof j !== 'object') return null;
+  const o = j as Record<string, unknown>;
+  const err = (o.error && typeof o.error === 'object' ? o.error : o) as Record<string, unknown>;
+  const info = Array.isArray(err['@Message.ExtendedInfo']) ? (err['@Message.ExtendedInfo'] as Record<string, unknown>[]) : [];
+  const parts = info.map((m) => [m?.Message, m?.Resolution].filter((x) => typeof x === 'string' && x.trim()).join(' ')).filter(Boolean);
+  const text = parts.length ? parts.join(' ') : typeof err.message === 'string' ? err.message : typeof o.error === 'string' ? o.error : typeof o.message === 'string' ? o.message : null;
+  if (!text) return null;
+  const clean = text
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return clean ? (clean.length > 240 ? `${clean.slice(0, 237)}...` : clean) : null;
+}
+
 const MAX_BODY = 32 * 1024 * 1024;
 
 /**
@@ -71,7 +98,10 @@ export function deviceRequest(
           }
           if (status === 401 || status === 403) return reject(new DeviceHttpError(`Authentication failed (HTTP ${status}); check the username, password or token and its permissions`, status));
           if (status === 404) return reject(new DeviceHttpError(`Not found (HTTP 404): ${path.split('?')[0]}`, status));
-          if (status >= 400) return reject(new DeviceHttpError(`HTTP ${status} from ${path.split('?')[0]}`, status));
+          if (status >= 400) {
+            const why = deviceErrorText(raw);
+            return reject(new DeviceHttpError(`HTTP ${status} from ${path.split('?')[0]}${why ? `: ${why}` : ''}`, status));
+          }
           if (opts.raw) return resolve({ status, json: null, text: raw });
           try {
             resolve({ status, json: raw ? JSON.parse(raw) : null });

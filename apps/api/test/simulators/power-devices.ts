@@ -19,7 +19,21 @@ export interface MockRedfish {
 }
 
 /** Dell-iDRAC-shaped Redfish service with one system and one chassis. */
-export async function startRedfish(user: string, pass: string, opts: { watts?: number; environmentMetricsOnly?: boolean; port?: number; expand?: boolean; maxConcurrent?: number; noMemoryLink?: boolean; /** Like early iDRAC 9 firmware: no Memory or Storage collection, disks only under SimpleStorage. */ oldIdrac?: boolean; wsmanMemory?: boolean } = {}): Promise<MockRedfish> {
+export async function startRedfish(
+  user: string,
+  pass: string,
+  opts: {
+    watts?: number;
+    environmentMetricsOnly?: boolean;
+    port?: number;
+    expand?: boolean;
+    maxConcurrent?: number;
+    noMemoryLink?: boolean;
+    /** Like early iDRAC 9 firmware: no Memory or Storage collection, disks only under SimpleStorage. */ oldIdrac?: boolean;
+    wsmanMemory?: boolean;
+    /** Answer the /Systems collection with this error status (as a stuck iDRAC web service does), while the system itself still works. */ systemsError?: number;
+  } = {},
+): Promise<MockRedfish> {
   let watts: number | null = opts.watts ?? 312;
   const requests: { method: string; url: string }[] = [];
   const expected = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
@@ -39,11 +53,21 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
   const docs = (): Record<string, unknown> => ({
     '/redfish/v1/Systems': coll([S]),
     [S]: {
-      Manufacturer: 'Dell Inc.', Model: 'PowerEdge R650', SerialNumber: 'CN7XXXX', SKU: 'HH90TAG', PowerState: 'On', HostName: 'srv-01', BiosVersion: '1.10.2',
+      Manufacturer: 'Dell Inc.',
+      Model: 'PowerEdge R650',
+      SerialNumber: 'CN7XXXX',
+      SKU: 'HH90TAG',
+      PowerState: 'On',
+      HostName: 'srv-01',
+      BiosVersion: '1.10.2',
       Status: { State: 'Enabled', Health: 'Warning', HealthRollup: 'Warning' },
       ProcessorSummary: { Count: 2, Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', LogicalProcessorCount: 128 },
       MemorySummary: { TotalSystemMemoryGiB: 128 },
-      Processors: link(`${S}/Processors`), ...(opts.noMemoryLink || opts.oldIdrac ? {} : { Memory: link(`${S}/Memory`) }), ...(opts.oldIdrac ? { SimpleStorage: link(`${S}/SimpleStorage`) } : { Storage: link(`${S}/Storage`) }), EthernetInterfaces: link(`${S}/EthernetInterfaces`), LogServices: link(`${S}/LogServices`),
+      Processors: link(`${S}/Processors`),
+      ...(opts.noMemoryLink || opts.oldIdrac ? {} : { Memory: link(`${S}/Memory`) }),
+      ...(opts.oldIdrac ? { SimpleStorage: link(`${S}/SimpleStorage`) } : { Storage: link(`${S}/Storage`) }),
+      EthernetInterfaces: link(`${S}/EthernetInterfaces`),
+      LogServices: link(`${S}/LogServices`),
     },
     ...(opts.oldIdrac
       ? {
@@ -55,17 +79,54 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
     [`${S}/Processors/CPU.Socket.1`]: { Socket: 'CPU.Socket.1', ProcessorType: 'CPU', Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', TotalCores: 32, TotalThreads: 64, MaxSpeedMHz: 4000, Status: ok },
     [`${S}/Processors/CPU.Socket.2`]: { Socket: 'CPU.Socket.2', ProcessorType: 'CPU', Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', TotalCores: 32, TotalThreads: 64, MaxSpeedMHz: 4000, Status: ok },
     [`${S}/Memory`]: coll([...dimms.map((d) => `${S}/Memory/DIMM.Socket.${d}`), `${S}/Memory/DIMM.Socket.C1`]),
-    ...Object.fromEntries(dimms.map((d) => [`${S}/Memory/DIMM.Socket.${d}`, { DeviceLocator: `DIMM.Socket.${d}`, CapacityMiB: 32768, MemoryDeviceType: 'DDR4', OperatingSpeedMhz: 3200, Manufacturer: 'Hynix', PartNumber: 'HMA84GR7DJR4N-XN', SerialNumber: `S${d}`, Status: d === 'A2' ? { State: 'Enabled', Health: 'Warning' } : ok }])),
+    ...Object.fromEntries(
+      dimms.map((d) => [
+        `${S}/Memory/DIMM.Socket.${d}`,
+        {
+          DeviceLocator: `DIMM.Socket.${d}`,
+          CapacityMiB: 32768,
+          MemoryDeviceType: 'DDR4',
+          OperatingSpeedMhz: 3200,
+          Manufacturer: 'Hynix',
+          PartNumber: 'HMA84GR7DJR4N-XN',
+          SerialNumber: `S${d}`,
+          Status: d === 'A2' ? { State: 'Enabled', Health: 'Warning' } : ok,
+        },
+      ]),
+    ),
     [`${S}/Memory/DIMM.Socket.C1`]: { DeviceLocator: 'DIMM.Socket.C1', CapacityMiB: 0, Status: { State: 'Absent' } },
     [`${S}/Storage`]: coll([`${S}/Storage/RAID.Integrated.1-1`]),
     [`${S}/Storage/RAID.Integrated.1-1`]: {
-      Id: 'RAID.Integrated.1-1', Name: 'PERC H755',
+      Id: 'RAID.Integrated.1-1',
+      Name: 'PERC H755',
       StorageControllers: [{ Name: 'PERC H755 Front', Model: 'PERC H755 Front', FirmwareVersion: '52.16.1-4405', Status: ok }],
       Drives: [link(`${S}/Storage/Drives/Disk.Bay.0`), link(`${S}/Storage/Drives/Disk.Bay.1`)],
       Volumes: link(`${S}/Storage/RAID.Integrated.1-1/Volumes`),
     },
-    [`${S}/Storage/Drives/Disk.Bay.0`]: { Name: 'SSD 0', Model: 'MZ7LH960HBJR0D3', SerialNumber: 'SSD0SER', MediaType: 'SSD', Protocol: 'SATA', CapacityBytes: 960197124096, PredictedMediaLifeLeftPercent: 97, FailurePredicted: false, PhysicalLocation: { PartLocation: { LocationOrdinalValue: 0 } }, Status: ok },
-    [`${S}/Storage/Drives/Disk.Bay.1`]: { Name: 'SSD 1', Model: 'MZ7LH960HBJR0D3', SerialNumber: 'SSD1SER', MediaType: 'SSD', Protocol: 'SATA', CapacityBytes: 960197124096, PredictedMediaLifeLeftPercent: 12, FailurePredicted: true, PhysicalLocation: { PartLocation: { LocationOrdinalValue: 1 } }, Status: { State: 'Enabled', Health: 'Warning' } },
+    [`${S}/Storage/Drives/Disk.Bay.0`]: {
+      Name: 'SSD 0',
+      Model: 'MZ7LH960HBJR0D3',
+      SerialNumber: 'SSD0SER',
+      MediaType: 'SSD',
+      Protocol: 'SATA',
+      CapacityBytes: 960197124096,
+      PredictedMediaLifeLeftPercent: 97,
+      FailurePredicted: false,
+      PhysicalLocation: { PartLocation: { LocationOrdinalValue: 0 } },
+      Status: ok,
+    },
+    [`${S}/Storage/Drives/Disk.Bay.1`]: {
+      Name: 'SSD 1',
+      Model: 'MZ7LH960HBJR0D3',
+      SerialNumber: 'SSD1SER',
+      MediaType: 'SSD',
+      Protocol: 'SATA',
+      CapacityBytes: 960197124096,
+      PredictedMediaLifeLeftPercent: 12,
+      FailurePredicted: true,
+      PhysicalLocation: { PartLocation: { LocationOrdinalValue: 1 } },
+      Status: { State: 'Enabled', Health: 'Warning' },
+    },
     [`${S}/Storage/RAID.Integrated.1-1/Volumes`]: coll([`${S}/Storage/Volumes/Disk.Virtual.0`]),
     [`${S}/Storage/Volumes/Disk.Virtual.0`]: { Name: 'VD0', RAIDType: 'RAID1', CapacityBytes: 959656755200, Status: ok },
     [`${S}/EthernetInterfaces`]: coll([`${S}/EthernetInterfaces/NIC.Slot.1-1-1`]),
@@ -84,7 +145,10 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
     },
     '/redfish/v1/Chassis/System.Embedded.1/Thermal': {
       Fans: [{ Name: 'System Board Fan1A', Reading: 7800, ReadingUnits: 'RPM', Status: ok }],
-      Temperatures: [{ Name: 'CPU1 Temp', ReadingCelsius: 54, UpperThresholdCritical: 98, Status: ok }, { Name: 'Inlet Temp', ReadingCelsius: 23, UpperThresholdCritical: 47, Status: ok }],
+      Temperatures: [
+        { Name: 'CPU1 Temp', ReadingCelsius: 54, UpperThresholdCritical: 98, Status: ok },
+        { Name: 'Inlet Temp', ReadingCelsius: 23, UpperThresholdCritical: 47, Status: ok },
+      ],
     },
     '/redfish/v1/Chassis/System.Embedded.1/EnvironmentMetrics': { PowerWatts: { Reading: watts } },
     '/redfish/v1/Managers': coll([M]),
@@ -130,8 +194,7 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
         // Two modules in the first answer, the third after a Pull, as a real iDRAC pages them.
         if (body.includes('enumeration/Enumerate'))
           return reply(200, wrap(`<wsen:EnumerateResponse><wsen:EnumerationContext>ctx-1</wsen:EnumerationContext><wsman:Items>${dimm('A1', '1')}${dimm('A2', '2')}</wsman:Items></wsen:EnumerateResponse>`));
-        if (body.includes('enumeration/Pull') && body.includes('ctx-1'))
-          return reply(200, wrap(`<wsen:PullResponse><wsen:Items>${dimm('B1', '1')}</wsen:Items><wsen:EndOfSequence/></wsen:PullResponse>`));
+        if (body.includes('enumeration/Pull') && body.includes('ctx-1')) return reply(200, wrap(`<wsen:PullResponse><wsen:Items>${dimm('B1', '1')}</wsen:Items><wsen:EndOfSequence/></wsen:PullResponse>`));
         return reply(400, '<fault>bad request</fault>');
       });
       return;
@@ -144,6 +207,14 @@ export async function startRedfish(user: string, pass: string, opts: { watts?: n
       const c = all[req.url!.split('?')[0]!] as { Members?: { '@odata.id': string }[] } | undefined;
       if (c && Array.isArray(c.Members)) return send(200, { ...c, Members: c.Members.map((m) => ({ '@odata.id': m['@odata.id'], ...(all[m['@odata.id']] as object) })) });
     }
+    if (opts.systemsError && req.url!.split('?')[0] === '/redfish/v1/Systems')
+      return send(opts.systemsError, {
+        error: {
+          code: 'Base.1.8.GeneralError',
+          message: 'A general error has occurred. See ExtendedInfo for more information.',
+          '@Message.ExtendedInfo': [{ MessageId: 'IDRAC.2.8.SYS446', Message: 'Unable to complete the operation because of an internal error.', Resolution: 'Retry the operation. If the issue persists, reset iDRAC.' }],
+        },
+      });
     if (opts.oldIdrac && /^\/redfish\/v1\/Systems\/System\.Embedded\.1\/(Memory|Storage)\b/.test(req.url!)) return send(404, { error: 'Not found' });
     const doc = all[req.url!] ?? all[req.url!.split('?')[0]!];
     return doc === undefined ? send(404, { error: 'Not found' }) : send(200, doc);
@@ -196,5 +267,12 @@ export const ROUTEROS_HEALTH = [
 ];
 export const NXOS_POWER = {
   power_summary: { ps_redun_mode: 'Redundant', tot_pow_capacity: '1100.00 W', tot_pow_input_actual_draw: '287.00 W', tot_pow_out_actual_draw: '262.00 W' },
-  powersup: { TABLE_psinfo: { ROW_psinfo: [{ psnum: 1, psmodel: 'NXA-PAC-650W-PE', actual_input: '144 W', actual_out: '131 W', ps_status: 'Ok' }, { psnum: 2, psmodel: 'NXA-PAC-650W-PE', actual_input: '143 W', actual_out: '131 W', ps_status: 'Ok' }] } },
+  powersup: {
+    TABLE_psinfo: {
+      ROW_psinfo: [
+        { psnum: 1, psmodel: 'NXA-PAC-650W-PE', actual_input: '144 W', actual_out: '131 W', ps_status: 'Ok' },
+        { psnum: 2, psmodel: 'NXA-PAC-650W-PE', actual_input: '143 W', actual_out: '131 W', ps_status: 'Ok' },
+      ],
+    },
+  },
 };

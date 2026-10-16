@@ -47,6 +47,8 @@ export async function collectRedfishInventory(
   isAuthError: (e: unknown) => boolean = () => false,
   /** Another read-only source of the memory list, for BMCs whose Redfish has none (older Dell iDRAC firmware). */
   memoryFallback?: { applies: (manufacturer: string | null) => boolean; label: string; read: () => Promise<HwMemory[]> },
+  /** How to find the system resources (with a fallback when the BMC's list fails). */
+  findSystems?: () => Promise<{ paths: string[]; note: string | null }>,
 ): Promise<HardwareInventory> {
   const warnings: string[] = [];
   let requests = 0;
@@ -101,11 +103,20 @@ export async function collectRedfishInventory(
     if (full.length && full.every((m) => m && typeof m === 'object' && Object.keys(m).some((k) => !k.startsWith('@odata')))) return full.slice(0, cap);
     const coll = expanded && Array.isArray(expanded.Members) ? expanded : await g(path, quiet);
     if (!coll) return [];
-    const docs = await Promise.all(members(coll).slice(0, cap).map((m) => g(m)));
+    const docs = await Promise.all(
+      members(coll)
+        .slice(0, cap)
+        .map((m) => g(m)),
+    );
     return docs.filter((d): d is Row => !!d);
   };
 
-  const sysPath = members((await get('/redfish/v1/Systems')) ?? {})[0];
+  let sysPath: string | undefined;
+  if (findSystems) {
+    const found = await findSystems();
+    sysPath = found.paths[0];
+    if (found.note) warnings.push(found.note.slice(0, 200));
+  } else sysPath = members((await get('/redfish/v1/Systems')) ?? {})[0];
   if (!sysPath) throw new Error('The BMC lists no systems');
   const sys = (await get(sysPath)) as Row;
   const ps = (sys.ProcessorSummary ?? {}) as Row;
@@ -133,7 +144,10 @@ export async function collectRedfishInventory(
       controllers.push({ name: s(c.Name) ?? s(st.Name) ?? s(st.Id) ?? 'Controller', model: s(c.Model), firmware: s(c.FirmwareVersion), health: health(c.Status) });
     }
     if (!Array.isArray(st.StorageControllers) || !(st.StorageControllers as unknown[]).length) controllers.push({ name: s(st.Name) ?? s(st.Id) ?? 'Storage', model: null, firmware: null, health: health(st.Status) });
-    const driveLinks = (Array.isArray(st.Drives) ? (st.Drives as unknown[]) : []).map(odataId).filter((x): x is string => !!x).slice(0, 64);
+    const driveLinks = (Array.isArray(st.Drives) ? (st.Drives as unknown[]) : [])
+      .map(odataId)
+      .filter((x): x is string => !!x)
+      .slice(0, 64);
     const ds = await pool(driveLinks, 4, (p) => g(p));
     for (const d of ds) {
       if (!d || absent(d.Status)) continue;
@@ -265,7 +279,9 @@ export async function collectRedfishInventory(
     }
   }
   if (!memory.length && (n(ms.TotalSystemMemoryGiB) ?? 0) > 0)
-    warnings.push(`Memory: the BMC reports ${ms.TotalSystemMemoryGiB} GiB in total but its Redfish service does not list the modules (${odataId(sys.Memory) ? `${dimms.length} entries at ${memPath}` : 'no Memory collection; usually older BMC firmware'}${bmc?.firmware ? `, firmware ${bmc.firmware}` : ''})`);
+    warnings.push(
+      `Memory: the BMC reports ${ms.TotalSystemMemoryGiB} GiB in total but its Redfish service does not list the modules (${odataId(sys.Memory) ? `${dimms.length} entries at ${memPath}` : 'no Memory collection; usually older BMC firmware'}${bmc?.firmware ? `, firmware ${bmc.firmware}` : ''})`,
+    );
   if (!drives.length) warnings.push(`Storage: no drives listed at ${storagePath} (${storage.length} storage resource(s) read)`);
   return {
     system: {
