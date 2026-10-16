@@ -132,6 +132,58 @@ describe('Redfish when the BMC fails on its system list', () => {
     }
   });
 
+  it('old iDRAC 8 with broken Redfish: test, hardware and power come over WS-Man', async () => {
+    const sim = await startRedfish('root', 'pw', { brokenRedfish: true, watts: 188 });
+    try {
+      const a = redfishAdapter();
+      const r = await a.test(target(sim.port));
+      expect(r.ok).toBe(true);
+      expect(r.message).toMatch(/^Connected over WS-Man: Dell Inc\. PowerEdge R630 \(service tag SIM630X\), power On\./);
+      expect(r.message).toMatch(/HTTP 500 from \/redfish\/v1\/Systems: internal error:/);
+      expect(r.facts?.serial).toBe('SIM630X');
+
+      const inv = await a.hardware!(target(sim.port));
+      expect(inv.source).toBe('WS-Man');
+      expect(inv.system).toMatchObject({ model: 'PowerEdge R630', serial: 'SIM630X', powerState: 'On', cpuCount: 2, logicalCpus: 56, memoryGb: 96, biosVersion: '2.17.0' });
+      expect(inv.processors).toHaveLength(2);
+      expect(inv.memory).toHaveLength(3);
+      expect(inv.drives[0]).toMatchObject({ model: 'ST600MM0088', mediaType: 'HDD', protocol: 'SAS', capacityGb: 599.6, failurePredicted: false, health: 'OK' });
+      expect(inv.controllers[0]).toMatchObject({ model: 'PERC H730P Mini', firmware: '25.5.9.0001' });
+      expect(inv.volumes[0]).toMatchObject({ raid: 'RAID1', capacityGb: 598.9 });
+      expect(inv.psus).toHaveLength(2);
+      expect(inv.nics[0]).toMatchObject({ mac: '24:6E:96:00:00:01', speedMbps: 10000 });
+      expect(inv.temperatures[0]).toMatchObject({ celsius: 23, upperCritical: 47 });
+      expect(inv.fans[0]).toMatchObject({ reading: 5040, units: 'RPM' });
+      expect(inv.bmc).toEqual({ model: 'Enterprise', firmware: '2.30.30.30' });
+      expect(inv.warnings[0]).toMatch(/^Redfish: /);
+
+      const p = await a.power!(target(sim.port));
+      expect(p).toMatchObject({ watts: 188, detail: 'WS-Man System Board Pwr Consumption' });
+      // Read-only: GETs to Redfish, WS-Man Enumerate/Pull only.
+      expect(sim.requests.every((q) => q.method === 'GET' || (q.method === 'POST' && q.url === '/wsman'))).toBe(true);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('malformed HTTP from old firmware is read with the lenient parser', async () => {
+    const body = JSON.stringify({ Members: [] });
+    const server = net.createServer((sock) =>
+      sock.once('data', () => {
+        // Bare LF line endings instead of CRLF: invalid for the strict parser.
+        sock.end(`HTTP/1.1 200 OK\nContent-Type: application/json\nContent-Length: ${body.length}\n\n${body}`);
+      }),
+    );
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const t = { host: '127.0.0.1', port, username: 'u', params: { scheme: 'http' }, secret: {} } as never;
+      expect((await deviceRequest(t, 'GET', '/redfish/v1/Systems', { defaultPort: 80 })).json).toEqual({ Members: [] });
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
   it('device error text is taken from the Redfish body, single line and capped', () => {
     expect(deviceErrorText(JSON.stringify({ error: { message: 'General', '@Message.ExtendedInfo': [{ Message: 'Bad\nthing.', Resolution: 'Reset.' }] } }))).toBe('Bad thing. Reset.');
     expect(deviceErrorText(JSON.stringify({ error: { message: 'x'.repeat(400) } }))!.length).toBe(240);

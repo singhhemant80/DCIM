@@ -1,7 +1,7 @@
 import type { Adapter, AdapterTarget, DiscoveryResult, PowerSnapshot, TestResult } from '../../network/discovery/types';
 import { DeviceHttpError, basicAuth, deviceRequest, str } from './http';
 import { collectRedfishInventory } from './redfish-inventory';
-import { dellMemoryViaWsman } from './dell-wsman';
+import { dellInventoryViaWsman, dellMemoryViaWsman, dellPowerViaWsman, dellSystemFromView, wsmanEnumerate } from './dell-wsman';
 
 /**
  * DMTF Redfish (Dell iDRAC 8/9, HPE iLO 5/6, Lenovo XClarity, Supermicro…).
@@ -105,7 +105,27 @@ export function redfishAdapter(): Adapter {
   return {
     async test(t): Promise<TestResult> {
       const started = Date.now();
-      const { paths: systems, note } = await findRedfishSystems((p) => get(t, p));
+      let found: Awaited<ReturnType<typeof findRedfishSystems>>;
+      try {
+        found = await findRedfishSystems((p) => get(t, p));
+      } catch (e) {
+        if (isAuth(e) || !(e instanceof DeviceHttpError) || e.status === null) throw e;
+        // Older Dell iDRAC firmware: Redfish fails for the system, WS-Man still answers.
+        const sys = await wsmanEnumerate(t, 'DCIM_SystemView')
+          .then(dellSystemFromView)
+          .catch((w) => {
+            if (isAuth(w)) throw w;
+            return null;
+          });
+        if (!sys) throw e;
+        return {
+          ok: true,
+          message: `Connected over WS-Man: ${[sys.manufacturer, sys.model].filter(Boolean).join(' ')}${sys.serial ? ` (service tag ${sys.serial})` : ''}, power ${sys.powerState ?? 'unknown'}. This iDRAC's Redfish service fails (${e.message.slice(0, 160)}), so hardware and power are read over WS-Man; an iDRAC firmware update fixes Redfish`,
+          latencyMs: Date.now() - started,
+          facts: { vendor: sys.manufacturer, model: sys.model, serial: sys.serial, sysName: sys.hostName, osVersion: null, sysDescr: sys.biosVersion ? `BIOS ${sys.biosVersion}` : null, uptimeSeconds: null },
+        };
+      }
+      const { paths: systems, note } = found;
       const s = await get(t, systems[0]!);
       const vendor = str(s.Manufacturer);
       const model = str(s.Model);
@@ -121,15 +141,43 @@ export function redfishAdapter(): Adapter {
       throw new Error('Redfish is used for power readings and server facts (use "Test"); network discovery does not apply');
     },
     async hardware(t) {
+      let found: Awaited<ReturnType<typeof findRedfishSystems>>;
+      try {
+        found = await findRedfishSystems((p) => get(t, p));
+      } catch (e) {
+        if (isAuth(e) || !(e instanceof DeviceHttpError) || e.status === null) throw e;
+        let inv;
+        try {
+          inv = await dellInventoryViaWsman(t, isAuth);
+        } catch (w) {
+          if (isAuth(w)) throw w;
+          throw new Error(`${e.message} (WS-Man also failed: ${(w as Error).message.slice(0, 160)})`);
+        }
+        inv.warnings.unshift(`Redfish: ${e.message}`.slice(0, 240));
+        return inv;
+      }
       return collectRedfishInventory(
         (path) => get(t, path),
         isAuth,
         // Older iDRAC firmware has no Redfish memory list; its WS-Man service does (read-only enumeration).
         { applies: (m) => /dell/i.test(m ?? ''), label: 'WS-Man', read: () => dellMemoryViaWsman(t) },
-        () => findRedfishSystems((p) => get(t, p)),
+        async () => found,
       );
     },
     async power(t): Promise<PowerSnapshot> {
+      try {
+        return await redfishPower(t);
+      } catch (e) {
+        if (isAuth(e)) throw e;
+        // Older Dell iDRAC firmware: the power sensor over WS-Man.
+        const w = await dellPowerViaWsman(t).catch(() => null);
+        if (w) return { watts: w.watts, source: 'redfish', detail: w.detail };
+        throw e;
+      }
+    },
+  };
+  async function redfishPower(t: AdapterTarget): Promise<PowerSnapshot> {
+    {
       const chassis = members(await get(t, '/redfish/v1/Chassis')).slice(0, 8);
       if (!chassis.length) throw new Error('The BMC lists no chassis');
       const tried: string[] = [];
@@ -151,6 +199,6 @@ export function redfishAdapter(): Adapter {
         }
       }
       throw new Error(`No power reading found in ${chassis.length} chassis${tried.length ? ` (${tried.slice(0, 3).join('; ')})` : ''}`);
-    },
-  };
+    }
+  }
 }

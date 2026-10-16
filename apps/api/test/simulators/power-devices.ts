@@ -31,6 +31,7 @@ export async function startRedfish(
     noMemoryLink?: boolean;
     /** Like early iDRAC 9 firmware: no Memory or Storage collection, disks only under SimpleStorage. */ oldIdrac?: boolean;
     wsmanMemory?: boolean;
+    /** Like old iDRAC 8 firmware: Redfish answers 500 for /Systems and the Chassis, 404 for the system; WS-Man answers every DCIM view (implies wsmanMemory). */ brokenRedfish?: boolean;
     /** Answer the /Systems collection with this error status (as a stuck iDRAC web service does), while the system itself still works. */ systemsError?: number;
     /** Redirect /redfish/v1/Systems to /redfish/v1/Systems/ (same host), or to HTTPS (another scheme). */ redirectSystems?: 'slash' | 'https';
     /** Give member links as absolute URLs. */ absoluteLinks?: boolean;
@@ -177,7 +178,7 @@ export async function startRedfish(
     };
     // A busy BMC refuses requests beyond what it can handle at once.
     if (opts.maxConcurrent && inFlight > opts.maxConcurrent) return send(503, { error: 'Service unavailable' });
-    if (req.method === 'POST' && req.url === '/wsman' && opts.wsmanMemory) {
+    if (req.method === 'POST' && req.url === '/wsman' && (opts.wsmanMemory || opts.brokenRedfish)) {
       let body = '';
       req.on('data', (c: Buffer) => (body += c.toString()));
       req.on('end', () => {
@@ -188,6 +189,55 @@ export async function startRedfish(
             res.end(xml);
           }, 5);
         if (req.headers.authorization !== expected) return reply(401, '');
+        const other = opts.brokenRedfish ? /DCIM_(SystemView|CPUView|PhysicalDiskView|ControllerView|VirtualDiskView|PowerSupplyView|NICView|iDRACCardView|NumericSensor)</.exec(body)?.[1] : undefined;
+        if (other && body.includes('enumeration/Enumerate')) {
+          const item = (fields: Record<string, string>) =>
+            `<n1:DCIM_${other}>${Object.entries(fields)
+              .map(([k, v]) => `<n1:${k}>${v}</n1:${k}>`)
+              .join('')}</n1:DCIM_${other}>`;
+          const items: Record<string, Record<string, string>[]> = {
+            SystemView: [
+              { Manufacturer: 'Dell Inc.', Model: 'PowerEdge R630', ServiceTag: 'SIM630X', BIOSVersionString: '2.17.0', PowerState: '2', HostName: 'r630-sim', PrimaryStatus: '1', SysMemTotalSize: '98304', PopulatedCPUSockets: '2' },
+            ],
+            CPUView: ['1', '2'].map((n) => ({ FQDD: `CPU.Socket.${n}`, Model: 'Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz', NumberOfProcessorCores: '14', NumberOfEnabledThreads: '28', MaxClockSpeed: '4000', PrimaryStatus: '1' })),
+            PhysicalDiskView: [
+              {
+                FQDD: 'Disk.Bay.0:Enclosure.Internal.0-1:RAID.Integrated.1-1',
+                DeviceDescription: 'Disk 0 in Backplane 1 of Integrated RAID Controller 1',
+                Slot: '0',
+                Model: 'ST600MM0088',
+                SerialNumber: 'W420ABCD',
+                SizeInBytes: '599550590976',
+                MediaType: '0',
+                BusProtocol: '6',
+                PrimaryStatus: '1',
+                PredictiveFailureState: '0',
+              },
+            ],
+            ControllerView: [{ FQDD: 'RAID.Integrated.1-1', ProductName: 'PERC H730P Mini', ControllerFirmwareVersion: '25.5.9.0001', PrimaryStatus: '1' }],
+            VirtualDiskView: [{ FQDD: 'Disk.Virtual.0:RAID.Integrated.1-1', Name: 'OS', RAIDTypes: '4', SizeInBytes: '598879502336', PrimaryStatus: '1' }],
+            PowerSupplyView: ['1', '2'].map((n) => ({
+              FQDD: `PSU.Slot.${n}`,
+              DeviceDescription: `Power Supply ${n}`,
+              Model: 'PWR SPLY,750W,RDNT,DELTA',
+              SerialNumber: `CN179${n}`,
+              TotalOutputPower: '750',
+              FirmwareVersion: '00.1D.7D',
+              PrimaryStatus: '1',
+            })),
+            NICView: [{ FQDD: 'NIC.Integrated.1-1-1', ProductName: 'Intel(R) Ethernet 10G 4P X520/I350 rNDC', CurrentMACAddress: '24:6E:96:00:00:01', LinkSpeed: '5', PrimaryStatus: '1' }],
+            iDRACCardView: [{ FQDD: 'iDRAC.Embedded.1-1', Model: 'Enterprise', FirmwareVersion: '2.30.30.30' }],
+            NumericSensor: [
+              { ElementName: 'System Board Pwr Consumption', SensorType: '1', BaseUnits: '7', UnitModifier: '0', CurrentReading: String(watts ?? 0), PrimaryStatus: '1' },
+              { ElementName: 'System Board Inlet Temp', SensorType: '2', BaseUnits: '2', UnitModifier: '-1', CurrentReading: '230', UpperThresholdCritical: '470', PrimaryStatus: '1' },
+              { ElementName: 'System Board Fan1A', SensorType: '5', BaseUnits: '19', UnitModifier: '0', CurrentReading: '5040', PrimaryStatus: '1' },
+            ],
+          };
+          return reply(
+            200,
+            `<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:n1="http://schemas.dell.com/wbem/wscim/1/cim-schema/2/DCIM_${other}"><s:Header/><s:Body><wsen:EnumerateResponse><wsman:Items>${(items[other] ?? []).map(item).join('')}</wsman:Items><wsen:EndOfSequence/></wsen:EnumerateResponse></s:Body></s:Envelope>`,
+          );
+        }
         if (!body.includes('DCIM_MemoryView')) return reply(400, '<fault>unsupported resource</fault>');
         const dimm = (slot: string, health: string) =>
           `<n1:DCIM_MemoryView><n1:BankLabel>A</n1:BankLabel><n1:CurrentOperatingSpeed>2666</n1:CurrentOperatingSpeed><n1:DeviceDescription>DIMM ${slot}</n1:DeviceDescription><n1:FQDD>DIMM.Socket.${slot}</n1:FQDD><n1:InstanceID>DIMM.Socket.${slot}</n1:InstanceID><n1:LastSystemInventoryTime xsi:nil="true"/><n1:Manufacturer>Samsung</n1:Manufacturer><n1:MemoryType>26</n1:MemoryType><n1:PartNumber>M393A4K40CB2-CTD</n1:PartNumber><n1:PrimaryStatus>${health}</n1:PrimaryStatus><n1:SerialNumber>SN${slot}</n1:SerialNumber><n1:Size>32768</n1:Size><n1:Speed>2666</n1:Speed></n1:DCIM_MemoryView>`;
@@ -216,6 +266,9 @@ export async function startRedfish(
     }
     if (opts.redirectSystems === 'slash' && req.url === '/redfish/v1/Systems/') req.url = '/redfish/v1/Systems';
     if (opts.absoluteLinks && req.url === '/redfish/v1/Systems') return send(200, { Members: [{ '@odata.id': `http://127.0.0.1:1${S}` }] });
+    // Old iDRAC 8 firmware: its own non-standard error body.
+    if (opts.brokenRedfish && /^\/redfish\/v1\/(Systems|Chassis)\/?(\?.*)?$/.test(req.url!)) return send(500, { error: { code: '12', message: { lang: 'en-us', value: 'internal error: ' } } });
+    if (opts.brokenRedfish && /^\/redfish\/v1\/Systems\/./.test(req.url!)) return send(404, '');
     if (opts.systemsError && req.url!.split('?')[0] === '/redfish/v1/Systems')
       return send(opts.systemsError, {
         error: {

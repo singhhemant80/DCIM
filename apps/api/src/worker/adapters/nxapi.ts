@@ -220,7 +220,12 @@ export function nxApiAdapter(): Adapter {
     async test(t): Promise<TestResult> {
       const started = Date.now();
       const v = (await show(t, 'show version')) ?? {};
-      return { ok: true, message: `Connected: ${str(v.host_name) ?? 'NX-OS'} — ${str(v.chassis_id) ?? ''} ${str(v.nxos_ver_str) ?? str(v.sys_ver_str) ?? ''}`.replace(/\s+/g, ' ').trim(), latencyMs: Date.now() - started, facts: { sysName: str(v.host_name), serial: str(v.proc_board_id), osVersion: str(v.nxos_ver_str) ?? str(v.sys_ver_str), vendor: 'Cisco' } };
+      return {
+        ok: true,
+        message: `Connected: ${str(v.host_name) ?? 'NX-OS'} — ${str(v.chassis_id) ?? ''} ${str(v.nxos_ver_str) ?? str(v.sys_ver_str) ?? ''}`.replace(/\s+/g, ' ').trim(),
+        latencyMs: Date.now() - started,
+        facts: { sysName: str(v.host_name), serial: str(v.proc_board_id), osVersion: str(v.nxos_ver_str) ?? str(v.sys_ver_str), vendor: 'Cisco' },
+      };
     },
     async power(t): Promise<PowerSnapshot> {
       const r = parseNxosPower(await show(t, 'show environment power'));

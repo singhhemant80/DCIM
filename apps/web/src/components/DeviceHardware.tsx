@@ -363,7 +363,11 @@ function CpuMemory({ inv }: { inv: HardwareInventory }) {
           ))}
         </tbody>
       </Table>
-      {inv.memorySource && <p className="text-[12px] text-ink-3">Memory modules read over {inv.memorySource}: this BMC firmware does not list them in Redfish.</p>}
+      {inv.source ? (
+        <p className="text-[12px] text-ink-3">Read over {inv.source}: this BMC's Redfish service did not answer for the system (usually older firmware; an update fixes it). The system event log is not read this way.</p>
+      ) : (
+        inv.memorySource && <p className="text-[12px] text-ink-3">Memory modules read over {inv.memorySource}: this BMC firmware does not list them in Redfish.</p>
+      )}
     </div>
   );
 }

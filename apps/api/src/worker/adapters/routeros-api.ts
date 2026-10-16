@@ -40,7 +40,7 @@ export function decodeLength(b: Buffer, off: number): { len: number; size: numbe
   if (need === 1) return { len: c, size: 1 };
   if (need === 2) return { len: ((c & 0x3f) << 8) | b[off + 1]!, size: 2 };
   if (need === 3) return { len: ((c & 0x1f) << 16) | (b[off + 1]! << 8) | b[off + 2]!, size: 3 };
-  if (need === 4) return { len: ((c & 0x0f) * 0x1000000) + (b[off + 1]! << 16) + (b[off + 2]! << 8) + b[off + 3]!, size: 4 };
+  if (need === 4) return { len: (c & 0x0f) * 0x1000000 + (b[off + 1]! << 16) + (b[off + 2]! << 8) + b[off + 3]!, size: 4 };
   return { len: b.readUInt32BE(off + 1), size: 5 };
 }
 
@@ -105,9 +105,7 @@ export class RouterOsApiClient {
         if (e) reject(e);
         else resolve();
       };
-      this.sock = useTls
-        ? tls.connect({ host, port, rejectUnauthorized: this.t.params.verifyTls !== false, servername: net.isIP(host) ? undefined : host }, () => done())
-        : net.connect({ host, port }, () => done());
+      this.sock = useTls ? tls.connect({ host, port, rejectUnauthorized: this.t.params.verifyTls !== false, servername: net.isIP(host) ? undefined : host }, () => done()) : net.connect({ host, port }, () => done());
       this.sock.once('error', (e: NodeJS.ErrnoException) => {
         const tlsErr = /certificate|self[- ]signed|SSL|TLS|handshake/i.test(e.message);
         done(new RouterOsApiError(tlsErr ? `TLS error: ${e.message} (assign a certificate to api-ssl, or untick certificate verification for a self-signed one)` : e.code ? `${e.code}: cannot reach ${this.t.host}:${port}` : e.message));
@@ -204,11 +202,14 @@ export class RouterOsApiClient {
     // Pre-6.43 routers answer with a challenge instead.
     const ret = r.find((s) => s[0] === '!done') && RouterOsApiClient.attrs(r.find((s) => s[0] === '!done')!).ret;
     if (!err && typeof ret === 'string' && /^[0-9a-f]{32}$/i.test(ret)) {
-      const md5 = createHash('md5').update(Buffer.concat([Buffer.from([0]), Buffer.from(pass, 'utf8'), Buffer.from(ret, 'hex')])).digest('hex');
+      const md5 = createHash('md5')
+        .update(Buffer.concat([Buffer.from([0]), Buffer.from(pass, 'utf8'), Buffer.from(ret, 'hex')]))
+        .digest('hex');
       r = await this.send(['/login', `=name=${user}`, `=response=00${md5}`]);
       err = RouterOsApiClient.trap(r);
     }
-    if (err) throw new RouterOsApiError(/invalid user name or password|cannot log in|not allowed/i.test(err) ? 'Authentication failed; check the user, password and that its group has the api and read policies' : `Login failed: ${err}`, true);
+    if (err)
+      throw new RouterOsApiError(/invalid user name or password|cannot log in|not allowed/i.test(err) ? 'Authentication failed; check the user, password and that its group has the api and read policies' : `Login failed: ${err}`, true);
   }
 
   /** Runs `<path>/print` and returns the rows. */

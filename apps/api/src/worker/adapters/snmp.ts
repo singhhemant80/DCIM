@@ -1,6 +1,19 @@
 import * as snmp from 'net-snmp';
 import { formatIp, type InterfaceKind } from '@crapplet/shared';
-import type { HealthSnapshot, PowerSnapshot, Adapter, AdapterTarget, CounterReading, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, DeviceFacts, TestResult } from '../../network/discovery/types';
+import type {
+  HealthSnapshot,
+  PowerSnapshot,
+  Adapter,
+  AdapterTarget,
+  CounterReading,
+  CounterSnapshot,
+  DiscoveredBgpPeer,
+  DiscoveredInterface,
+  DiscoveredNeighbor,
+  DiscoveryResult,
+  DeviceFacts,
+  TestResult,
+} from '../../network/discovery/types';
 
 /**
  * Read-only SNMP collector (v2c and v3). Only GET and GETBULK are issued.
@@ -191,7 +204,11 @@ export function kindFor(ifType: number | null, name: string): InterfaceKind {
 function ipFromSubids(parts: number[]): string | null {
   if (parts.some((x) => !Number.isInteger(x) || x < 0 || x > 255)) return null;
   if (parts.length === 4) return parts.join('.');
-  if (parts.length === 16) return formatIp(6, parts.reduce((a, b) => (a << 8n) | BigInt(b), 0n));
+  if (parts.length === 16)
+    return formatIp(
+      6,
+      parts.reduce((a, b) => (a << 8n) | BigInt(b), 0n),
+    );
   return null;
 }
 

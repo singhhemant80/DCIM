@@ -118,6 +118,8 @@ export interface HardwareInventory {
   /** Parts of the walk that failed (the rest is still shown). */
   /** Where the memory list came from when not Redfish (e.g. "WS-Man"); null = Redfish. */
   memorySource?: string | null;
+  /** Where the whole inventory came from when not Redfish (e.g. "WS-Man" for older iDRAC firmware); absent = Redfish. */
+  source?: string | null;
   warnings: string[];
 }
 

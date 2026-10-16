@@ -142,7 +142,12 @@ export function fortiOsAdapter(): Adapter {
       const started = Date.now();
       const s = await get(t, '/monitor/system/status');
       const r = (s.results as Row | undefined) ?? {};
-      return { ok: true, message: `Connected: ${str(r.hostname) ?? 'FortiGate'} — ${str(r.model_name) ?? ''} ${str(s.version) ?? ''}`.replace(/\s+/g, ' ').trim(), latencyMs: Date.now() - started, facts: { sysName: str(r.hostname), serial: str(s.serial), osVersion: str(s.version), vendor: 'Fortinet' } };
+      return {
+        ok: true,
+        message: `Connected: ${str(r.hostname) ?? 'FortiGate'} — ${str(r.model_name) ?? ''} ${str(s.version) ?? ''}`.replace(/\s+/g, ' ').trim(),
+        latencyMs: Date.now() - started,
+        facts: { sysName: str(r.hostname), serial: str(s.serial), osVersion: str(s.version), vendor: 'Fortinet' },
+      };
     },
     async counters(t): Promise<CounterSnapshot> {
       const r = await get(t, '/monitor/system/interface?include_vlan=true&include_aggregate=true');

@@ -29,7 +29,17 @@ export function deviceErrorText(raw: string): string | null {
   const err = (o.error && typeof o.error === 'object' ? o.error : o) as Record<string, unknown>;
   const info = Array.isArray(err['@Message.ExtendedInfo']) ? (err['@Message.ExtendedInfo'] as Record<string, unknown>[]) : [];
   const parts = info.map((m) => [m?.Message, m?.Resolution].filter((x) => typeof x === 'string' && x.trim()).join(' ')).filter(Boolean);
-  const text = parts.length ? parts.join(' ') : typeof err.message === 'string' ? err.message : typeof o.error === 'string' ? o.error : typeof o.message === 'string' ? o.message : null;
+  const text = parts.length
+    ? parts.join(' ')
+    : typeof err.message === 'string'
+      ? err.message
+      : err.message && typeof err.message === 'object' && typeof (err.message as Record<string, unknown>).value === 'string'
+        ? ((err.message as Record<string, unknown>).value as string)
+        : typeof o.error === 'string'
+          ? o.error
+          : typeof o.message === 'string'
+            ? o.message
+            : null;
   if (!text) return null;
   const clean = text
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
@@ -58,6 +68,8 @@ export function deviceRequest(
     /** A non-JSON body (e.g. a WS-Management SOAP envelope); the answer is returned as `text`. */ raw?: { data: string; contentType: string };
     /** Internal: redirects followed so far. */ hops?: number;
     /** Internal: already retried after a connection reset. */ retried?: boolean;
+    /** A read sent as POST (WS-Man Enumerate/Pull): may be retried like a GET. */ idempotent?: boolean;
+    /** Internal: parse leniently (older BMC firmware sends malformed HTTP). */ lenient?: boolean;
   },
 ): Promise<{ status: number; json: unknown; text?: string }> {
   const scheme = t.params.scheme ?? 'https';
@@ -76,6 +88,7 @@ export function deviceRequest(
         // A fresh connection per request: BMCs and switches often drop idle
         // keep-alive sockets without notice, and reusing one gives ECONNRESET.
         agent: false,
+        ...(opts.lenient ? { insecureHTTPParser: true } : {}),
         headers: { Accept: opts.raw ? '*/*' : 'application/json', Connection: 'close', ...(payload ? { 'Content-Type': opts.raw?.contentType ?? 'application/json', 'Content-Length': String(payload.length) } : {}), ...opts.headers },
         timeout,
         ...(scheme === 'https' ? { rejectUnauthorized: t.params.verifyTls !== false, servername: /^[\d.:[\]]+$/.test(t.host) ? undefined : t.host } : {}),
@@ -180,7 +193,16 @@ export function deviceRequest(
       if (e.code === 'HPE_CLOSED_CONNECTION' && finishEarly?.()) return;
       // A connection reset before any answer is tried once more for reads
       // (embedded web servers reset connections when busy or just restarted).
-      if (method === 'GET' && !opts.retried && (e.code === 'ECONNRESET' || e.code === 'EPIPE' || /socket hang up/i.test(e.message))) {
+      const reads = method === 'GET' || opts.idempotent === true;
+      // Malformed HTTP from older BMC firmware (bad header characters, stray
+      // bytes): a read is tried once more with the lenient parser. Requests
+      // go only to the credential's own host on a fresh connection.
+      if (reads && !opts.lenient && typeof e.code === 'string' && e.code.startsWith('HPE_')) {
+        clearTimeout(deadline);
+        deviceRequest(t, method, path, { ...opts, lenient: true }).then(resolve, reject);
+        return;
+      }
+      if (reads && !opts.retried && (e.code === 'ECONNRESET' || e.code === 'EPIPE' || /socket hang up/i.test(e.message))) {
         clearTimeout(deadline);
         setTimeout(() => deviceRequest(t, method, path, { ...opts, retried: true }).then(resolve, reject), 300);
         return;
@@ -193,9 +215,11 @@ export function deviceRequest(
             ? `TLS error: ${e.message} (install a trusted certificate or disable verification for this credential)`
             : reset
               ? `${e.code ?? 'ECONNRESET'}: ${t.host}:${t.port ?? opts.defaultPort} closed the connection (twice). The device is reachable but refused this request: check the protocol (HTTP/HTTPS) and port, whether the BMC limits sessions or allowed addresses (IP blocking / access list), or reset the BMC`
-              : e.code
-                ? `${e.code}: cannot reach ${t.host}`
-                : e.message,
+              : e.code?.startsWith('HPE_')
+                ? `${t.host} answered with malformed HTTP (${e.code}: ${e.message}); this is usually older BMC firmware, and a firmware update fixes it`
+                : e.code
+                  ? `${e.code}: cannot reach ${t.host}`
+                  : e.message,
           null,
         ),
       );

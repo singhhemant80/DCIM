@@ -20,7 +20,7 @@ const TYPE_KIND: Record<string, InterfaceKind> = {
   eoip: 'tunnel',
   eoipv6: 'tunnel',
   gre: 'tunnel',
-  'gre6': 'tunnel',
+  gre6: 'tunnel',
   ipip: 'tunnel',
   ipipv6: 'tunnel',
   wg: 'tunnel',
@@ -45,7 +45,10 @@ export function routerosUptime(v: unknown): number | null {
   return total || (s === '0s' ? 0 : null);
 }
 
-export function parseRouterOs(data: { resource: Row | null; identity: Row | null; routerboard: Row | null; interfaces: Row[]; ethernet: Row[]; bonding: Row[]; ip: Row[]; ipv6: Row[]; neighbors: Row[]; bgp: Row[] }, warnings: string[]): Omit<DiscoveryResult, 'source' | 'collectedAt' | 'warnings'> {
+export function parseRouterOs(
+  data: { resource: Row | null; identity: Row | null; routerboard: Row | null; interfaces: Row[]; ethernet: Row[]; bonding: Row[]; ip: Row[]; ipv6: Row[]; neighbors: Row[]; bgp: Row[] },
+  warnings: string[],
+): Omit<DiscoveryResult, 'source' | 'collectedAt' | 'warnings'> {
   const eth = new Map(data.ethernet.map((e) => [str(e.name), e]));
   const lagOf = new Map<string, string>();
   for (const b of data.bonding) for (const s of (str(b.slaves) ?? '').split(',').filter(Boolean)) lagOf.set(s.trim().toLowerCase(), String(b.name));
@@ -94,7 +97,7 @@ export function parseRouterOs(data: { resource: Row | null; identity: Row | null
   const bgp: DiscoveredBgpPeer[] = data.bgp.map((b) => ({
     peer: (str(b['remote.address']) ?? str(b['remote-address']) ?? '').split('/')[0]!,
     remoteAs: int(b['remote.as']) ?? int(b['remote-as']),
-    state: bool(b.established) ? 'established' : str(b.state) ?? 'not established',
+    state: bool(b.established) ? 'established' : (str(b.state) ?? 'not established'),
     uptimeSeconds: routerosUptime(b.uptime),
     prefixesReceived: int(b['prefix-count']),
     vrf: str(b.vrf) ?? str(b['routing-table']),
@@ -170,7 +173,13 @@ export function parseRouterOsHealth(resource: Row | null, health: unknown): Heal
   const hddTotal = n(r['total-hdd-space']);
   const hddFree = n(r['free-hdd-space']);
   const sensors: HealthSnapshot['sensors'] = [];
-  const rows = Array.isArray(health) ? (health as Row[]) : health && typeof health === 'object' ? Object.entries(health as Row).filter(([k]) => !k.startsWith('.')).map(([k, v]) => ({ name: k, value: v, type: null })) : [];
+  const rows = Array.isArray(health)
+    ? (health as Row[])
+    : health && typeof health === 'object'
+      ? Object.entries(health as Row)
+          .filter(([k]) => !k.startsWith('.'))
+          .map(([k, v]) => ({ name: k, value: v, type: null }))
+      : [];
   let temp: number | null = null;
   let cpuTemp: number | null = null;
   let volt: number | null = null;
@@ -212,7 +221,12 @@ export function routerOsAdapter(): Adapter {
       const started = Date.now();
       const res = (await get(t, '/system/resource')) as Row;
       const id = (await get(t, '/system/identity').catch(() => null)) as Row | null;
-      return { ok: true, message: `Connected: ${str(id?.name) ?? 'RouterOS'} — ${str(res['board-name']) ?? ''} RouterOS ${str(res.version) ?? '?'}`.trim(), latencyMs: Date.now() - started, facts: { sysName: str(id?.name), osVersion: str(res.version)?.split(' ')[0] ?? null, uptimeSeconds: routerosUptime(res.uptime), vendor: 'MikroTik' } };
+      return {
+        ok: true,
+        message: `Connected: ${str(id?.name) ?? 'RouterOS'} — ${str(res['board-name']) ?? ''} RouterOS ${str(res.version) ?? '?'}`.trim(),
+        latencyMs: Date.now() - started,
+        facts: { sysName: str(id?.name), osVersion: str(res.version)?.split(' ')[0] ?? null, uptimeSeconds: routerosUptime(res.uptime), vendor: 'MikroTik' },
+      };
     },
     async health(t): Promise<HealthSnapshot> {
       const resource = (await get(t, '/system/resource')) as Row;
