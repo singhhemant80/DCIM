@@ -1,5 +1,5 @@
 import http from 'node:http';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { deviceRequest } from '../src/worker/adapters/http';
 import { redfishAdapter } from '../src/worker/adapters/redfish';
@@ -106,6 +106,27 @@ describe('Redfish when the BMC fails on its system list', () => {
     try {
       const t = { host: '127.0.0.1', port, username: 'u', params: { scheme: 'http' }, secret: {} } as never;
       await expect(deviceRequest(t, 'GET', '/x', { defaultPort: 80 })).rejects.toThrow(/closed the connection \(twice\)\. The device is reachable/);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('uses a complete answer even when the device sends bytes after Connection: close (older iDRAC)', async () => {
+    const body = JSON.stringify({ '@odata.id': '/redfish/v1', Product: 'Integrated Dell Remote Access Controller', pad: 'x'.repeat(5000) });
+    const server = net.createServer((sock) => {
+      sock.once('data', () => {
+        sock.write(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}\r\n\r\n0\r\n\r\n`);
+        setTimeout(() => sock.end(), 20);
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const t = { host: '127.0.0.1', port, username: 'u', params: { scheme: 'http' }, secret: {} } as never;
+      for (let i = 0; i < 5; i++) {
+        const r = await deviceRequest(t, 'GET', '/redfish/v1/', { defaultPort: 80 });
+        expect((r.json as { Product: string }).Product).toBe('Integrated Dell Remote Access Controller');
+      }
     } finally {
       await new Promise((r) => server.close(r));
     }

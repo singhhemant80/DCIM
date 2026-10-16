@@ -65,6 +65,8 @@ export function deviceRequest(
   const payload = opts.raw ? Buffer.from(opts.raw.data) : opts.body === undefined ? undefined : Buffer.from(JSON.stringify(opts.body));
   const timeout = t.params.timeoutMs ?? 5000;
   return new Promise((resolve, reject) => {
+    // Set once an answer arrives: completes it from what was already received.
+    let finishEarly: (() => boolean) | null = null;
     const req = lib.request(
       {
         host: t.host.replace(/^\[|\]$/g, ''),
@@ -89,7 +91,10 @@ export function deviceRequest(
           }
           chunks.push(c);
         });
-        res.on('end', () => {
+        let ended = false;
+        const onEnd = () => {
+          if (ended) return;
+          ended = true;
           const status = res.statusCode ?? 0;
           const raw = Buffer.concat(chunks).toString('utf8');
           if (opts.rawErrors) {
@@ -137,7 +142,15 @@ export function deviceRequest(
           } catch {
             reject(new DeviceHttpError(`Invalid JSON from ${path.split('?')[0]}`, status));
           }
-        });
+        };
+        res.on('end', onEnd);
+        finishEarly = () => {
+          if (!res.complete) return false;
+          // Flush what the parser already buffered (read() emits it through the 'data' handler above).
+          while (res.read() !== null);
+          onEnd();
+          return true;
+        };
         res.on('error', reject);
       },
     );
@@ -162,6 +175,9 @@ export function deviceRequest(
     req.on('timeout', () => req.destroy(timedOut()));
     req.on('error', (e: NodeJS.ErrnoException) => {
       if (e instanceof DeviceHttpError) return reject(e);
+      // Some BMCs (older iDRAC) send stray bytes after a complete answer marked
+      // "Connection: close"; the answer itself is whole, so it is used.
+      if (e.code === 'HPE_CLOSED_CONNECTION' && finishEarly?.()) return;
       // A connection reset before any answer is tried once more for reads
       // (embedded web servers reset connections when busy or just restarted).
       if (method === 'GET' && !opts.retried && (e.code === 'ECONNRESET' || e.code === 'EPIPE' || /socket hang up/i.test(e.message))) {
