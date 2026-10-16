@@ -776,6 +776,11 @@ function CredentialsPanel({ device, creds }: { device: NetworkDeviceT; creds: Cr
                 {c.port ? `:${c.port}` : ''}
                 {c.username ? ` · user ${c.username}` : ''} · secret set {relativeTime(c.rotatedAt)}
               </p>
+              {c.host && device.mgmtAddress && c.host.replace(/^\[|\]$/g, '').toLowerCase() !== device.mgmtAddress.replace(/^\[|\]$/g, '').toLowerCase() && (
+                <p className="text-[12.5px] text-warn">
+                  This credential connects to {c.host}, not to this device's management address {device.mgmtAddress}. If that is a mistake, use Replace and leave the address empty (or enter {device.mgmtAddress}).
+                </p>
+              )}
               {c.lastTestAt && (
                 <p className={cx('text-[12.5px]', c.lastTestOk ? 'text-ok' : 'text-crit')}>
                   {c.lastTestOk ? 'OK' : 'Failed'} {relativeTime(c.lastTestAt)}: {c.lastTestMessage}
