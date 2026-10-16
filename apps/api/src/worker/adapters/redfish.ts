@@ -123,7 +123,7 @@ export function redfishAdapter(): Adapter {
         if (!sys) throw e;
         return {
           ok: true,
-          message: `Connected over WS-Man: ${[sys.manufacturer, sys.model].filter(Boolean).join(' ')}${sys.serial ? ` (service tag ${sys.serial})` : ''}, power ${sys.powerState ?? 'unknown'}. This iDRAC's Redfish service fails (${e.message.slice(0, 160)}), so hardware and power are read over WS-Man; an iDRAC firmware update fixes Redfish`,
+          message: `Connected over WS-Man: ${[sys.manufacturer, sys.model].filter(Boolean).join(' ')}${sys.serial ? ` (service tag ${sys.serial})` : ''}, power ${sys.powerState ?? 'unknown'}. This iDRAC's Redfish service fails (${e.message.split(' The BMC itself')[0]!.slice(0, 160)}), so hardware and power are read over WS-Man. An iDRAC firmware update fixes Redfish`,
           latencyMs: Date.now() - started,
           facts: { vendor: sys.manufacturer, model: sys.model, serial: sys.serial, sysName: sys.hostName, osVersion: null, sysDescr: sys.biosVersion ? `BIOS ${sys.biosVersion}` : null, uptimeSeconds: null },
         };
