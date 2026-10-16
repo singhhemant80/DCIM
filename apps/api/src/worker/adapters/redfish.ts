@@ -96,6 +96,9 @@ export async function findRedfishSystems(get: (path: string) => Promise<Row>): P
   throw new DeviceHttpError(`${listErr.message}${advice}`, status);
 }
 
+/** Per BMC (host:port), the Redfish link its power reading came from last time. */
+const powerLinks = new Map<string, string>();
+
 export function redfishAdapter(): Adapter {
   const get = async (t: AdapterTarget, path: string): Promise<Row> => {
     const r = await deviceRequest(t, 'GET', path, { headers: { Authorization: basicAuth(t.username, t.secret.password), 'OData-Version': '4.0' }, defaultPort: (t.params.scheme ?? 'https') === 'https' ? 443 : 80 });
@@ -177,6 +180,27 @@ export function redfishAdapter(): Adapter {
     },
   };
   async function redfishPower(t: AdapterTarget): Promise<PowerSnapshot> {
+    // The link that gave the last reading is read directly: one request per
+    // reading instead of three (fewer connections to busy BMCs).
+    const key = `${t.host}:${t.port ?? ''}`;
+    const known = powerLinks.get(key);
+    if (known) {
+      try {
+        const w = parseRedfishPower(await get(t, known));
+        if (w !== null) return { watts: w, source: 'redfish', detail: known };
+      } catch (e) {
+        if (isAuth(e)) throw e;
+      }
+      powerLinks.delete(key);
+    }
+    const snap = await walkPower(t);
+    if (snap.detail) {
+      if (powerLinks.size > 5000) powerLinks.clear();
+      powerLinks.set(key, snap.detail);
+    }
+    return snap;
+  }
+  async function walkPower(t: AdapterTarget): Promise<PowerSnapshot> {
     {
       const chassis = members(await get(t, '/redfish/v1/Chassis')).slice(0, 8);
       if (!chassis.length) throw new Error('The BMC lists no chassis');

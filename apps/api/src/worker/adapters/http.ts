@@ -70,6 +70,7 @@ export function deviceRequest(
     /** Internal: already retried after a connection reset. */ retried?: boolean;
     /** A read sent as POST (WS-Man Enumerate/Pull): may be retried like a GET. */ idempotent?: boolean;
     /** Internal: parse leniently (older BMC firmware sends malformed HTTP). */ lenient?: boolean;
+    /** Internal: offer TLS 1.2 at most (some older BMCs stall or reset on a TLS 1.3 hello). */ tls12?: boolean;
   },
 ): Promise<{ status: number; json: unknown; text?: string }> {
   const scheme = t.params.scheme ?? 'https';
@@ -91,7 +92,7 @@ export function deviceRequest(
         ...(opts.lenient ? { insecureHTTPParser: true } : {}),
         headers: { Accept: opts.raw ? '*/*' : 'application/json', Connection: 'close', ...(payload ? { 'Content-Type': opts.raw?.contentType ?? 'application/json', 'Content-Length': String(payload.length) } : {}), ...opts.headers },
         timeout,
-        ...(scheme === 'https' ? { rejectUnauthorized: t.params.verifyTls !== false, servername: /^[\d.:[\]]+$/.test(t.host) ? undefined : t.host } : {}),
+        ...(scheme === 'https' ? { rejectUnauthorized: t.params.verifyTls !== false, servername: /^[\d.:[\]]+$/.test(t.host) ? undefined : t.host, ...(opts.tls12 ? { maxVersion: 'TLSv1.2' as const } : {}) } : {}),
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -177,23 +178,36 @@ export function deviceRequest(
       else sock.once(scheme === 'https' ? 'secureConnect' : 'connect', mark);
     });
     const timedOut = () =>
-      new DeviceHttpError(
-        connected
-          ? `Connected to ${t.host}:${t.port ?? opts.defaultPort}, but no answer within ${Math.round(timeout / 1000)} s`
-          : `Could not connect to ${t.host}:${t.port ?? opts.defaultPort} within ${Math.round(timeout / 1000)} s: check that the port is open to this server (firewall) and the address is right`,
-        null,
+      Object.assign(
+        new DeviceHttpError(
+          connected
+            ? `Connected to ${t.host}:${t.port ?? opts.defaultPort}, but no answer within ${Math.round(timeout / 1000)} s`
+            : `Could not connect to ${t.host}:${t.port ?? opts.defaultPort} within ${Math.round(timeout / 1000)} s: check that the port is open to this server (firewall) and the address is right`,
+          null,
+        ),
+        { timedOut: true, connected },
       );
     const deadline = setTimeout(() => req.destroy(timedOut()), timeout);
     req.on('close', () => clearTimeout(deadline));
     req.on('timeout', () => req.destroy(timedOut()));
     req.on('error', (e: NodeJS.ErrnoException) => {
+      const reads = method === 'GET' || opts.idempotent === true;
+      // A read that timed out is tried once more on a fresh connection: busy
+      // BMCs drop a request now and then. When even the TLS handshake did not
+      // finish, the retry offers TLS 1.2 at most (older iDRAC/iLO stall on 1.3).
+      if (e instanceof DeviceHttpError && (e as DeviceHttpError & { timedOut?: boolean }).timedOut && reads && !opts.retried) {
+        const handshakeDone = (e as DeviceHttpError & { connected?: boolean }).connected;
+        deviceRequest(t, method, path, { ...opts, retried: true, tls12: opts.tls12 || (!handshakeDone && scheme === 'https') }).then(resolve, (e2: Error) =>
+          reject(new DeviceHttpError(`${e2.message} (tried twice)`, (e2 as DeviceHttpError).status ?? null)),
+        );
+        return;
+      }
       if (e instanceof DeviceHttpError) return reject(e);
       // Some BMCs (older iDRAC) send stray bytes after a complete answer marked
       // "Connection: close"; the answer itself is whole, so it is used.
       if (e.code === 'HPE_CLOSED_CONNECTION' && finishEarly?.()) return;
       // A connection reset before any answer is tried once more for reads
       // (embedded web servers reset connections when busy or just restarted).
-      const reads = method === 'GET' || opts.idempotent === true;
       // Malformed HTTP from older BMC firmware (bad header characters, stray
       // bytes): a read is tried once more with the lenient parser. Requests
       // go only to the credential's own host on a fresh connection.
@@ -204,7 +218,7 @@ export function deviceRequest(
       }
       if (reads && !opts.retried && (e.code === 'ECONNRESET' || e.code === 'EPIPE' || /socket hang up/i.test(e.message))) {
         clearTimeout(deadline);
-        setTimeout(() => deviceRequest(t, method, path, { ...opts, retried: true }).then(resolve, reject), 300);
+        setTimeout(() => deviceRequest(t, method, path, { ...opts, retried: true, tls12: opts.tls12 || (!connected && scheme === 'https') }).then(resolve, reject), 300);
         return;
       }
       const tls = /certificate|self[- ]signed|SSL|TLS/i.test(e.message);

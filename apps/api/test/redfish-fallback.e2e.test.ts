@@ -184,6 +184,45 @@ describe('Redfish when the BMC fails on its system list', () => {
     }
   });
 
+  it('a read that gets no answer is tried once more on a new connection', async () => {
+    let n = 0;
+    const server = http.createServer((req, res) => {
+      // The first request is left hanging, as a busy BMC does now and then.
+      if (++n === 1) return;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const t = { host: '127.0.0.1', port, username: 'u', params: { scheme: 'http', timeoutMs: 300 }, secret: {} } as never;
+      expect((await deviceRequest(t, 'GET', '/x', { defaultPort: 80 })).json).toEqual({ ok: true });
+      expect(n).toBe(2);
+      // Writes are never repeated.
+      n = 0;
+      await expect(deviceRequest(t, 'POST', '/x', { defaultPort: 80, body: {} })).rejects.toThrow(/no answer within 0 s$/);
+      expect(n).toBe(1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('power readings after the first read only the power link', async () => {
+    const sim = await startRedfish('root', 'pw', { watts: 250 });
+    try {
+      const a = redfishAdapter();
+      expect((await a.power!(target(sim.port))).watts).toBe(250);
+      const before = sim.requests.length;
+      sim.setWatts(260);
+      const p = await a.power!(target(sim.port));
+      expect(p.watts).toBe(260);
+      expect(sim.requests.length - before).toBe(1);
+    } finally {
+      await sim.close();
+    }
+  });
+
   it('device error text is taken from the Redfish body, single line and capped', () => {
     expect(deviceErrorText(JSON.stringify({ error: { message: 'General', '@Message.ExtendedInfo': [{ Message: 'Bad\nthing.', Resolution: 'Reset.' }] } }))).toBe('Bad thing. Reset.');
     expect(deviceErrorText(JSON.stringify({ error: { message: 'x'.repeat(400) } }))!.length).toBe(240);
