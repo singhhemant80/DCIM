@@ -268,7 +268,7 @@ export async function startRedfish(
     if (opts.absoluteLinks && req.url === '/redfish/v1/Systems') return send(200, { Members: [{ '@odata.id': `http://127.0.0.1:1${S}` }] });
     // Old iDRAC 8 firmware: its own non-standard error body.
     if (opts.brokenRedfish && /^\/redfish\/v1\/(Systems|Chassis)\/?(\?.*)?$/.test(req.url!)) return send(500, { error: { code: '12', message: { lang: 'en-us', value: 'internal error: ' } } });
-    if (opts.brokenRedfish && /^\/redfish\/v1\/Systems\/./.test(req.url!)) return send(404, '');
+    if (opts.brokenRedfish && /^\/redfish\/v1\/(Systems|Chassis)\/./.test(req.url!)) return send(404, '');
     if (opts.systemsError && req.url!.split('?')[0] === '/redfish/v1/Systems')
       return send(opts.systemsError, {
         error: {

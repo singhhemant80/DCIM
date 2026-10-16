@@ -159,6 +159,8 @@ describe('Redfish when the BMC fails on its system list', () => {
 
       const p = await a.power!(target(sim.port));
       expect(p).toMatchObject({ watts: 188, detail: 'WS-Man System Board Pwr Consumption' });
+      // The usual chassis paths were tried before WS-Man.
+      expect(sim.requests.some((q) => q.url === '/redfish/v1/Chassis/System.Embedded.1')).toBe(true);
       // Read-only: GETs to Redfish, WS-Man Enumerate/Pull only.
       expect(sim.requests.every((q) => q.method === 'GET' || (q.method === 'POST' && q.url === '/wsman'))).toBe(true);
     } finally {
@@ -218,6 +220,15 @@ describe('Redfish when the BMC fails on its system list', () => {
       const p = await a.power!(target(sim.port));
       expect(p.watts).toBe(260);
       expect(sim.requests.length - before).toBe(1);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('an unreachable BMC fails the power reading with the connection error', async () => {
+    const sim = await startRedfish('root', 'pw', { systemsError: 500 });
+    try {
+      await expect(redfishAdapter().power!({ host: '127.0.0.1', port: 1, username: 'root', params: { scheme: 'http', timeoutMs: 300 }, secret: { password: 'pw' } } as never)).rejects.toThrow(/cannot reach|Could not connect/);
     } finally {
       await sim.close();
     }

@@ -2,6 +2,17 @@ import http from 'node:http';
 import https from 'node:https';
 import type { AdapterTarget } from '../../network/discovery/types';
 
+/**
+ * Connections are kept open briefly so the several requests of one reading
+ * share a connection (BMCs are slow at new TLS handshakes and some stop
+ * answering when connections churn), but an idle connection is closed after
+ * 3 s, before BMCs drop it on their side. A request that fails on a reused
+ * connection is retried on a brand-new one.
+ */
+const agentOpts = { keepAlive: true, keepAliveMsecs: 1000, maxSockets: 4, maxFreeSockets: 4, timeout: 3000 };
+const httpAgent = new http.Agent(agentOpts);
+const httpsAgent = new https.Agent(agentOpts);
+
 export class DeviceHttpError extends Error {
   constructor(
     message: string,
@@ -70,6 +81,7 @@ export function deviceRequest(
     /** Internal: already retried after a connection reset. */ retried?: boolean;
     /** A read sent as POST (WS-Man Enumerate/Pull): may be retried like a GET. */ idempotent?: boolean;
     /** Internal: parse leniently (older BMC firmware sends malformed HTTP). */ lenient?: boolean;
+    /** Internal: use a new connection that is closed afterwards (retries). */ fresh?: boolean;
     /** Internal: offer TLS 1.2 at most (some older BMCs stall or reset on a TLS 1.3 hello). */ tls12?: boolean;
   },
 ): Promise<{ status: number; json: unknown; text?: string }> {
@@ -88,9 +100,14 @@ export function deviceRequest(
         path,
         // A fresh connection per request: BMCs and switches often drop idle
         // keep-alive sockets without notice, and reusing one gives ECONNRESET.
-        agent: false,
+        agent: opts.fresh ? false : scheme === 'https' ? httpsAgent : httpAgent,
         ...(opts.lenient ? { insecureHTTPParser: true } : {}),
-        headers: { Accept: opts.raw ? '*/*' : 'application/json', Connection: 'close', ...(payload ? { 'Content-Type': opts.raw?.contentType ?? 'application/json', 'Content-Length': String(payload.length) } : {}), ...opts.headers },
+        headers: {
+          Accept: opts.raw ? '*/*' : 'application/json',
+          ...(opts.fresh ? { Connection: 'close' } : {}),
+          ...(payload ? { 'Content-Type': opts.raw?.contentType ?? 'application/json', 'Content-Length': String(payload.length) } : {}),
+          ...opts.headers,
+        },
         timeout,
         ...(scheme === 'https' ? { rejectUnauthorized: t.params.verifyTls !== false, servername: /^[\d.:[\]]+$/.test(t.host) ? undefined : t.host, ...(opts.tls12 ? { maxVersion: 'TLSv1.2' as const } : {}) } : {}),
       },
@@ -197,7 +214,7 @@ export function deviceRequest(
       // finish, the retry offers TLS 1.2 at most (older iDRAC/iLO stall on 1.3).
       if (e instanceof DeviceHttpError && (e as DeviceHttpError & { timedOut?: boolean }).timedOut && reads && !opts.retried) {
         const handshakeDone = (e as DeviceHttpError & { connected?: boolean }).connected;
-        deviceRequest(t, method, path, { ...opts, retried: true, tls12: opts.tls12 || (!handshakeDone && scheme === 'https') }).then(resolve, (e2: Error) =>
+        deviceRequest(t, method, path, { ...opts, retried: true, fresh: true, tls12: opts.tls12 || (!handshakeDone && scheme === 'https') }).then(resolve, (e2: Error) =>
           reject(new DeviceHttpError(`${e2.message} (tried twice)`, (e2 as DeviceHttpError).status ?? null)),
         );
         return;
@@ -213,12 +230,12 @@ export function deviceRequest(
       // go only to the credential's own host on a fresh connection.
       if (reads && !opts.lenient && typeof e.code === 'string' && e.code.startsWith('HPE_')) {
         clearTimeout(deadline);
-        deviceRequest(t, method, path, { ...opts, lenient: true }).then(resolve, reject);
+        deviceRequest(t, method, path, { ...opts, lenient: true, fresh: true }).then(resolve, reject);
         return;
       }
       if (reads && !opts.retried && (e.code === 'ECONNRESET' || e.code === 'EPIPE' || /socket hang up/i.test(e.message))) {
         clearTimeout(deadline);
-        setTimeout(() => deviceRequest(t, method, path, { ...opts, retried: true, tls12: opts.tls12 || (!connected && scheme === 'https') }).then(resolve, reject), 300);
+        setTimeout(() => deviceRequest(t, method, path, { ...opts, retried: true, fresh: true, tls12: opts.tls12 || (!connected && scheme === 'https') }).then(resolve, reject), 300);
         return;
       }
       const tls = /certificate|self[- ]signed|SSL|TLS/i.test(e.message);

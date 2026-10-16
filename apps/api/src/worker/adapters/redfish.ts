@@ -173,9 +173,16 @@ export function redfishAdapter(): Adapter {
       } catch (e) {
         if (isAuth(e)) throw e;
         // Older Dell iDRAC firmware: the power sensor over WS-Man.
-        const w = await dellPowerViaWsman(t).catch(() => null);
-        if (w) return { watts: w.watts, source: 'redfish', detail: w.detail };
-        throw e;
+        let why: string;
+        try {
+          const w = await dellPowerViaWsman(t);
+          if (w) return { watts: w.watts, source: 'redfish', detail: w.detail };
+          why = 'no power sensor in its sensor list';
+        } catch (w) {
+          if (isAuth(w)) throw w;
+          why = (w as Error).message;
+        }
+        throw new Error(`${(e as Error).message}. WS-Man fallback: ${why}`.slice(0, 480));
       }
     },
   };
@@ -202,11 +209,27 @@ export function redfishAdapter(): Adapter {
   }
   async function walkPower(t: AdapterTarget): Promise<PowerSnapshot> {
     {
-      const chassis = members(await get(t, '/redfish/v1/Chassis')).slice(0, 8);
-      if (!chassis.length) throw new Error('The BMC lists no chassis');
+      let chassis: string[] = [];
+      let listErr: Error | null = null;
+      try {
+        chassis = members(await get(t, '/redfish/v1/Chassis')).slice(0, 8);
+      } catch (e) {
+        if (isAuth(e) || !(e instanceof DeviceHttpError) || e.status === null) throw e;
+        listErr = e;
+      }
+      // Older firmware: an empty or failing chassis list while the chassis itself answers.
+      if (!chassis.length) chassis = ['/redfish/v1/Chassis/System.Embedded.1', '/redfish/v1/Chassis/1', '/redfish/v1/Chassis/Self'];
+      const listed = !listErr && chassis[0] !== '/redfish/v1/Chassis/System.Embedded.1';
       const tried: string[] = [];
       for (const c of chassis) {
-        const doc = await get(t, c);
+        let doc: Row;
+        try {
+          doc = await get(t, c);
+        } catch (e) {
+          if (isAuth(e) || listed) throw e;
+          tried.push(`${c}: ${(e as Error).message}`);
+          continue;
+        }
         for (const link of [odataId(doc.Power), odataId(doc.EnvironmentMetrics)]) {
           if (!link) continue;
           let res: Row | null = null;
@@ -222,6 +245,7 @@ export function redfishAdapter(): Adapter {
           tried.push(`${link}: no reading`);
         }
       }
+      if (!listed) throw new Error(`The BMC lists no chassis${listErr ? ` (${listErr.message})` : ''} and none answers at the usual paths${tried.length ? ` (${tried.slice(0, 2).join('; ')})` : ''}`.slice(0, 400));
       throw new Error(`No power reading found in ${chassis.length} chassis${tried.length ? ` (${tried.slice(0, 3).join('; ')})` : ''}`);
     }
   }
