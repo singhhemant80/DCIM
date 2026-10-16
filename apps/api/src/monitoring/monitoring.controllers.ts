@@ -12,6 +12,7 @@ import {
   dashboardOrderSchema,
   flowExporterSchema,
   ipHistoryQuerySchema,
+  liveIpQuerySchema,
   topIpQuerySchema,
   deviceMonitoringSchema,
   maintenanceSchema,
@@ -386,6 +387,14 @@ export class FlowsController {
   @ApiZodQuery(topIpQuerySchema)
   top(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(topIpQuerySchema)) q: Infer<typeof topIpQuerySchema>) {
     return this.svc.top(p, q);
+  }
+
+  @Get('live')
+  @RequirePermissions('monitoring.read')
+  @ApiOperation({ summary: 'Live ranking: each address’s download and upload rate over the last minute of flow records (refreshed every 5 s).' })
+  @ApiZodQuery(liveIpQuerySchema)
+  live(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(liveIpQuerySchema)) q: Infer<typeof liveIpQuerySchema>) {
+    return this.svc.live(p, q);
   }
 
   @Get('ips/:ip/history')

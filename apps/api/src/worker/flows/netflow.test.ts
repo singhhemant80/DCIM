@@ -2,7 +2,7 @@ import { BlockList } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { FlowDecodeError, TemplateCache, decodeFlowPacket } from './netflow';
 import { encodeTemplated, encodeV5, type SimFlow } from './encode';
-import { FlowAggregator, spread } from './collector';
+import { FlowAggregator, LiveWindow, spread } from './collector';
 
 const now = Date.UTC(2026, 9, 16, 6, 0, 30);
 const up = 5_000_000;
@@ -96,5 +96,28 @@ describe('attribution', () => {
     const p = agg.take().get('org')!.get(t0)!;
     expect([...p.keys()]).toEqual(['103.150.120.10']);
     expect(p.get('103.150.120.10')).toEqual([1000, 3000, 2, 10]);
+  });
+});
+
+describe('live window', () => {
+  it('rates over the last minute of what arrived, busiest first; old slots fall out', () => {
+    const own = new BlockList();
+    own.addSubnet('103.150.120.0', 24, 'ipv4');
+    const agg = new FlowAggregator();
+    const live = new LiveWindow();
+    agg.live = live;
+    const t = Date.now();
+    live.add('warmup', '103.150.120.99', 0, 1, t - 120_000);
+    agg.add('org', own, { src: '8.8.8.8', dst: '103.150.120.10', bytes: 7_500_000, packets: 1, start: null, end: null, sampling: 1 }, 1, t);
+    agg.add('org', own, { src: '103.150.120.11', dst: '8.8.8.8', bytes: 750_000, packets: 1, start: null, end: null, sampling: 1 }, 1, t);
+    // Ten seconds after flows started arriving: averaged over those 10 s (7.5 MB in 10 s = 6 Mbit/s).
+    expect(live.rotate(t + 10_000).get('org')!).toMatchObject({ windowSeconds: 10, ips: [{ ip: '103.150.120.10', inBps: 6_000_000, outBps: 0 }, { ip: '103.150.120.11', inBps: 0, outBps: 600_000 }] });
+    // After a full minute the window is 60 s: 7.5 MB in 60 s = 1 Mbit/s.
+    const snap = live.rotate(t + 120_000).get('org')!;
+    expect(snap.windowSeconds).toBe(60);
+    expect(snap.ips[0]).toEqual({ ip: '103.150.120.10', inBps: 1_000_000, outBps: 0 });
+    expect(snap.ips[1]).toEqual({ ip: '103.150.120.11', inBps: 0, outBps: 100_000 });
+    for (let i = 0; i < 12; i++) live.rotate(t + 120_000);
+    expect(live.rotate(t + 120_000).get('org')!.ips).toEqual([]);
   });
 });

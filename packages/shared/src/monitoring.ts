@@ -240,3 +240,11 @@ export const topIpQuerySchema = z.object({
 });
 
 export const ipHistoryQuerySchema = z.object({ range: z.enum([...FLOW_RANGES, 'custom']).default('24h'), ...dateRangeFields });
+
+/** Live ranking: rates over the last minute of flow records. */
+export const liveIpQuerySchema = z.object({
+  sort: z.enum(['download', 'upload', 'total']).default('download'),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  q: z.string().trim().max(100).optional(),
+  customerId: z.string().uuid().optional(),
+});

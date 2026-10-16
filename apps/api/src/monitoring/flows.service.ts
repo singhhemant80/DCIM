@@ -3,7 +3,7 @@ import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { isIP } from 'node:net';
 import type Redis from 'ioredis';
 import type { z } from 'zod';
-import type { FlowExporterInput, FlowRange, ipHistoryQuerySchema, topIpQuerySchema } from '@crapplet/shared';
+import type { FlowExporterInput, FlowRange, ipHistoryQuerySchema, liveIpQuerySchema, topIpQuerySchema } from '@crapplet/shared';
 import { DB, type Db } from '../db/db';
 import { flowExporters } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
@@ -11,7 +11,7 @@ import type { Principal, RequestMeta } from '../auth/principal';
 import { dayRange } from '../common/date-range';
 import { rethrowConflict } from '../common/pg-errors';
 import { REDIS } from '../redis/redis';
-import { FLOW_COLLECTOR_STATUS_KEY } from '../health/worker-heartbeat';
+import { FLOW_COLLECTOR_STATUS_KEY, flowLiveKey } from '../health/worker-heartbeat';
 import { like, notFound, ownDevice } from '../network/common';
 
 const MINUTE_RANGES: Record<FlowRange, number> = { '15m': 900, '1h': 3600, '6h': 21_600, '24h': 86_400, '7d': 7 * 86_400, '30d': 30 * 86_400 };
@@ -197,6 +197,59 @@ export class FlowsService {
         customerId: p.userType === 'staff' ? ((x.customer_id as string | null) ?? null) : null,
         customerName: p.userType === 'staff' ? ((x.customer_name as string | null) ?? null) : null,
       })),
+    };
+  }
+
+  /**
+   * Live: each address's rate over the last minute of flow records, as the
+   * worker last published it (every 5 seconds). Null when nothing is arriving.
+   */
+  async live(p: Principal, q: z.infer<typeof liveIpQuerySchema>) {
+    let snap: { at: string; windowSeconds: number; ips: { ip: string; inBps: number; outBps: number }[] } | null = null;
+    try {
+      if (this.redis.status === 'wait') await this.redis.connect();
+      const raw = await this.redis.get(flowLiveKey(p.orgId));
+      snap = raw ? JSON.parse(raw) : null;
+    } catch {
+      snap = null;
+    }
+    const empty = { at: snap?.at ?? null, windowSeconds: snap?.windowSeconds ?? 60, totals: { addresses: 0, inBps: 0, outBps: 0 }, items: [] as unknown[] };
+    if (!snap || !snap.ips.length) return empty;
+    const rates = new Map(snap.ips.map((x) => [x.ip, x]));
+    const inner = sql`select v.address from (values ${sql.join(
+      snap.ips.map((x) => sql`(${x.ip}::inet)`),
+      sql`, `,
+    )}) v(address)`;
+    const conds: SQL[] = [this.scope(p, q.customerId)];
+    if (q.q) conds.push(sql`(host(x.address) ilike ${like(q.q)} or x.dns_name ilike ${like(q.q)} or coalesce(d.hostname, d.asset_tag) ilike ${like(q.q)} or c.name ilike ${like(q.q)})`);
+    const r = await this.db.execute<Record<string, unknown>>(sql`
+      select host(x.address) as ip, x.dns_name, x.prefix, x.prefix_id, x.device_id, coalesce(d.hostname, d.asset_tag) as device_name, x.customer_id, c.name as customer_name
+        from (${this.owned(p, inner)}) x
+        left join devices d on d.id = x.device_id
+        left join customers c on c.id = x.customer_id
+       where ${sql.join(conds, sql` and `)}`);
+    const rows = r.rows.map((x) => {
+      const rate = rates.get(x.ip as string) ?? { inBps: 0, outBps: 0 };
+      return {
+        ip: x.ip as string,
+        inBps: rate.inBps,
+        outBps: rate.outBps,
+        dnsName: (x.dns_name as string | null) ?? null,
+        prefix: (x.prefix as string | null) ?? null,
+        prefixId: (x.prefix_id as string | null) ?? null,
+        deviceId: (x.device_id as string | null) ?? null,
+        deviceName: (x.device_name as string | null) ?? null,
+        customerId: p.userType === 'staff' ? ((x.customer_id as string | null) ?? null) : null,
+        customerName: p.userType === 'staff' ? ((x.customer_name as string | null) ?? null) : null,
+      };
+    });
+    const key = { download: (x: { inBps: number }) => x.inBps, upload: (x: { outBps: number }) => x.outBps, total: (x: { inBps: number; outBps: number }) => x.inBps + x.outBps }[q.sort];
+    rows.sort((a, b) => key(b) - key(a) || a.ip.localeCompare(b.ip));
+    return {
+      at: snap.at,
+      windowSeconds: snap.windowSeconds,
+      totals: { addresses: rows.length, inBps: rows.reduce((a, x) => a + x.inBps, 0), outBps: rows.reduce((a, x) => a + x.outBps, 0) },
+      items: rows.slice(0, q.limit),
     };
   }
 

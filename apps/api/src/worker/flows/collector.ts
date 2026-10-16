@@ -67,7 +67,73 @@ export function spread(start: number | null, end: number | null, now: number): [
   return out;
 }
 
+/**
+ * Live rates: bytes per address by arrival time in 5-second slots over the last
+ * minute. Routers report long flows every active timeout (1 minute when set up
+ * as recommended), so a one-minute window of what arrived tracks current traffic.
+ */
+export const LIVE_SLOT_MS = 5_000;
+export const LIVE_SLOTS = 12;
+export interface LiveSnapshot {
+  at: string;
+  windowSeconds: number;
+  totals: { inBps: number; outBps: number; addresses: number };
+  /** Busiest first (download + upload), at most 1000 addresses. */
+  ips: { ip: string; inBps: number; outBps: number }[];
+}
+
+export class LiveWindow {
+  private slots = new Map<string, Map<string, [number, number]>[]>();
+  private slotIndex = 0;
+  /** When flows started arriving for each organization (reset after a quiet minute). */
+  private since = new Map<string, number>();
+
+  add(orgId: string, ip: string, dir: 0 | 1, bytes: number, now = Date.now()) {
+    if (!this.since.has(orgId)) this.since.set(orgId, now);
+    let ring = this.slots.get(orgId);
+    if (!ring) this.slots.set(orgId, (ring = Array.from({ length: LIVE_SLOTS }, () => new Map())));
+    const slot = ring[this.slotIndex]!;
+    let c = slot.get(ip);
+    if (!c) {
+      if (slot.size >= 200_000) return;
+      slot.set(ip, (c = [0, 0]));
+    }
+    c[dir] += bytes;
+  }
+
+  /** Rates over the window per organization; then a new slot starts. */
+  rotate(now = Date.now()): Map<string, LiveSnapshot> {
+    const out = new Map<string, LiveSnapshot>();
+    for (const [orgId, ring] of this.slots) {
+      // Every byte arrives once, so bytes arriving per second track the traffic rate. Until a
+      // full minute of arrivals exists, average over the time since flows started arriving.
+      const seconds = Math.min(LIVE_SLOTS * (LIVE_SLOT_MS / 1000), Math.max(LIVE_SLOT_MS / 1000, (now - (this.since.get(orgId) ?? now)) / 1000));
+      const sum = new Map<string, [number, number]>();
+      for (const slot of ring) for (const [ip, c] of slot) {
+        const t = sum.get(ip);
+        if (t) (t[0] += c[0]), (t[1] += c[1]);
+        else sum.set(ip, [c[0], c[1]]);
+      }
+      let inB = 0;
+      let outB = 0;
+      const ips = [...sum.entries()].map(([ip, c]) => {
+        inB += c[0];
+        outB += c[1];
+        return { ip, inBps: (c[0] * 8) / seconds, outBps: (c[1] * 8) / seconds };
+      });
+      ips.sort((a, b) => b.inBps + b.outBps - (a.inBps + a.outBps));
+      if (!ips.length) this.since.delete(orgId);
+      out.set(orgId, { at: new Date(now).toISOString(), windowSeconds: seconds, totals: { inBps: (inB * 8) / seconds, outBps: (outB * 8) / seconds, addresses: ips.length }, ips: ips.slice(0, 1000) });
+    }
+    this.slotIndex = (this.slotIndex + 1) % LIVE_SLOTS;
+    for (const ring of this.slots.values()) ring[this.slotIndex] = new Map();
+    return out;
+  }
+}
+
 export class FlowAggregator {
+  /** Optional live window fed with the same attributed bytes (by arrival time). */
+  live: LiveWindow | null = null;
   /** org → minute bucket → address → counts */
   pending = new Map<string, Map<number, Map<string, Counts>>>();
   keys = 0;
@@ -80,6 +146,10 @@ export class FlowAggregator {
     if (!srcOwn && !dstOwn) return false;
     const bytes = r.bytes * multiplier;
     const packets = r.packets * multiplier;
+    if (this.live) {
+      if (dstOwn) this.live.add(orgId, r.dst, 0, bytes, now);
+      if (srcOwn) this.live.add(orgId, r.src, 1, bytes, now);
+    }
     for (const [bucket, share] of spread(r.start, r.end, now)) {
       if (dstOwn) this.bump(orgId, bucket, r.dst, 0, bytes * share, packets * share);
       if (srcOwn) this.bump(orgId, bucket, r.src, 1, bytes * share, packets * share);
@@ -172,10 +242,15 @@ export async function loadOwnPrefixes(db: Db) {
   return lists;
 }
 
-export async function startFlowCollector(deps: { db: Db; logger: Logger }, opts: { port: number; bind: string }) {
+export async function startFlowCollector(deps: { db: Db; logger: Logger; onLive?: (orgId: string, snap: LiveSnapshot) => void }, opts: { port: number; bind: string }) {
   const { db, logger } = deps;
   const cache = new TemplateCache();
   const agg = new FlowAggregator();
+  const live = new LiveWindow();
+  agg.live = live;
+  const publishLive = () => {
+    for (const [orgId, snap] of live.rotate()) deps.onLive?.(orgId, snap);
+  };
   let exporters = new Map<string, Exporter>();
   let own = new Map<string, BlockList>();
   const stats = new Map<string, Stats>();
@@ -272,6 +347,7 @@ export async function startFlowCollector(deps: { db: Db; logger: Logger }, opts:
 
   let busy = false;
   const timers = [
+    setInterval(publishLive, LIVE_SLOT_MS),
     setInterval(() => {
       if (busy) return;
       busy = true;
@@ -284,6 +360,8 @@ export async function startFlowCollector(deps: { db: Db; logger: Logger }, opts:
 
   return {
     status: () => status,
+    /** For tests: rotate the live window now and publish. */
+    publishLive,
     /** For tests: feed a datagram as if it arrived from `from`. */
     receive: onMessage,
     flush,

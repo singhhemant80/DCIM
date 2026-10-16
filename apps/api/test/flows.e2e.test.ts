@@ -8,6 +8,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client, setupTestApp, type TestContext } from './helpers';
 import { startFlowCollector, applyFlowRetention } from '../src/worker/flows/collector';
 import { encodeTemplated, encodeV5, type SimFlow } from '../src/worker/flows/encode';
+import { REDIS } from '../src/redis/redis';
+import { flowLiveKey } from '../src/health/worker-heartbeat';
+import type Redis from 'ioredis';
 
 let ctx: TestContext;
 let admin: Client;
@@ -139,6 +142,29 @@ describe('ranking from NetFlow v5, v9 and IPFIX', () => {
     expect((await admin.get(`${F}/ips/not-an-ip/history`)).status).toBe(400);
     // The hourly table has the same totals (7-day range reads it).
     expect((await ok(admin.get(`${F}/ips/103.150.120.10/history?range=7d`))).totals.inBytes).toBe(6_000_000);
+  });
+
+  it('live: rates over the last minute, published by the collector; customers see their own', async () => {
+    const redis = ctx.app.get<Redis>(REDIS);
+    if (redis.status === 'wait') await redis.connect();
+    const live = await startFlowCollector(
+      { db: ctx.db, logger: silent, onLive: (orgId, snap) => void redis.set(flowLiveKey(orgId), JSON.stringify(snap), 'EX', 30) },
+      { port: 0, bind: '127.0.0.1' },
+    );
+    const now = Date.now();
+    live.receive(encodeV5([{ src: '8.8.8.8', dst: '103.150.120.10', bytes: 3_000_000, packets: 10, start: now - 2000, end: now - 1000 }, { src: '103.150.120.17', dst: '1.1.1.1', bytes: 9_000_000, packets: 10, start: now - 2000, end: now - 1000 }], { sysUptimeMs: 1e6, nowMs: now }), '127.0.0.1');
+    live.publishLive();
+    await new Promise((r) => setTimeout(r, 100));
+    const all = await ok(admin.get(`${F}/live?sort=upload`));
+    expect(all.at).toBeTruthy();
+    expect(all.items.map((x: { ip: string }) => x.ip)).toEqual(['103.150.120.17', '103.150.120.10']);
+    expect(all.items[0]).toMatchObject({ customerName: 'Globex' });
+    expect(all.items[0].outBps).toBeGreaterThan(0);
+    expect((await ok(admin.get(`${F}/live?sort=download`))).items[0]).toMatchObject({ ip: '103.150.120.10', dnsName: 'web.acme.example' });
+    const mine = await ok(acme.get(`${F}/live`));
+    expect(mine.items.map((x: { ip: string }) => x.ip)).toEqual(['103.150.120.10']);
+    expect(mine.items[0].customerName).toBeNull();
+    await live.close();
   });
 
   it('a configured sampling rate multiplies the counts; disabled exporters are ignored', async () => {

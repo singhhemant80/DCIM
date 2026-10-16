@@ -86,15 +86,41 @@ function Bar({ value, max, tone }: { value: number; max: number; tone: 'rx' | 't
   );
 }
 
-function IpHistory({ ip, range, onClose }: { ip: TopIpT; range: PeriodValue<FlowRange>; onClose: () => void }) {
+interface IpRowT {
+  ip: string;
+  inBps: number;
+  outBps: number;
+  inBytes?: number;
+  outBytes?: number;
+  inPeakBps?: number;
+  outPeakBps?: number;
+  dnsName: string | null;
+  prefix: string | null;
+  prefixId: string | null;
+  deviceId: string | null;
+  deviceName: string | null;
+  customerId: string | null;
+  customerName: string | null;
+}
+interface LiveT {
+  at: string | null;
+  windowSeconds: number;
+  totals: { addresses: number; inBps: number; outBps: number };
+  items: IpRowT[];
+}
+type LiveSampleT = { t: number; inBps: number; outBps: number };
+
+function IpHistory({ ip, range, samples, onClose }: { ip: IpRowT; range: PeriodValue<FlowRange>; samples?: LiveSampleT[]; onClose: () => void }) {
   const rq = rangeQuery(range);
   const h = useQuery({
     queryKey: ['flows', 'history', ip.ip, rq],
     queryFn: () => api.get<HistoryT>(`/monitoring/flows/ips/${encodeURIComponent(ip.ip)}/history${qs(rq)}`),
-    refetchInterval: 60_000,
+    refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   });
   const d = h.data;
+  const live = samples && samples.length ? samples[samples.length - 1]! : null;
+  const now = Date.now();
   return (
     <Panel
       title={
@@ -110,10 +136,19 @@ function IpHistory({ ip, range, onClose }: { ip: TopIpT; range: PeriodValue<Flow
       }
     >
       <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
-        <Stat label="Download, average" value={bps(ip.inBps)} note={`${volume(ip.inBytes)} in this period`} />
-        <Stat label="Upload, average" value={bps(ip.outBps)} note={`${volume(ip.outBytes)} in this period`} />
-        <Stat label="Busiest minute down" value={bps(ip.inPeakBps)} />
-        <Stat label="Busiest minute up" value={bps(ip.outPeakBps)} />
+        {samples ? (
+          <>
+            <Stat label="Download now" value={bps(live?.inBps ?? ip.inBps)} note="last minute, updates every 5 s" />
+            <Stat label="Upload now" value={bps(live?.outBps ?? ip.outBps)} note="last minute, updates every 5 s" />
+          </>
+        ) : (
+          <>
+            <Stat label="Download, average" value={bps(ip.inBps)} note={ip.inBytes !== undefined ? `${volume(ip.inBytes)} in this period` : undefined} />
+            <Stat label="Upload, average" value={bps(ip.outBps)} note={ip.outBytes !== undefined ? `${volume(ip.outBytes)} in this period` : undefined} />
+          </>
+        )}
+        <Stat label={`Download, ${FLOW_RANGE_LABELS[range.period as FlowRange]?.toLowerCase() ?? 'period'}`} value={d ? volume(d.totals.inBytes) : '—'} note={d ? `average ${bps(d.totals.inBps)}` : undefined} />
+        <Stat label={`Upload, ${FLOW_RANGE_LABELS[range.period as FlowRange]?.toLowerCase() ?? 'period'}`} value={d ? volume(d.totals.outBytes) : '—'} note={d ? `average ${bps(d.totals.outBps)}` : undefined} />
       </dl>
       <p className="mb-3 text-[13px] text-ink-2">
         {ip.customerName && <>Customer {ip.customerName} · </>}
@@ -139,6 +174,17 @@ function IpHistory({ ip, range, onClose }: { ip: TopIpT; range: PeriodValue<Flow
           </>
         )}
       </p>
+      {samples && (
+        <div className="mb-5">
+          <div className="mb-1 flex items-center gap-2 text-[13px]">
+            <span className="size-2 animate-pulse rounded-full bg-ok" aria-hidden />
+            <span className="font-medium">Live</span>
+            <span className="text-ink-3">Rate over the last minute of flow records, a new point every 5 seconds while this page is open.</span>
+          </div>
+          {samples.length > 1 ? <RateChart label={`Live traffic of ${ip.ip}`} points={samples} stepSeconds={5} from={now - 10 * 60_000} to={now} /> : <p className="py-6 text-center text-[13px] text-ink-3">Collecting live points…</p>}
+        </div>
+      )}
+      <div className="mb-1 text-[13px] font-medium">History, {FLOW_RANGE_LABELS[range.period as FlowRange]?.toLowerCase() ?? 'chosen days'}</div>
       <ErrorNote error={h.error} />
       {h.isLoading && <Loading />}
       {d && d.points.length > 0 && (
@@ -358,7 +404,8 @@ function FlowSources() {
           <li>Then add the router above with the address it sends from (shown under "not registered" once flows arrive).</li>
           <li>The 1-minute active timeout makes long downloads show up every minute instead of every 30 minutes (the RouterOS default).</li>
           <li>
-            If RouterOS answers <span className="font-mono">cache too big to fit in memory</span>, the flow cache is larger than the router's free memory: set a smaller one first (<span className="font-mono">/ip traffic-flow set cache-entries=16k</span>, or 4k on small routers), then run the first command again. A smaller cache only means flows are sent a little more often.
+            If RouterOS answers <span className="font-mono">cache too big to fit in memory</span>, the flow cache is larger than the router's free memory: set a smaller one first (
+            <span className="font-mono">/ip traffic-flow set cache-entries=16k</span>, or 4k on small routers), then run the first command again. A smaller cache only means flows are sent a little more often.
           </li>
           <li>Allow UDP port {port} from the router on this server's firewall. The installer opens it when firewalld or ufw is active.</li>
           <li>Reading flows is passive: NexoraDC never changes the router.</li>
@@ -375,12 +422,14 @@ function FlowSources() {
 
 /**
  * Bandwidth per IP address: your addresses ranked by download (traffic to the
- * address) and upload (from it), from the routers' flow records.
+ * address) and upload (from it), from the routers' flow records. Live (the
+ * last minute, refreshed every 5 seconds) or averaged over a period.
  */
 export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = {}) {
   const { me } = useAuth();
   const staff = me?.user.userType === 'staff';
   const customers = useCustomerOptions();
+  const [mode, setMode] = useState<'live' | 'period'>('live');
   const [range, setRange] = useState<PeriodValue<FlowRange>>({ period: '1h', from: '', to: '' });
   const [sort, setSort] = useState<Sort>('download');
   const [q, setQ] = useState('');
@@ -392,39 +441,108 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
     const h = setTimeout(() => setDebounced(q.trim()), 250);
     return () => clearTimeout(h);
   }, [q]);
+  const filters = { sort, q: debounced || undefined, customerId: customerId || undefined, limit };
   const rq = rangeQuery(range);
+  const live = useQuery({
+    queryKey: ['flows', 'live', filters],
+    queryFn: () => api.get<LiveT>(`/monitoring/flows/live${qs(filters)}`),
+    enabled: mode === 'live',
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
+    placeholderData: keepPreviousData,
+  });
   const top = useQuery({
-    queryKey: ['flows', 'top', rq, sort, debounced, customerId, limit],
-    queryFn: () => api.get<TopT>(`/monitoring/flows/top${qs({ ...rq, sort, q: debounced || undefined, customerId: customerId || undefined, limit })}`),
-    enabled: periodReady(range),
+    queryKey: ['flows', 'top', rq, filters],
+    queryFn: () => api.get<TopT>(`/monitoring/flows/top${qs({ ...rq, ...filters })}`),
+    enabled: periodReady(range) && (mode === 'period' || !!open),
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   });
-  const items = top.data?.items ?? [];
-  const max = useMemo(() => Math.max(1, ...items.map((x) => Math.max(x.inBytes, x.outBytes))), [items]);
-  const selected = items.find((x) => x.ip === open);
+  // Live points per address, kept in the browser for 10 minutes (one per refresh).
+  const [samples, setSamples] = useState<Map<string, LiveSampleT[]>>(() => new Map());
+  useEffect(() => {
+    const d = live.data;
+    if (!d?.at) return;
+    const t = new Date(d.at).getTime();
+    setSamples((prev) => {
+      const next = new Map(prev);
+      const cutoff = Date.now() - 10 * 60_000;
+      for (const x of d.items) {
+        const list = (next.get(x.ip) ?? []).filter((s) => s.t >= cutoff && s.t !== t);
+        list.push({ t, inBps: x.inBps, outBps: x.outBps });
+        next.set(x.ip, list);
+      }
+      return next;
+    });
+  }, [live.data]);
+  const isLive = mode === 'live';
+  const items: IpRowT[] = (isLive ? live.data?.items : top.data?.items) ?? [];
+  const max = useMemo(() => Math.max(1, ...items.map((x) => (isLive ? Math.max(x.inBps, x.outBps) : Math.max(x.inBytes ?? 0, x.outBytes ?? 0)))), [items, isLive]);
+  const selected = items.find((x) => x.ip === open) ?? (isLive ? undefined : undefined);
+  const busy = isLive ? live : top;
+  const at = live.data?.at;
+  const fresh = !!at && Date.now() - new Date(at).getTime() < 30_000;
   const t = top.data?.totals;
+  const lt = live.data?.totals;
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
       <Panel>
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
-          <Stat label="Download, average" value={t ? bps(t.inBps) : '—'} note={t ? `${volume(t.inBytes)} to your addresses` : undefined} />
-          <Stat label="Upload, average" value={t ? bps(t.outBps) : '—'} note={t ? `${volume(t.outBytes)} from your addresses` : undefined} />
-          <Stat label="Addresses with traffic" value={t?.addresses ?? '—'} />
-          <Stat
-            label="Newest flow data"
-            value={<span className="text-[18px]">{top.data?.latestDataAt ? relativeTime(top.data.latestDataAt) : 'None yet'}</span>}
-            tone={top.data && !top.data.latestDataAt ? 'warn' : undefined}
-            note={top.data?.latestDataAt ? 'Routers send flows about once a minute' : staff ? 'Set up a router below' : 'Bandwidth per IP appears once the datacenter turns on flow export'}
-          />
-        </dl>
+        {isLive ? (
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+            <Stat label="Download now" value={lt && fresh ? bps(lt.inBps) : '—'} note="to your addresses, last minute" />
+            <Stat label="Upload now" value={lt && fresh ? bps(lt.outBps) : '—'} note="from your addresses, last minute" />
+            <Stat label="Active addresses" value={lt && fresh ? lt.addresses : '—'} />
+            <Stat
+              label="Live feed"
+              value={
+                <span className="flex items-center gap-2 text-[18px]">
+                  <span className={cx('size-2 rounded-full', fresh ? 'animate-pulse bg-ok' : 'bg-warn')} aria-hidden />
+                  {fresh ? 'Receiving' : at ? `Stale (${relativeTime(at)})` : 'No flows arriving'}
+                </span>
+              }
+              tone={fresh ? undefined : 'warn'}
+              note={fresh ? 'Updates every 5 seconds' : staff ? 'Check Flow sources below' : 'The datacenter has not turned on flow export yet'}
+            />
+          </dl>
+        ) : (
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+            <Stat label="Download, average" value={t ? bps(t.inBps) : '—'} note={t ? `${volume(t.inBytes)} to your addresses` : undefined} />
+            <Stat label="Upload, average" value={t ? bps(t.outBps) : '—'} note={t ? `${volume(t.outBytes)} from your addresses` : undefined} />
+            <Stat label="Addresses with traffic" value={t?.addresses ?? '—'} />
+            <Stat
+              label="Newest flow data"
+              value={<span className="text-[18px]">{top.data?.latestDataAt ? relativeTime(top.data.latestDataAt) : 'None yet'}</span>}
+              tone={top.data && !top.data.latestDataAt ? 'warn' : undefined}
+              note={top.data?.latestDataAt ? 'Saved every minute' : staff ? 'Set up a router below' : 'Bandwidth per IP appears once the datacenter turns on flow export'}
+            />
+          </dl>
+        )}
       </Panel>
-      {selected && <IpHistory key={selected.ip} ip={selected} range={range} onClose={() => setOpen(null)} />}
+      {selected && <IpHistory key={selected.ip} ip={selected} range={isLive ? { period: '1h', from: '', to: '' } : range} samples={isLive ? (samples.get(selected.ip) ?? []) : undefined} onClose={() => setOpen(null)} />}
       <Panel
         flush
         title={staff ? 'Top IP addresses by bandwidth' : 'Your IP addresses by bandwidth'}
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex rounded-lg border border-rule bg-panel p-0.5 text-[13px]" role="group" aria-label="Live or period">
+              {(
+                [
+                  ['live', 'Live'],
+                  ['period', 'Period'],
+                ] as const
+              ).map(([k, l]) => (
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={mode === k}
+                  onClick={() => setMode(k)}
+                  className={mode === k ? 'flex items-center gap-1.5 rounded-md bg-field px-2.5 py-1 font-medium' : 'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-ink-3 hover:text-ink'}
+                >
+                  {k === 'live' && <span className={cx('size-1.5 rounded-full', mode === 'live' && fresh ? 'animate-pulse bg-ok' : 'bg-ink-3')} aria-hidden />}
+                  {l}
+                </button>
+              ))}
+            </span>
             <span className="inline-flex rounded-lg border border-rule bg-panel p-0.5 text-[13px]" role="group" aria-label="Rank by">
               {(
                 [
@@ -438,7 +556,7 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
                 </button>
               ))}
             </span>
-            <PeriodPicker value={range} onChange={setRange} options={FLOW_RANGES} labels={FLOW_RANGE_LABELS} className="w-40" />
+            {!isLive && <PeriodPicker value={range} onChange={setRange} options={FLOW_RANGES} labels={FLOW_RANGE_LABELS} className="w-40" />}
             <Input className="w-56" placeholder={staff ? 'IP, name, device, customer' : 'IP, name or device'} value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search addresses" />
             {staff && !fixedCustomer && (
               <Select className="w-44" value={customerId} onChange={(e) => setCustomerId(e.target.value)} aria-label="Customer">
@@ -460,11 +578,15 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
           </div>
         }
       >
-        <ErrorNote error={top.error} className="m-4" />
-        {top.isLoading && <Loading />}
-        {top.data && items.length === 0 && (
-          <EmptyState title={debounced || customerId ? 'No matching addresses' : 'No traffic recorded for this period'}>
-            {staff ? 'Bandwidth per IP comes from your routers’ flow records. Set up a router under Flow sources below; addresses must be inside a prefix in IP Address Management.' : 'No flows to or from your addresses in this period.'}
+        <ErrorNote error={busy.error} className="m-4" />
+        {busy.isLoading && <Loading />}
+        {busy.data && items.length === 0 && (
+          <EmptyState title={debounced || customerId ? 'No matching addresses' : isLive ? 'No traffic in the last minute' : 'No traffic recorded for this period'}>
+            {staff
+              ? 'Bandwidth per IP comes from your routers’ flow records. Check Flow sources below (the router must be registered and receiving); addresses must be inside a prefix in IP Address Management.'
+              : isLive
+                ? 'No flows to or from your addresses in the last minute.'
+                : 'No flows to or from your addresses in this period.'}
           </EmptyState>
         )}
         {items.length > 0 && (
@@ -474,8 +596,8 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
                 <th className="w-10">#</th>
                 <th>Address</th>
                 <th>{staff ? 'Customer · device' : 'Device'}</th>
-                <th className="text-right">Download</th>
-                <th className="text-right">Upload</th>
+                <th className="text-right">Download{isLive ? ' now' : ''}</th>
+                <th className="text-right">Upload{isLive ? ' now' : ''}</th>
                 <th className="text-right">Total</th>
               </tr>
             </thead>
@@ -496,17 +618,17 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
                   </td>
                   <td className="w-44 text-right">
                     <span className={cx('tabular-nums', sort === 'download' && 'font-semibold')}>{bps(x.inBps)}</span>
-                    <span className="block text-[12px] text-ink-3 tabular-nums">{volume(x.inBytes)}</span>
-                    <Bar value={x.inBytes} max={max} tone="rx" />
+                    {!isLive && <span className="block text-[12px] text-ink-3 tabular-nums">{volume(x.inBytes ?? 0)}</span>}
+                    <Bar value={isLive ? x.inBps : (x.inBytes ?? 0)} max={max} tone="rx" />
                   </td>
                   <td className="w-44 text-right">
                     <span className={cx('tabular-nums', sort === 'upload' && 'font-semibold')}>{bps(x.outBps)}</span>
-                    <span className="block text-[12px] text-ink-3 tabular-nums">{volume(x.outBytes)}</span>
-                    <Bar value={x.outBytes} max={max} tone="tx" />
+                    {!isLive && <span className="block text-[12px] text-ink-3 tabular-nums">{volume(x.outBytes ?? 0)}</span>}
+                    <Bar value={isLive ? x.outBps : (x.outBytes ?? 0)} max={max} tone="tx" />
                   </td>
                   <td className={cx('text-right tabular-nums', sort === 'total' && 'font-semibold')}>
                     {bps(x.inBps + x.outBps)}
-                    <span className="block text-[12px] font-normal text-ink-3">{volume(x.inBytes + x.outBytes)}</span>
+                    {!isLive && <span className="block text-[12px] font-normal text-ink-3">{volume((x.inBytes ?? 0) + (x.outBytes ?? 0))}</span>}
                   </td>
                 </tr>
               ))}
@@ -515,8 +637,10 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
         )}
         {items.length > 0 && (
           <p className="px-4 py-2.5 text-[12px] text-ink-3">
-            {top.data && top.data.range.coveredFrom > top.data.range.from ? `Flow data in this period starts ${relativeTime(top.data.range.coveredFrom)}; averages cover only that part. ` : ''}Averages over the period, measured from the
-            routers' flow records (NetFlow/IPFIX). Download is traffic to the address, upload traffic from it. Click an address for its chart.
+            {isLive
+              ? `Live: each address's rate over the last minute of flow records, refreshed every 5 seconds (updated ${at ? relativeTime(at) : '—'}). Routers report traffic about once a minute, so a change shows within a minute. `
+              : `${top.data && top.data.range.coveredFrom > top.data.range.from ? `Flow data in this period starts ${relativeTime(top.data.range.coveredFrom)}; averages cover only that part. ` : ''}Averages over the period. `}
+            Measured from the routers' flow records (NetFlow/IPFIX). Download is traffic to the address, upload traffic from it. Click an address for its chart.
           </p>
         )}
       </Panel>

@@ -22,7 +22,7 @@ import { checkDueDevices } from './monitoring/device-ping';
 import { fetchDueHardware } from './hardware/collect';
 import { startConsoleRelay } from './console/relay';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
-import { FLOW_COLLECTOR_STATUS_KEY, WORKER_HEARTBEAT_KEY } from '../health/worker-heartbeat';
+import { FLOW_COLLECTOR_STATUS_KEY, WORKER_HEARTBEAT_KEY, flowLiveKey } from '../health/worker-heartbeat';
 import { applyFlowRetention, startFlowCollector } from './flows/collector';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
@@ -119,7 +119,7 @@ async function main() {
   });
   // Flow records (NetFlow v5/v9, IPFIX, e.g. MikroTik Traffic Flow) for bandwidth per IP address.
   const flowPort = Number(process.env.CDCIM_FLOW_PORT ?? 2055);
-  const flows = await startFlowCollector({ db, logger }, { port: Number.isInteger(flowPort) && flowPort >= 0 && flowPort < 65536 ? flowPort : 2055, bind: process.env.CDCIM_FLOW_BIND || '0.0.0.0' }).catch((e) => {
+  const flows = await startFlowCollector({ db, logger, onLive: (orgId, snap) => void pub.set(flowLiveKey(orgId), JSON.stringify(snap), 'EX', 30).catch(() => undefined) }, { port: Number.isInteger(flowPort) && flowPort >= 0 && flowPort < 65536 ? flowPort : 2055, bind: process.env.CDCIM_FLOW_BIND || '0.0.0.0' }).catch((e) => {
     logger.error({ err: (e as Error).message }, 'flow collector could not start; bandwidth per IP is unavailable');
     return null;
   });
