@@ -22,7 +22,8 @@ import { checkDueDevices } from './monitoring/device-ping';
 import { fetchDueHardware } from './hardware/collect';
 import { startConsoleRelay } from './console/relay';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
-import { WORKER_HEARTBEAT_KEY } from '../health/worker-heartbeat';
+import { FLOW_COLLECTOR_STATUS_KEY, WORKER_HEARTBEAT_KEY } from '../health/worker-heartbeat';
+import { applyFlowRetention, startFlowCollector } from './flows/collector';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
 import { createJobLoop } from './provisioning/engine';
@@ -116,10 +117,23 @@ async function main() {
     logger.error({ err: (e as Error).message }, 'console relay could not start; remote consoles are unavailable');
     return null;
   });
+  // Flow records (NetFlow v5/v9, IPFIX, e.g. MikroTik Traffic Flow) for bandwidth per IP address.
+  const flowPort = Number(process.env.CDCIM_FLOW_PORT ?? 2055);
+  const flows = await startFlowCollector({ db, logger }, { port: Number.isInteger(flowPort) && flowPort >= 0 && flowPort < 65536 ? flowPort : 2055, bind: process.env.CDCIM_FLOW_BIND || '0.0.0.0' }).catch((e) => {
+    logger.error({ err: (e as Error).message }, 'flow collector could not start; bandwidth per IP is unavailable');
+    return null;
+  });
   const timers = [
     // Liveness for the install check (doctor) and the readiness endpoint.
     every('heartbeat', 15_000, async () => {
-      if (pub.status === 'ready') await pub.set(WORKER_HEARTBEAT_KEY, JSON.stringify({ at: new Date().toISOString(), pid: process.pid }), 'EX', 90);
+      if (pub.status === 'ready') {
+        await pub.set(WORKER_HEARTBEAT_KEY, JSON.stringify({ at: new Date().toISOString(), pid: process.pid }), 'EX', 90);
+        await pub.set(FLOW_COLLECTOR_STATUS_KEY, JSON.stringify({ at: new Date().toISOString(), ...(flows?.status() ?? { listening: false, port: flowPort, error: 'Not started', unknownSources: [] }) }), 'EX', 90);
+      }
+    }),
+    every('flow-retention', 3_600_000, async () => {
+      const r = await applyFlowRetention(db);
+      if (r.minute + r.hourly) logger.info(r, 'old per-IP traffic removed');
     }),
     every('schedules', 60_000, async () => {
       const ids = await runDueSchedules(db, async (runId) => {
@@ -174,6 +188,7 @@ async function main() {
     logger.info({ signal }, 'stopping worker');
     timers.forEach(clearInterval);
     await consoleRelay?.close().catch(() => undefined);
+    await flows?.close().catch(() => undefined);
     await worker.close().catch(() => undefined);
     await producer.close().catch(() => undefined);
     pub.disconnect();

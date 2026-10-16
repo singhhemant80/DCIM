@@ -10,6 +10,9 @@ import {
   channelSchema,
   dashboardAddSchema,
   dashboardOrderSchema,
+  flowExporterSchema,
+  ipHistoryQuerySchema,
+  topIpQuerySchema,
   deviceMonitoringSchema,
   maintenanceSchema,
   monitoringSettingsSchema,
@@ -20,6 +23,7 @@ import { ApiZodBody, ApiZodQuery, ZodPipe } from '../common/zod';
 import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly } from '../auth/decorators';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { MonitoringService } from './monitoring.service';
+import { FlowsService } from './flows.service';
 import { AlertsService } from './alerts.service';
 import { MonitoringStream } from './stream.service';
 import { LIVE_WATCH_KEY, LIVE_WATCH_TTL_MS, type MonitoringEvent } from './events';
@@ -365,5 +369,61 @@ export class AlertsController {
   @ApiZodQuery(deliveriesQuery)
   deliveries(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(deliveriesQuery)) q: Infer<typeof deliveriesQuery>) {
     return this.svc.deliveries(p, q.channelId);
+  }
+}
+
+/* ------------------------------------------------------------ bandwidth per IP */
+
+@ApiTags('monitoring')
+@ApiCookieAuth()
+@Controller({ path: 'monitoring/flows', version: '1' })
+export class FlowsController {
+  constructor(private readonly svc: FlowsService) {}
+
+  @Get('top')
+  @RequirePermissions('monitoring.read')
+  @ApiOperation({ summary: 'Your IP addresses ranked by download (to the address) or upload (from it), from flow records. Customers see their own addresses.' })
+  @ApiZodQuery(topIpQuerySchema)
+  top(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(topIpQuerySchema)) q: Infer<typeof topIpQuerySchema>) {
+    return this.svc.top(p, q);
+  }
+
+  @Get('ips/:ip/history')
+  @RequirePermissions('monitoring.read')
+  @ApiZodQuery(ipHistoryQuerySchema)
+  history(@CurrentPrincipal() p: Principal, @Param('ip') ip: string, @Query(new ZodPipe(ipHistoryQuerySchema)) q: Infer<typeof ipHistoryQuerySchema>) {
+    return this.svc.history(p, ip, q);
+  }
+
+  @Get('exporters')
+  @StaffOnly()
+  @RequirePermissions('monitoring.read')
+  @ApiOperation({ summary: 'Routers sending flow records, with what the collector received from each.' })
+  exporters(@CurrentPrincipal() p: Principal) {
+    return this.svc.exporters(p);
+  }
+
+  @Post('exporters')
+  @StaffOnly()
+  @RequirePermissions('monitoring.configure')
+  @ApiZodBody(flowExporterSchema)
+  create(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(flowExporterSchema)) b: Infer<typeof flowExporterSchema>, @ReqMeta() m: RequestMeta) {
+    return this.svc.createExporter(p, b, m);
+  }
+
+  @Put('exporters/:id')
+  @StaffOnly()
+  @RequirePermissions('monitoring.configure')
+  @ApiZodBody(flowExporterSchema)
+  update(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(flowExporterSchema)) b: Infer<typeof flowExporterSchema>, @ReqMeta() m: RequestMeta) {
+    return this.svc.updateExporter(p, id, b, m);
+  }
+
+  @Delete('exporters/:id')
+  @StaffOnly()
+  @HttpCode(204)
+  @RequirePermissions('monitoring.configure')
+  async remove(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    await this.svc.deleteExporter(p, id, m);
   }
 }

@@ -221,6 +221,15 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 - **Install check.** `crapplet-dcim doctor` reports insecure settings (plain HTTP, listening on all addresses, API explorer on, Redis or PostgreSQL reachable from the network, no device allow-list), unreadable secrets, a broken audit chain, staff without MFA, missing backups, stopped services, wrong file permissions and firewall rules that block the web port.
 - **Self-review, not independent.** Phase 9 was reviewed by the same author who wrote it (findings fixed: running application code as root for backups and anchors, the HMAC key visible in the process list, a failed restore leaving no database, pruning that aborted the backup command). An independent review is still recommended before production use.
 
+## Flow collector (bandwidth per IP)
+
+* The worker listens on UDP 2055 (`CDCIM_FLOW_PORT`, `0` turns it off) for NetFlow v5/v9 and IPFIX. The listener is passive: nothing is ever sent to the routers.
+* Only packets whose source address is a registered, enabled exporter are read. Everything else is dropped; the last few unknown sources are shown to staff so a router's real source address can be registered.
+* UDP source addresses can be forged. Someone who can send packets that appear to come from a registered router could add false traffic figures (not read or change anything else). Restrict the port to your routers at the firewall where possible (`firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=ROUTER/32 port port=2055 protocol=udp accept'`), or keep flow export on a management network.
+* The decoder checks every length and rejects a malformed packet as a whole (fuzz-tested with random input). Templates are capped per collector and expire after 6 hours; per-IP counters in memory are capped at 500,000 entries per 10-second flush.
+* Only addresses inside your IPAM prefixes are stored. Internet addresses seen in flows are counted (as "not your addresses") but never written to the database.
+* Customers see only addresses assigned to them, directly or through a prefix assigned to them, and never the exporter configuration.
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.

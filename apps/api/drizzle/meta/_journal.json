@@ -155,6 +155,13 @@
       "when": 1792128543670,
       "tag": "0021_monitor_dashboard",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792131145844,
+      "tag": "0022_flow_collector",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ import { relativeTime } from '../lib/format';
 import { SKIP_LABELS, bps, pct, perSec, useMonitoringStream, withLive, LIVE_WINDOW_SECONDS, type LiveSample, type PortHistoryT, type PortRateT, type TotalsHistoryT, type TotalsT } from '../lib/monitoring';
 import { RateChart } from '../components/RateChart';
 import { InterfaceDashboard } from '../components/InterfaceDashboard';
+import { TopIps } from '../components/TopIps';
 import { Chip, EmptyState, ErrorNote, Input, Loading, PageHeader, Pagination, Panel, Select, Stat, Table, cx } from '../components/ui';
 
 const RANGE_LABELS: Record<RateRange, string> = { '1h': '1 hour', '6h': '6 hours', '24h': '24 hours', '7d': '7 days', '30d': '30 days' };
@@ -259,8 +260,19 @@ export function NetworkMonitoringPage() {
   const [page, setPage] = useState(1);
   const deviceId = params.get('device') ?? undefined;
   const selectedId = params.get('port');
-  const view = staff && params.get('view') === 'dashboard' ? 'dashboard' : 'ports';
-  const setView = (v: 'ports' | 'dashboard') => setParams(v === 'dashboard' ? { view: 'dashboard' } : {}, { replace: true });
+  const requested = params.get('view');
+  const view: 'ports' | 'dashboard' | 'ips' = requested === 'ips' ? 'ips' : staff && requested === 'dashboard' ? 'dashboard' : 'ports';
+  const setView = (v: 'ports' | 'dashboard' | 'ips') => setParams(v === 'ports' ? {} : { view: v }, { replace: true });
+  const tabs = staff
+    ? ([
+        ['ports', 'Ports'],
+        ['dashboard', 'Interface dashboard'],
+        ['ips', 'Bandwidth by IP'],
+      ] as const)
+    : ([
+        ['ports', 'Ports'],
+        ['ips', 'Bandwidth by IP'],
+      ] as const);
   useEffect(() => {
     const h = setTimeout(() => setDebounced(q), 250);
     return () => clearTimeout(h);
@@ -294,21 +306,23 @@ export function NetworkMonitoringPage() {
         }
         actions={<LiveBadge connected={stream.connected} feed={stream.feed} />}
       />
-      {staff && (
-        <div role="tablist" aria-label="Network monitoring views" className="mb-4 flex w-fit gap-1 rounded-xl border border-rule bg-sunken p-1">
-          {(
-            [
-              ['ports', 'Ports'],
-              ['dashboard', 'Interface dashboard'],
-            ] as const
-          ).map(([k, l]) => (
-            <button key={k} role="tab" aria-selected={view === k} onClick={() => setView(k)} className={cx('h-8 rounded-lg px-3.5 text-[13.5px]', view === k ? 'bg-panel font-semibold text-ink shadow-sm' : 'text-ink-2 hover:text-ink')}>
+      {
+        <div role="tablist" aria-label="Network monitoring views" className="mb-4 flex w-fit max-w-full gap-1 overflow-x-auto rounded-xl border border-rule bg-sunken p-1">
+          {tabs.map(([k, l]) => (
+            <button
+              key={k}
+              role="tab"
+              aria-selected={view === k}
+              onClick={() => setView(k)}
+              className={cx('h-8 shrink-0 rounded-lg px-3.5 text-[13.5px] whitespace-nowrap', view === k ? 'bg-panel font-semibold text-ink shadow-sm' : 'text-ink-2 hover:text-ink')}
+            >
               {l}
             </button>
           ))}
         </div>
-      )}
+      }
       {view === 'dashboard' && <InterfaceDashboard live={stream.live} fast={stream.fast} />}
+      {view === 'ips' && <TopIps />}
       {view === 'ports' && (
         <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
           {staff && !deviceId && <TotalsPanel />}

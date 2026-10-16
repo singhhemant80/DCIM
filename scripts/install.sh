@@ -271,6 +271,23 @@ setup_nginx() {
 }
 [ -n "$DOMAIN" ] && setup_nginx
 
+# Flow records (bandwidth per IP): let routers reach the collector's UDP port. Only routers
+# registered in NexoraDC are accepted; everything else is dropped by the collector.
+open_flow_port() {
+  local p="${CDCIM_FLOW_PORT:-}"
+  [ -z "$p" ] && [ -f "$ENV_FILE" ] && p="$(sed -n 's/^CDCIM_FLOW_PORT=//p' "$ENV_FILE" | tail -1)"
+  p="${p:-2055}"
+  [ "$p" = "0" ] && return 0
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    if firewall-cmd --permanent --query-port="$p/udp" >/dev/null 2>&1; then ok "Firewall (firewalld): UDP $p already open for flow records"
+    elif firewall-cmd --permanent --add-port="$p/udp" >/dev/null && firewall-cmd --reload >/dev/null; then ok "Firewall (firewalld): opened UDP $p for flow records from routers"
+    else warn "Could not open UDP $p in firewalld; open it for your routers to send flow records"; fi
+  elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    if ufw allow "$p/udp" >/dev/null; then ok "Firewall (ufw): UDP $p open for flow records from routers"; else warn "Could not open UDP $p in ufw"; fi
+  fi
+}
+open_flow_port
+
 # ---------------------------------------------------------------------------
 step "Configuring database and secrets"
 if [ "$UPGRADE" -eq 0 ]; then
@@ -312,6 +329,8 @@ LOG_LEVEL=info
 # CDCIM_BOOT_ALLOW=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 # Networks the worker may reach with stored device/BMC credentials (your management networks):
 # CDCIM_DEVICE_ALLOW=10.10.0.0/16
+# UDP port for flow records from routers (NetFlow/IPFIX, e.g. MikroTik Traffic Flow); 0 turns it off.
+# CDCIM_FLOW_PORT=2055
 $INSECURE
 EOF
   umask 022

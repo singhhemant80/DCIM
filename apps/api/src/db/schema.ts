@@ -1225,6 +1225,66 @@ export const notificationStatusEnum = pgEnum('notification_status', ['pending', 
 
 /** Polling configuration and health per device. */
 /**
+ * Routers that send flow records (NetFlow v5/v9, IPFIX — e.g. MikroTik Traffic
+ * Flow) to the worker's UDP collector. Packets from any other source address
+ * are dropped. The source address maps the flows to one organization.
+ */
+export const flowExporters = pgTable(
+  'flow_exporters',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    name: text('name').notNull(),
+    address: inet('address').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    /** 1-in-N packet sampling configured on the router, when it does not announce it. */
+    samplingRate: integer('sampling_rate').notNull().default(1),
+    lastPacketAt: ts('last_packet_at'),
+    lastVersion: smallint('last_version'),
+    packets: bigint('packets', { mode: 'number' }).notNull().default(0),
+    records: bigint('records', { mode: 'number' }).notNull().default(0),
+    /** Records where neither address is in IPAM (counted, not stored per IP). */
+    unmatchedRecords: bigint('unmatched_records', { mode: 'number' }).notNull().default(0),
+    badPackets: bigint('bad_packets', { mode: 'number' }).notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('flow_exporters_address_uq').on(t.address), check('flow_exporters_sampling_ck', sql`${t.samplingRate} between 1 and 1000000`)],
+);
+
+/** Bytes to (in = download) and from (out = upload) each of your IP addresses, per minute, from flow records. */
+export const ipTraffic1m = pgTable(
+  'ip_traffic_1m',
+  {
+    orgId: orgRef(),
+    bucket: ts('bucket').notNull(),
+    address: inet('address').notNull(),
+    inBytes: bigint('in_bytes', { mode: 'number' }).notNull().default(0),
+    outBytes: bigint('out_bytes', { mode: 'number' }).notNull().default(0),
+    inPackets: bigint('in_packets', { mode: 'number' }).notNull().default(0),
+    outPackets: bigint('out_packets', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.bucket, t.address] }), index('ip_traffic_1m_addr_idx').on(t.orgId, t.address, t.bucket)],
+);
+
+/** The same per hour, kept longer. */
+export const ipTraffic1h = pgTable(
+  'ip_traffic_1h',
+  {
+    orgId: orgRef(),
+    bucket: ts('bucket').notNull(),
+    address: inet('address').notNull(),
+    inBytes: bigint('in_bytes', { mode: 'number' }).notNull().default(0),
+    outBytes: bigint('out_bytes', { mode: 'number' }).notNull().default(0),
+    inPackets: bigint('in_packets', { mode: 'number' }).notNull().default(0),
+    outPackets: bigint('out_packets', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.bucket, t.address] }), index('ip_traffic_1h_addr_idx').on(t.orgId, t.address, t.bucket)],
+);
+
+/**
  * The interface dashboard on Network Monitoring: interfaces staff pinned to watch
  * side by side (shared by the organization, like a NOC wall board).
  */

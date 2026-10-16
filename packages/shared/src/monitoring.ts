@@ -209,3 +209,34 @@ export const dashboardAddSchema = z.object({ interfaceIds: z.array(z.string().uu
 /** The dashboard's interfaces in their new order. */
 export const dashboardOrderSchema = z.object({ interfaceIds: z.array(z.string().uuid()).max(48) });
 export const DASHBOARD_MAX_ITEMS = 48;
+
+/* ---------------------------------------------------- bandwidth per IP (flows) */
+
+/** A router that sends flow records (NetFlow v5/v9, IPFIX — e.g. MikroTik Traffic Flow) to the collector. */
+export const flowExporterSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  /** The address the router sends from (its source address towards this server). */
+  address: z.string().trim().ip(),
+  deviceId: z.string().uuid().nullable().optional(),
+  /** 1-in-N packet sampling configured on the router when it does not announce it (MikroTik: 1). */
+  samplingRate: z.number().int().min(1).max(1_000_000).default(1),
+  enabled: z.boolean().default(true),
+});
+export type FlowExporterInput = z.infer<typeof flowExporterSchema>;
+
+export const FLOW_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d'] as const;
+export type FlowRange = (typeof FLOW_RANGES)[number];
+export const FLOW_RANGE_LABELS: Record<FlowRange, string> = { '15m': 'Last 15 minutes', '1h': 'Last hour', '6h': 'Last 6 hours', '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' };
+
+export const topIpQuerySchema = z.object({
+  range: z.enum([...FLOW_RANGES, 'custom']).default('1h'),
+  ...dateRangeFields,
+  sort: z.enum(['download', 'upload', 'total']).default('download'),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  /** Part of an address, DNS name, device or customer name. */
+  q: z.string().trim().max(100).optional(),
+  /** Staff: one customer's addresses. */
+  customerId: z.string().uuid().optional(),
+});
+
+export const ipHistoryQuerySchema = z.object({ range: z.enum([...FLOW_RANGES, 'custom']).default('24h'), ...dateRangeFields });

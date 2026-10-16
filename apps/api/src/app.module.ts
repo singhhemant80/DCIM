@@ -43,7 +43,8 @@ import { IpamService } from './network/ipam.service';
 import { CredentialsService } from './network/credentials.service';
 import { DiscoveryService } from './network/discovery/discovery.service';
 import { DiscoveryQueue } from './network/discovery/queue';
-import { AlertsController, MonitoringController } from './monitoring/monitoring.controllers';
+import { AlertsController, FlowsController, MonitoringController } from './monitoring/monitoring.controllers';
+import { FlowsService } from './monitoring/flows.service';
 import { MonitoringService } from './monitoring/monitoring.service';
 import { AlertsService } from './monitoring/alerts.service';
 import { MonitoringStream } from './monitoring/stream.service';
@@ -123,6 +124,7 @@ export class AppModule {
         IpamController,
         DnsController,
         MonitoringController,
+        FlowsController,
         AlertsController,
         PowerController,
         ProvisioningController,
@@ -172,6 +174,7 @@ export class AppModule {
         DiscoveryService,
         DnsService,
         MonitoringService,
+        FlowsService,
         AlertsService,
         MonitoringStream,
         PowerService,

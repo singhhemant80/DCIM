@@ -12,6 +12,7 @@ import { formatBps } from '../lib/network';
 import type { AddressT, PrefixT } from './Ipam';
 import { CustomerEquipment } from './Hardware';
 import { CustomerForm } from './Customers';
+import { TopIps } from '../components/TopIps';
 import { Button, Chip, ErrorNote, Loading, Modal, PageHeader, Panel, Table } from '../components/ui';
 
 interface SummaryT {
@@ -204,6 +205,13 @@ export function CustomerDetailPage() {
               </Table>
             )}
           </Section>
+        )}
+
+        {can('monitoring.read') && (
+          <section>
+            <h2 className="mb-2 text-[14px] font-semibold">Bandwidth by IP address</h2>
+            <TopIps customerId={id} />
+          </section>
         )}
 
         {can('ipam.read') && (
