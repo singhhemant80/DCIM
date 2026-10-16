@@ -397,6 +397,14 @@ export class FlowsController {
     return this.svc.live(p, q);
   }
 
+  @Post('live/watch')
+  @HttpCode(200)
+  @RequirePermissions('monitoring.read')
+  @ApiOperation({ summary: 'Heartbeat while a live view is open: keeps the real-time (Torch) streams of the routers running.' })
+  watch(@CurrentPrincipal() p: Principal) {
+    return this.svc.watch(p);
+  }
+
   @Get('ips/:ip/history')
   @RequirePermissions('monitoring.read')
   @ApiZodQuery(ipHistoryQuerySchema)

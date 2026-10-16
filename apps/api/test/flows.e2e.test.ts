@@ -11,6 +11,10 @@ import { encodeTemplated, encodeV5, type SimFlow } from '../src/worker/flows/enc
 import { REDIS } from '../src/redis/redis';
 import { flowLiveKey } from '../src/health/worker-heartbeat';
 import type Redis from 'ioredis';
+import { SecretBox } from '../src/common/secret-box';
+import { createTorchLoop, torchRates } from '../src/worker/flows/torch';
+import { startRouterOsApi } from './simulators/routeros-api';
+import { BlockList } from 'node:net';
 
 let ctx: TestContext;
 let admin: Client;
@@ -189,5 +193,74 @@ describe('ranking from NetFlow v5, v9 and IPFIX', () => {
     expect((await admin.delete(`${F}/exporters/${ids.exp}`)).status).toBe(204);
     const audit = await ok(admin.get('/api/v1/audit?action=flow_exporter.delete'));
     expect(audit.items.length).toBe(1);
+  });
+});
+
+describe('real time (MikroTik Torch over the RouterOS API)', () => {
+  it('direction is relative to the watched interface', () => {
+    const own = new BlockList();
+    own.addSubnet('103.150.120.0', 24, 'ipv4');
+    const rows = [{ 'src-address': '8.8.8.8', 'dst-address': '103.150.120.10', rx: '9000', tx: '100' }];
+    expect(torchRates(rows, own, 'uplink').get('103.150.120.10')).toEqual([9000, 100]);
+    expect(torchRates(rows, own, 'downlink').get('103.150.120.10')).toEqual([100, 9000]);
+  });
+
+  it('streams per-second rates per address while someone watches, and stops when nobody does', async () => {
+    const ros = await startRouterOsApi('dcim-ro', 'api-pass-123', undefined, {
+      torch: {
+        everyMs: 200,
+        rows: [
+          { 'src-address': '142.250.183.14', 'dst-address': '103.150.120.10', tx: 2_000_000, rx: 95_000_000 },
+          { 'src-address': '103.150.120.17', 'dst-address': '1.1.1.1', tx: 40_000_000, rx: 1_000_000 },
+          { 'src-address': '8.8.8.8', 'dst-address': '9.9.9.9', tx: 5, rx: 5 },
+        ],
+      },
+    });
+    try {
+      const D = '/api/v1/dcim';
+      const mfr = (await ok(admin.post(`${D}/manufacturers`, { name: 'MikroTik' }))).id;
+      const model = (await ok(admin.post(`${D}/models`, { manufacturerId: mfr, name: 'CCR2004', category: 'router', uHeight: 1, fullDepth: false }))).id;
+      const rtr = (await ok(admin.post(`${D}/devices`, { modelId: model, assetTag: 'RTR-1', hostname: 'core-rtr', mgmtAddress: '127.0.0.1', initialState: 'inventory' }))).id;
+      await ok(admin.put(`/api/v1/network/devices/${rtr}/credentials`, { kind: 'routeros_api', host: '127.0.0.1', port: ros.port, username: 'dcim-ro', password: 'api-pass-123', tls: false }));
+      // An interface name with "=" could smuggle API words: refused.
+      expect((await admin.post(`${F}/exporters`, { name: 'x', address: '10.9.9.9', liveInterface: 'sfp1=x' })).status).toBe(400);
+      const ex = await ok(admin.post(`${F}/exporters`, { name: 'core-rtr', address: '127.0.0.2', deviceId: rtr, liveInterface: 'sfp-sfpplus1', liveDirection: 'uplink' }));
+      expect((await ok(admin.get(`${F}/exporters`))).exporters.find((e: { id: string }) => e.id === ex.id)).toMatchObject({ liveInterface: 'sfp-sfpplus1', liveReady: true });
+
+      const redis = ctx.app.get<Redis>(REDIS);
+      if (redis.status === 'wait') await redis.connect();
+      const tick = createTorchLoop({ db: ctx.db, secrets: ctx.app.get(SecretBox), redis, logger: silent });
+      // Nobody watching: no connection to the router.
+      expect(await tick()).toBe(0);
+      expect(ros.commands.some((c) => c[0] === '/tool/torch')).toBe(false);
+      expect((await acme.post(`${F}/live/watch`)).status).toBe(200);
+      await tick();
+      await new Promise((r) => setTimeout(r, 700));
+      await tick();
+      const torchCmd = ros.commands.find((c) => c[0] === '/tool/torch')!;
+      expect(torchCmd).toEqual(expect.arrayContaining(['=interface=sfp-sfpplus1', '=src-address=0.0.0.0/0', '=dst-address=0.0.0.0/0']));
+      // Nothing but login, torch and cancel is ever sent.
+      expect(ros.commands.every((c) => ['/login', '/tool/torch', '/cancel'].includes(c[0]!))).toBe(true);
+
+      const live = await ok(admin.get(`${F}/live?sort=download`));
+      expect(live).toMatchObject({ source: 'realtime', windowSeconds: 1 });
+      expect(live.routers[0]).toMatchObject({ name: 'core-rtr', ok: true });
+      expect(live.items.map((x: { ip: string }) => [x.ip, x.inBps, x.outBps])).toEqual([
+        ['103.150.120.10', 95_000_000, 2_000_000],
+        ['103.150.120.17', 1_000_000, 40_000_000],
+      ]);
+      // Customers: their own address only, and no router details.
+      const mine = await ok(acme.get(`${F}/live`));
+      expect(mine.items.map((x: { ip: string }) => x.ip)).toEqual(['103.150.120.10']);
+      expect(mine.routers).toEqual([]);
+
+      // Nobody watching any more: the stream is cancelled.
+      await redis.del('cdcim:flows:watch');
+      await tick();
+      await new Promise((r) => setTimeout(r, 200));
+      expect(ros.commands.some((c) => c[0] === '/cancel')).toBe(true);
+    } finally {
+      await ros.close();
+    }
   });
 });

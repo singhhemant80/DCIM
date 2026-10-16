@@ -49,6 +49,9 @@ interface ExporterT {
   deviceName: string | null;
   enabled: boolean;
   samplingRate: number;
+  liveInterface: string | null;
+  liveDirection: 'uplink' | 'downlink';
+  liveReady: boolean;
   lastPacketAt: string | null;
   lastVersion: number | null;
   packets: number;
@@ -103,6 +106,9 @@ interface IpRowT {
   customerName: string | null;
 }
 interface LiveT {
+  /** 'realtime': per-second rates from the routers (Torch); 'flows': the last minute of flow records. */
+  source: 'realtime' | 'flows';
+  routers: { id: string; name: string; interface: string; ok: boolean; error: string | null; lastAt: string | null }[];
   at: string | null;
   windowSeconds: number;
   totals: { addresses: number; inBps: number; outBps: number };
@@ -110,7 +116,7 @@ interface LiveT {
 }
 type LiveSampleT = { t: number; inBps: number; outBps: number };
 
-function IpHistory({ ip, range, samples, onClose }: { ip: IpRowT; range: PeriodValue<FlowRange>; samples?: LiveSampleT[]; onClose: () => void }) {
+function IpHistory({ ip, range, samples, realtime, onClose }: { ip: IpRowT; range: PeriodValue<FlowRange>; samples?: LiveSampleT[]; realtime?: boolean; onClose: () => void }) {
   const rq = rangeQuery(range);
   const h = useQuery({
     queryKey: ['flows', 'history', ip.ip, rq],
@@ -138,8 +144,8 @@ function IpHistory({ ip, range, samples, onClose }: { ip: IpRowT; range: PeriodV
       <dl className="mb-4 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
         {samples ? (
           <>
-            <Stat label="Download now" value={bps(live?.inBps ?? ip.inBps)} note="last minute, updates every 5 s" />
-            <Stat label="Upload now" value={bps(live?.outBps ?? ip.outBps)} note="last minute, updates every 5 s" />
+            <Stat label="Download now" value={bps(live?.inBps ?? ip.inBps)} note={realtime ? 'this second' : 'last minute, updates every 5 s'} />
+            <Stat label="Upload now" value={bps(live?.outBps ?? ip.outBps)} note={realtime ? 'this second' : 'last minute, updates every 5 s'} />
           </>
         ) : (
           <>
@@ -179,9 +185,15 @@ function IpHistory({ ip, range, samples, onClose }: { ip: IpRowT; range: PeriodV
           <div className="mb-1 flex items-center gap-2 text-[13px]">
             <span className="size-2 animate-pulse rounded-full bg-ok" aria-hidden />
             <span className="font-medium">Live</span>
-            <span className="text-ink-3">Rate over the last minute of flow records, a new point every 5 seconds while this page is open.</span>
+            <span className="text-ink-3">
+              {realtime ? 'Read from the router every second (MikroTik Torch) while this page is open; not stored.' : 'Rate over the last minute of flow records, a new point every 5 seconds while this page is open.'}
+            </span>
           </div>
-          {samples.length > 1 ? <RateChart label={`Live traffic of ${ip.ip}`} points={samples} stepSeconds={5} from={now - 10 * 60_000} to={now} /> : <p className="py-6 text-center text-[13px] text-ink-3">Collecting live points…</p>}
+          {samples.length > 1 ? (
+            <RateChart label={`Live traffic of ${ip.ip}`} points={samples} stepSeconds={realtime ? 1 : 5} from={now - (realtime ? 5 : 10) * 60_000} to={now} />
+          ) : (
+            <p className="py-6 text-center text-[13px] text-ink-3">Collecting live points…</p>
+          )}
         </div>
       )}
       <div className="mb-1 text-[13px] font-medium">History, {FLOW_RANGE_LABELS[range.period as FlowRange]?.toLowerCase() ?? 'chosen days'}</div>
@@ -209,10 +221,18 @@ function IpHistory({ ip, range, samples, onClose }: { ip: IpRowT; range: PeriodV
 function ExporterForm({ exporter, preset, onClose }: { exporter?: ExporterT; preset?: string; onClose: () => void }) {
   const qc = useQueryClient();
   const devices = useQuery({ queryKey: ['network', 'devices', 'picker', false], queryFn: () => api.get<NetworkDeviceT[]>('/network/devices') });
-  const [f, setF] = useState({ name: exporter?.name ?? '', address: exporter?.address ?? preset ?? '', deviceId: exporter?.deviceId ?? '', samplingRate: String(exporter?.samplingRate ?? 1), enabled: exporter?.enabled ?? true });
+  const [f, setF] = useState({
+    name: exporter?.name ?? '',
+    address: exporter?.address ?? preset ?? '',
+    deviceId: exporter?.deviceId ?? '',
+    samplingRate: String(exporter?.samplingRate ?? 1),
+    enabled: exporter?.enabled ?? true,
+    liveInterface: exporter?.liveInterface ?? '',
+    liveDirection: exporter?.liveDirection ?? 'uplink',
+  });
   const save = useMutation({
     mutationFn: () => {
-      const body = { name: f.name, address: f.address, deviceId: f.deviceId || null, samplingRate: Number(f.samplingRate) || 1, enabled: f.enabled };
+      const body = { name: f.name, address: f.address, deviceId: f.deviceId || null, samplingRate: Number(f.samplingRate) || 1, enabled: f.enabled, liveInterface: f.liveInterface.trim() || null, liveDirection: f.liveDirection };
       return exporter ? api.put(`/monitoring/flows/exporters/${exporter.id}`, body) : api.post('/monitoring/flows/exporters', body);
     },
     onSuccess: async () => {
@@ -247,6 +267,25 @@ function ExporterForm({ exporter, preset, onClose }: { exporter?: ExporterT; pre
       <Field label="Sampling (1 in N packets)" hint="1 for MikroTik Traffic Flow, which records every packet. Used when the router does not announce its sampling.">
         {(id, d) => <Input id={id} aria-describedby={d} type="number" min={1} max={1000000} value={f.samplingRate} onChange={(e) => setF({ ...f, samplingRate: e.target.value })} />}
       </Field>
+      <div className="grid gap-4 rounded-lg border border-rule p-3 sm:col-span-2 sm:grid-cols-2">
+        <p className="text-[13px] sm:col-span-2">
+          <span className="font-medium">Real time, every second (optional).</span>{' '}
+          <span className="text-ink-2">
+            NexoraDC reads MikroTik Torch on one interface while someone has the live view open (read-only). Needs the device above with a "MikroTik RouterOS API" credential (Network → device → Credentials).
+          </span>
+        </p>
+        <Field label="Interface to watch" hint="Usually the uplink towards your transit, e.g. sfp-sfpplus1 or a bonding interface.">
+          {(id, d) => <Input id={id} aria-describedby={d} value={f.liveInterface} onChange={(e) => setF({ ...f, liveInterface: e.target.value })} className="font-mono" placeholder="sfp-sfpplus1" />}
+        </Field>
+        <Field label="That interface faces">
+          {(id) => (
+            <Select id={id} value={f.liveDirection} onChange={(e) => setF({ ...f, liveDirection: e.target.value as 'uplink' | 'downlink' })}>
+              <option value="uplink">The internet (uplink): received = download</option>
+              <option value="downlink">Your customers: received = upload</option>
+            </Select>
+          )}
+        </Field>
+      </div>
       <label className="flex items-center gap-2 text-[13px] sm:col-span-2">
         <input type="checkbox" checked={f.enabled} onChange={(e) => setF({ ...f, enabled: e.target.checked })} /> Accept flows from this router
       </label>
@@ -341,6 +380,12 @@ function FlowSources() {
                     </span>
                   )}
                   {e.samplingRate > 1 && <span className="block text-[12px] text-ink-3">Sampling 1:{e.samplingRate}</span>}
+                  {e.liveInterface && (
+                    <span className={cx('block text-[12px]', e.liveReady ? 'text-ink-3' : 'text-warn')}>
+                      Real time: <span className="font-mono">{e.liveInterface}</span>
+                      {e.liveReady ? '' : ' (needs a RouterOS API credential on the linked device)'}
+                    </span>
+                  )}
                 </td>
                 <td className="text-right tabular-nums">{e.records.toLocaleString('en-IN')}</td>
                 <td className="text-right tabular-nums text-ink-3" title="Flows where neither address is in your IPAM prefixes (e.g. transit between two internet addresses)">
@@ -447,7 +492,8 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
     queryKey: ['flows', 'live', filters],
     queryFn: () => api.get<LiveT>(`/monitoring/flows/live${qs(filters)}`),
     enabled: mode === 'live',
-    refetchInterval: 5_000,
+    // Every second while the routers stream real-time rates; every 5 s for flow records.
+    refetchInterval: (q) => (q.state.data?.source === 'realtime' ? 1_000 : 5_000),
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
@@ -458,6 +504,14 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
     refetchInterval: 30_000,
     placeholderData: keepPreviousData,
   });
+  // While the live view is open, keep the routers' real-time streams (Torch) running.
+  useEffect(() => {
+    if (mode !== 'live') return;
+    const beat = () => void api.post('/monitoring/flows/live/watch').catch(() => undefined);
+    beat();
+    const h = setInterval(beat, 10_000);
+    return () => clearInterval(h);
+  }, [mode]);
   // Live points per address, kept in the browser for 10 minutes (one per refresh).
   const [samples, setSamples] = useState<Map<string, LiveSampleT[]>>(() => new Map());
   useEffect(() => {
@@ -482,6 +536,8 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
   const busy = isLive ? live : top;
   const at = live.data?.at;
   const fresh = !!at && Date.now() - new Date(at).getTime() < 30_000;
+  const realtime = live.data?.source === 'realtime';
+  const rtProblem = staff ? live.data?.routers.find((r) => !r.ok && r.error) : undefined;
   const t = top.data?.totals;
   const lt = live.data?.totals;
   return (
@@ -489,19 +545,31 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
       <Panel>
         {isLive ? (
           <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
-            <Stat label="Download now" value={lt && fresh ? bps(lt.inBps) : '—'} note="to your addresses, last minute" />
-            <Stat label="Upload now" value={lt && fresh ? bps(lt.outBps) : '—'} note="from your addresses, last minute" />
+            <Stat label="Download now" value={lt && fresh ? bps(lt.inBps) : '—'} note={realtime ? 'to your addresses, this second' : 'to your addresses, last minute'} />
+            <Stat label="Upload now" value={lt && fresh ? bps(lt.outBps) : '—'} note={realtime ? 'from your addresses, this second' : 'from your addresses, last minute'} />
             <Stat label="Active addresses" value={lt && fresh ? lt.addresses : '—'} />
             <Stat
               label="Live feed"
               value={
                 <span className="flex items-center gap-2 text-[18px]">
                   <span className={cx('size-2 rounded-full', fresh ? 'animate-pulse bg-ok' : 'bg-warn')} aria-hidden />
-                  {fresh ? 'Receiving' : at ? `Stale (${relativeTime(at)})` : 'No flows arriving'}
+                  {realtime ? 'Real time' : fresh ? 'Receiving' : at ? `Stale (${relativeTime(at)})` : 'No flows arriving'}
                 </span>
               }
               tone={fresh ? undefined : 'warn'}
-              note={fresh ? 'Updates every 5 seconds' : staff ? 'Check Flow sources below' : 'The datacenter has not turned on flow export yet'}
+              note={
+                realtime
+                  ? 'Every second, from the router'
+                  : rtProblem
+                    ? `Real time unavailable (${rtProblem.name}: ${rtProblem.error}); showing flow records, every 5 s`
+                    : fresh
+                      ? staff
+                        ? 'Every 5 s from flow records. For every second, set a real-time interface on the router below'
+                        : 'Updates every 5 seconds'
+                      : staff
+                        ? 'Check Flow sources below'
+                        : 'The datacenter has not turned on flow export yet'
+              }
             />
           </dl>
         ) : (
@@ -518,7 +586,9 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
           </dl>
         )}
       </Panel>
-      {selected && <IpHistory key={selected.ip} ip={selected} range={isLive ? { period: '1h', from: '', to: '' } : range} samples={isLive ? (samples.get(selected.ip) ?? []) : undefined} onClose={() => setOpen(null)} />}
+      {selected && (
+        <IpHistory key={selected.ip} ip={selected} range={isLive ? { period: '1h', from: '', to: '' } : range} samples={isLive ? (samples.get(selected.ip) ?? []) : undefined} realtime={isLive && realtime} onClose={() => setOpen(null)} />
+      )}
       <Panel
         flush
         title={staff ? 'Top IP addresses by bandwidth' : 'Your IP addresses by bandwidth'}
@@ -638,7 +708,9 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
         {items.length > 0 && (
           <p className="px-4 py-2.5 text-[12px] text-ink-3">
             {isLive
-              ? `Live: each address's rate over the last minute of flow records, refreshed every 5 seconds (updated ${at ? relativeTime(at) : '—'}). Routers report traffic about once a minute, so a change shows within a minute. `
+              ? realtime
+                ? "Real time: each address's rate this second, read from the router (MikroTik Torch) while this page is open. "
+                : `Live: each address's rate over the last minute of flow records, refreshed every 5 seconds (updated ${at ? relativeTime(at) : '—'}). Routers report traffic about once a minute, so a change shows within a minute. `
               : `${top.data && top.data.range.coveredFrom > top.data.range.from ? `Flow data in this period starts ${relativeTime(top.data.range.coveredFrom)}; averages cover only that part. ` : ''}Averages over the period. `}
             Measured from the routers' flow records (NetFlow/IPFIX). Download is traffic to the address, upload traffic from it. Click an address for its chart.
           </p>

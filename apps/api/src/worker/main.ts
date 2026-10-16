@@ -24,6 +24,7 @@ import { startConsoleRelay } from './console/relay';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { FLOW_COLLECTOR_STATUS_KEY, WORKER_HEARTBEAT_KEY, flowLiveKey } from '../health/worker-heartbeat';
 import { applyFlowRetention, startFlowCollector } from './flows/collector';
+import { createTorchLoop } from './flows/torch';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
 import { createJobLoop } from './provisioning/engine';
@@ -131,6 +132,8 @@ async function main() {
         await pub.set(FLOW_COLLECTOR_STATUS_KEY, JSON.stringify({ at: new Date().toISOString(), ...(flows?.status() ?? { listening: false, port: flowPort, error: 'Not started', unknownSources: [] }) }), 'EX', 90);
       }
     }),
+    // Real-time bandwidth per IP (MikroTik Torch), only while someone has the live view open.
+    every('flow-realtime', 1_000, createTorchLoop({ db, secrets, redis: pub, logger })),
     every('flow-retention', 3_600_000, async () => {
       const r = await applyFlowRetention(db);
       if (r.minute + r.hourly) logger.info(r, 'old per-IP traffic removed');

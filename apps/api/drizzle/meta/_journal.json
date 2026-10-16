@@ -162,6 +162,13 @@
       "when": 1792131145844,
       "tag": "0022_flow_collector",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792134777575,
+      "tag": "0023_flow_realtime",
+      "breakpoints": true
     }
   ]
 }

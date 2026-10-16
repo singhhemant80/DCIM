@@ -15,9 +15,14 @@ export interface MockApi {
   close: () => Promise<void>;
 }
 
-export async function startRouterOsApi(user: string, pass: string, fixture: Record<string, unknown> = ROUTEROS_FIXTURE): Promise<MockApi> {
+/**
+ * `torch`: rows the read-only Torch monitor streams (a new `.section` every `everyMs`),
+ * like `/tool/torch interface=… src-address=0.0.0.0/0 dst-address=0.0.0.0/0`.
+ */
+export async function startRouterOsApi(user: string, pass: string, fixture: Record<string, unknown> = ROUTEROS_FIXTURE, opts: { torch?: { rows: Record<string, unknown>[] | (() => Record<string, unknown>[]); everyMs?: number }; port?: number } = {}): Promise<MockApi> {
   const commands: string[][] = [];
   const sockets = new Set<net.Socket>();
+  const torchTimers = new Set<NodeJS.Timeout>();
   const server = net.createServer((sock) => {
     sockets.add(sock);
     sock.on('close', () => sockets.delete(sock));
@@ -43,6 +48,29 @@ export async function startRouterOsApi(user: string, pass: string, fixture: Reco
           sock.end();
           continue;
         }
+        if (s[0] === '/tool/torch') {
+          const tag = s.find((w) => w.startsWith('.tag='))?.slice(5) ?? '';
+          if (!opts.torch) {
+            send(['!trap', '=message=no such command', `.tag=${tag}`], ['!done', `.tag=${tag}`]);
+            continue;
+          }
+          let section = 0;
+          const timer = setInterval(() => {
+            if (sock.destroyed) return clearInterval(timer);
+            const rows = typeof opts.torch!.rows === 'function' ? opts.torch!.rows() : opts.torch!.rows;
+            send(...rows.map((r) => ['!re', ...Object.entries(r).map(([k, v]) => `=${k}=${String(v)}`), `=.section=${section}`, `.tag=${tag}`]));
+            section++;
+          }, opts.torch.everyMs ?? 1000);
+          torchTimers.add(timer);
+          sock.on('close', () => clearInterval(timer));
+          continue;
+        }
+        if (s[0] === '/cancel') {
+          torchTimers.forEach(clearInterval);
+          const tag = attrs.tag ?? '';
+          send(['!trap', '=category=2', '=message=interrupted', `.tag=${tag}`], ['!done', `.tag=${tag}`], ['!done']);
+          continue;
+        }
         const m = /^(\/.*)\/print$/.exec(s[0] ?? '');
         const data = m ? fixture[`/rest${m[1]}`] : undefined;
         if (!m || data === undefined) {
@@ -54,7 +82,7 @@ export async function startRouterOsApi(user: string, pass: string, fixture: Reco
       }
     });
   });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  await new Promise<void>((r) => server.listen(opts.port ?? 0, '127.0.0.1', r));
   return {
     port: (server.address() as AddressInfo).port,
     commands,

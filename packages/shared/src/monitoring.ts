@@ -221,6 +221,9 @@ export const flowExporterSchema = z.object({
   /** 1-in-N packet sampling configured on the router when it does not announce it (MikroTik: 1). */
   samplingRate: z.number().int().min(1).max(1_000_000).default(1),
   enabled: z.boolean().default(true),
+  /** Real-time per-IP rates every second (MikroTik Torch over the device's RouterOS API credential): the interface to watch, e.g. the uplink. */
+  liveInterface: z.string().trim().min(1).max(64).regex(/^[^\r\n\0=]+$/, 'Not a valid interface name').nullable().optional(),
+  liveDirection: z.enum(['uplink', 'downlink']).default('uplink'),
 });
 export type FlowExporterInput = z.infer<typeof flowExporterSchema>;
 

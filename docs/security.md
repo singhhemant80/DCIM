@@ -229,6 +229,7 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 * The decoder checks every length and rejects a malformed packet as a whole (fuzz-tested with random input). Templates are capped per collector and expire after 6 hours; per-IP counters in memory are capped at 500,000 entries per 10-second flush.
 * Only addresses inside your IPAM prefixes are stored. Internet addresses seen in flows are counted (as "not your addresses") but never written to the database.
 * Customers see only addresses assigned to them, directly or through a prefix assigned to them, and never the exporter configuration.
+* Real time per IP (optional, per router): while someone has the live view open (a heartbeat that lapses after 20 s), the worker streams MikroTik Torch on the configured interface over the device's stored RouterOS API credential. Torch is a read-only monitor; the API client can only send `/login`, `…/print`, `/tool/torch` and `/cancel`, and the interface name cannot contain API separators. Torch costs router CPU while it runs, so it stops as soon as nobody watches. The rates are kept in Redis for 5 seconds and never stored.
 
 ## Dependency advisories
 

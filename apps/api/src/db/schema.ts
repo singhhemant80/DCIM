@@ -1240,6 +1240,13 @@ export const flowExporters = pgTable(
     enabled: boolean('enabled').notNull().default(true),
     /** 1-in-N packet sampling configured on the router, when it does not announce it. */
     samplingRate: integer('sampling_rate').notNull().default(1),
+    /**
+     * Real-time per-IP rates: the router interface to watch with Torch (over the
+     * linked device's RouterOS API credential) while someone has the live view open.
+     */
+    liveInterface: text('live_interface'),
+    /** 'uplink' (towards the internet: received = download) or 'downlink' (towards customers). */
+    liveDirection: text('live_direction').notNull().default('uplink'),
     lastPacketAt: ts('last_packet_at'),
     lastVersion: smallint('last_version'),
     packets: bigint('packets', { mode: 'number' }).notNull().default(0),

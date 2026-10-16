@@ -8,7 +8,8 @@ import { str } from './http';
 /**
  * MikroTik RouterOS API (the binary protocol on the `api` / `api-ssl`
  * services, default ports 8728 / 8729). Read-only: the client refuses to send
- * anything other than /login and `…/print` commands.
+ * anything other than /login, `…/print` commands and the read-only Torch
+ * traffic monitor (`/tool/torch`, streamed, and `/cancel` to stop it).
  */
 type Row = Record<string, unknown>;
 
@@ -84,6 +85,7 @@ export class RouterOsApiClient {
   private failure: Error | null = null;
   private received = false;
   private port = 0;
+  private streamer: { onSentence: (s: string[]) => void; onEnd: (e: Error | null) => void } | null = null;
 
   constructor(private readonly t: AdapterTarget) {}
 
@@ -130,6 +132,9 @@ export class RouterOsApiClient {
     const w = this.waiting;
     this.waiting = null;
     w?.reject(this.failure);
+    const st = this.streamer;
+    this.streamer = null;
+    st?.onEnd(this.failure);
   }
 
   private onData(d: Buffer) {
@@ -144,6 +149,15 @@ export class RouterOsApiClient {
     const { sentences, rest } = decodeSentences(this.buf);
     this.buf = rest;
     for (const s of sentences) {
+      if (this.streamer) {
+        const st = this.streamer;
+        st.onSentence(s);
+        if (s[0] === '!done' || s[0] === '!fatal') {
+          this.streamer = null;
+          st.onEnd(s[0] === '!fatal' ? new RouterOsApiError(s.slice(1).join(' ') || 'fatal') : null);
+        }
+        continue;
+      }
       const w = this.waiting;
       if (!w) continue;
       w.acc.push(s);
@@ -203,6 +217,57 @@ export class RouterOsApiClient {
     const err = RouterOsApiClient.trap(r);
     if (err) throw new RouterOsApiError(`${path}: ${err}`);
     return r.filter((s) => s[0] === '!re').map(RouterOsApiClient.attrs);
+  }
+
+  /**
+   * Streams the read-only Torch traffic monitor: `onRows` gets each snapshot
+   * (one per second) as rows. Stop with the returned function. Only
+   * `/tool/torch` can be streamed.
+   */
+  torch(args: Record<string, string>, onRows: (rows: Row[]) => void, onEnd: (e: Error | null) => void): () => void {
+    if (this.failure) throw this.failure;
+    if (this.streamer || this.waiting) throw new RouterOsApiError('Another command is running on this connection');
+    for (const k of Object.keys(args)) if (!/^[a-z0-9-]+$/.test(k) || /[\r\n\0]/.test(args[k]!)) throw new RouterOsApiError(`Bad torch argument ${k}`);
+    let section: string | null = null;
+    let rows: Row[] = [];
+    // Each second the router sends the whole table again, numbered by `.section`; a new number ends the previous snapshot.
+    const flush = () => {
+      if (section !== null) onRows(rows);
+      rows = [];
+    };
+    const timer = setInterval(() => {
+      // A quiet interface sends nothing: still report an (empty) second.
+      if (section === null) onRows([]);
+    }, 1500);
+    this.streamer = {
+      onSentence: (s) => {
+        if (s[0] === '!trap') return onEnd(new RouterOsApiError(String(RouterOsApiClient.attrs(s).message ?? 'torch failed')));
+        if (s[0] !== '!re') return;
+        const row = RouterOsApiClient.attrs(s);
+        const sec = String(row['.section'] ?? '0');
+        if (sec !== section) {
+          flush();
+          section = sec;
+        }
+        rows.push(row);
+      },
+      onEnd: (e) => {
+        clearInterval(timer);
+        flush();
+        onEnd(e);
+      },
+    };
+    this.sock.write(encodeSentence(['/tool/torch', ...Object.entries(args).map(([k, v]) => `=${k}=${v}`), '.tag=torch']));
+    // The stream is open-ended: no per-reply timeout while it runs.
+    this.sock.setTimeout(0);
+    return () => {
+      clearInterval(timer);
+      try {
+        this.sock.write(encodeSentence(['/cancel', '=tag=torch']));
+      } catch {
+        /* closed */
+      }
+    };
   }
 
   close() {

@@ -12,6 +12,7 @@ import { dayRange } from '../common/date-range';
 import { rethrowConflict } from '../common/pg-errors';
 import { REDIS } from '../redis/redis';
 import { FLOW_COLLECTOR_STATUS_KEY, flowLiveKey } from '../health/worker-heartbeat';
+import { FLOW_WATCH_KEY, flowRealtimeKey, type RealtimeSnapshot } from '../worker/flows/torch';
 import { like, notFound, ownDevice } from '../network/common';
 
 const MINUTE_RANGES: Record<FlowRange, number> = { '15m': 900, '1h': 3600, '6h': 21_600, '24h': 86_400, '7d': 7 * 86_400, '30d': 30 * 86_400 };
@@ -34,7 +35,8 @@ export class FlowsService {
 
   async exporters(p: Principal) {
     const r = await this.db.execute<Record<string, unknown>>(sql`
-      select e.id, e.name, host(e.address) as address, e.device_id, coalesce(d.hostname, d.asset_tag) as device_name, e.enabled, e.sampling_rate,
+      select e.id, e.name, host(e.address) as address, e.device_id, coalesce(d.hostname, d.asset_tag) as device_name, e.enabled, e.sampling_rate, e.live_interface, e.live_direction,
+             exists (select 1 from device_credentials c where c.device_id = e.device_id and c.kind = 'routeros_api') as has_api,
              e.last_packet_at, e.last_version, e.packets, e.records, e.unmatched_records, e.bad_packets, e.last_error, e.created_at
         from flow_exporters e left join devices d on d.id = e.device_id
        where e.org_id = ${p.orgId} order by e.name`);
@@ -60,6 +62,10 @@ export class FlowsService {
         deviceName: x.device_name ?? null,
         enabled: x.enabled,
         samplingRate: x.sampling_rate,
+        liveInterface: (x.live_interface as string | null) ?? null,
+        liveDirection: x.live_direction as 'uplink' | 'downlink',
+        /** Real time needs a RouterOS API credential on the linked device. */
+        liveReady: !!x.live_interface && !!x.has_api,
         lastPacketAt: x.last_packet_at ?? null,
         lastVersion: x.last_version ?? null,
         packets: Number(x.packets),
@@ -77,7 +83,7 @@ export class FlowsService {
     try {
       const [e] = await this.db
         .insert(flowExporters)
-        .values({ orgId: p.orgId, name: i.name, address: i.address, deviceId: i.deviceId ?? null, samplingRate: i.samplingRate, enabled: i.enabled })
+        .values({ orgId: p.orgId, name: i.name, address: i.address, deviceId: i.deviceId ?? null, samplingRate: i.samplingRate, enabled: i.enabled, liveInterface: i.liveInterface ?? null, liveDirection: i.liveDirection })
         .returning({ id: flowExporters.id });
       await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'flow_exporter.create', target: { type: 'flow_exporter', id: e!.id }, outcome: 'success', meta, metadata: { name: i.name, address: i.address } });
       return e;
@@ -91,7 +97,7 @@ export class FlowsService {
     try {
       const r = await this.db
         .update(flowExporters)
-        .set({ name: i.name, address: i.address, deviceId: i.deviceId ?? null, samplingRate: i.samplingRate, enabled: i.enabled, updatedAt: new Date() })
+        .set({ name: i.name, address: i.address, deviceId: i.deviceId ?? null, samplingRate: i.samplingRate, enabled: i.enabled, liveInterface: i.liveInterface ?? null, liveDirection: i.liveDirection, updatedAt: new Date() })
         .where(and(eq(flowExporters.id, id), eq(flowExporters.orgId, p.orgId)))
         .returning({ id: flowExporters.id });
       if (!r.length) throw notFound('Exporter');
@@ -204,16 +210,34 @@ export class FlowsService {
    * Live: each address's rate over the last minute of flow records, as the
    * worker last published it (every 5 seconds). Null when nothing is arriving.
    */
-  async live(p: Principal, q: z.infer<typeof liveIpQuerySchema>) {
-    let snap: { at: string; windowSeconds: number; ips: { ip: string; inBps: number; outBps: number }[] } | null = null;
+  /** Keeps the real-time (Torch) streams running while a live view is open (heartbeat every ~10 s). */
+  async watch(p: Principal) {
     try {
       if (this.redis.status === 'wait') await this.redis.connect();
-      const raw = await this.redis.get(flowLiveKey(p.orgId));
+      await this.redis.zadd(FLOW_WATCH_KEY, Date.now() + 20_000, p.orgId);
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  async live(p: Principal, q: z.infer<typeof liveIpQuerySchema>) {
+    let snap: { at: string; windowSeconds: number; ips: { ip: string; inBps: number; outBps: number }[] } | null = null;
+    let realtime: RealtimeSnapshot | null = null;
+    try {
+      if (this.redis.status === 'wait') await this.redis.connect();
+      const [raw, rt] = await Promise.all([this.redis.get(flowLiveKey(p.orgId)), this.redis.get(flowRealtimeKey(p.orgId))]);
       snap = raw ? JSON.parse(raw) : null;
+      realtime = rt ? JSON.parse(rt) : null;
     } catch {
       snap = null;
     }
-    const empty = { at: snap?.at ?? null, windowSeconds: snap?.windowSeconds ?? 60, totals: { addresses: 0, inBps: 0, outBps: 0 }, items: [] as unknown[] };
+    // Per-second Torch rates win while any router streams them; otherwise the last minute of flow records.
+    const rtOk = !!realtime && realtime.routers.some((r) => r.ok) && Date.now() - new Date(realtime.at).getTime() < 4000;
+    const routers = p.userType === 'staff' ? (realtime?.routers ?? []) : [];
+    if (rtOk) snap = realtime;
+    const source = rtOk ? ('realtime' as const) : ('flows' as const);
+    const empty = { source, routers, at: snap?.at ?? null, windowSeconds: snap?.windowSeconds ?? 60, totals: { addresses: 0, inBps: 0, outBps: 0 }, items: [] as unknown[] };
     if (!snap || !snap.ips.length) return empty;
     const rates = new Map(snap.ips.map((x) => [x.ip, x]));
     const inner = sql`select v.address from (values ${sql.join(
@@ -246,6 +270,8 @@ export class FlowsService {
     const key = { download: (x: { inBps: number }) => x.inBps, upload: (x: { outBps: number }) => x.outBps, total: (x: { inBps: number; outBps: number }) => x.inBps + x.outBps }[q.sort];
     rows.sort((a, b) => key(b) - key(a) || a.ip.localeCompare(b.ip));
     return {
+      source,
+      routers,
       at: snap.at,
       windowSeconds: snap.windowSeconds,
       totals: { addresses: rows.length, inBps: rows.reduce((a, x) => a + x.inBps, 0), outBps: rows.reduce((a, x) => a + x.outBps, 0) },
