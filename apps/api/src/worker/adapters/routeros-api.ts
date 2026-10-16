@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import tls from 'node:tls';
-import type { Adapter, AdapterTarget, CounterSnapshot, PowerSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
-import { parseRouterOs, parseRouterOsCounters, parseRouterOsPower, routerosUptime } from './routeros';
+import type { Adapter, AdapterTarget, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import { parseRouterOs, parseRouterOsCounters, parseRouterOsHealth, parseRouterOsPower, routerosUptime } from './routeros';
 import { str } from './http';
 
 /**
@@ -302,6 +302,16 @@ export function routerOsApiAdapter(): Adapter {
           latencyMs: Date.now() - started,
           facts: { sysName: str(id?.name), osVersion: str(res?.version)?.split(' ')[0] ?? null, uptimeSeconds: routerosUptime(res?.uptime), vendor: 'MikroTik' },
         };
+      } finally {
+        c.close();
+      }
+    },
+    async health(t): Promise<HealthSnapshot> {
+      const c = await open(t);
+      try {
+        const [resource] = await c.print('/system/resource');
+        const health = await c.print('/system/health').catch(() => [] as Row[]);
+        return parseRouterOsHealth(resource ?? null, health);
       } finally {
         c.close();
       }

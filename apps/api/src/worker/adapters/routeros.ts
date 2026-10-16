@@ -1,5 +1,5 @@
 import type { InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, CounterSnapshot, PowerSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import type { Adapter, AdapterTarget, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
 import { DeviceHttpError, basicAuth, bool, counter, deviceRequest, int, normalizeMac, speed, str } from './http';
 
 /**
@@ -153,6 +153,53 @@ export function parseRouterOsPower(health: unknown): PowerSnapshot | null {
   return null;
 }
 
+const n = (v: unknown) => {
+  if (v === null || v === undefined || v === '') return null;
+  const x = Number(String(v).replace(/[^0-9.+-]/g, ''));
+  return Number.isFinite(x) ? x : null;
+};
+
+/**
+ * Health from /system/resource and /system/health. v7 lists sensors as
+ * {name, value, type}; v6 returns one object with a property per sensor.
+ */
+export function parseRouterOsHealth(resource: Row | null, health: unknown): HealthSnapshot {
+  const r = resource ?? {};
+  const total = n(r['total-memory']);
+  const free = n(r['free-memory']);
+  const hddTotal = n(r['total-hdd-space']);
+  const hddFree = n(r['free-hdd-space']);
+  const sensors: HealthSnapshot['sensors'] = [];
+  const rows = Array.isArray(health) ? (health as Row[]) : health && typeof health === 'object' ? Object.entries(health as Row).filter(([k]) => !k.startsWith('.')).map(([k, v]) => ({ name: k, value: v, type: null })) : [];
+  let temp: number | null = null;
+  let cpuTemp: number | null = null;
+  let volt: number | null = null;
+  for (const x of rows) {
+    const name = String(x.name ?? '');
+    const value = String(x.value ?? '');
+    if (!name) continue;
+    if (name === 'temperature' || name === 'board-temperature1' || name === 'sfp-temperature') temp ??= n(value);
+    else if (name === 'cpu-temperature') cpuTemp = n(value);
+    else if (name === 'voltage') volt = n(value);
+    else if (name !== 'power-consumption') sensors.push({ name, value, unit: str(x.type) });
+  }
+  return {
+    cpuPct: n(r['cpu-load']),
+    cpuCount: n(r['cpu-count']),
+    memoryTotalBytes: total,
+    memoryUsedBytes: total !== null && free !== null ? total - free : null,
+    diskTotalBytes: hddTotal,
+    diskUsedBytes: hddTotal !== null && hddFree !== null ? hddTotal - hddFree : null,
+    temperatureC: temp,
+    cpuTemperatureC: cpuTemp,
+    voltage: volt,
+    uptimeSeconds: routerosUptime(r.uptime),
+    version: str(r.version),
+    board: str(r['board-name']),
+    sensors,
+  };
+}
+
 export const ROUTEROS_COUNTER_PROPS = 'name,rx-byte,tx-byte,rx-packet,tx-packet,rx-error,tx-error,rx-drop,tx-drop,running';
 
 export function routerOsAdapter(): Adapter {
@@ -166,6 +213,12 @@ export function routerOsAdapter(): Adapter {
       const res = (await get(t, '/system/resource')) as Row;
       const id = (await get(t, '/system/identity').catch(() => null)) as Row | null;
       return { ok: true, message: `Connected: ${str(id?.name) ?? 'RouterOS'} — ${str(res['board-name']) ?? ''} RouterOS ${str(res.version) ?? '?'}`.trim(), latencyMs: Date.now() - started, facts: { sysName: str(id?.name), osVersion: str(res.version)?.split(' ')[0] ?? null, uptimeSeconds: routerosUptime(res.uptime), vendor: 'MikroTik' } };
+    },
+    async health(t): Promise<HealthSnapshot> {
+      const resource = (await get(t, '/system/resource')) as Row;
+      // Virtual routers (CHR) have no /system/health: that only means no sensors.
+      const health = await get(t, '/system/health').catch(() => null);
+      return parseRouterOsHealth(resource, health);
     },
     async power(t): Promise<PowerSnapshot> {
       const r = parseRouterOsPower(await get(t, '/system/health'));

@@ -169,6 +169,13 @@
       "when": 1792134777575,
       "tag": "0023_flow_realtime",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792138351715,
+      "tag": "0024_device_health",
+      "breakpoints": true
     }
   ]
 }

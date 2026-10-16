@@ -1,6 +1,6 @@
 import * as snmp from 'net-snmp';
 import { formatIp, type InterfaceKind } from '@crapplet/shared';
-import type { PowerSnapshot, Adapter, AdapterTarget, CounterReading, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, DeviceFacts, TestResult } from '../../network/discovery/types';
+import type { HealthSnapshot, PowerSnapshot, Adapter, AdapterTarget, CounterReading, CounterSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, DeviceFacts, TestResult } from '../../network/discovery/types';
 
 /**
  * Read-only SNMP collector (v2c and v3). Only GET and GETBULK are issued.
@@ -355,6 +355,68 @@ export function parseBgp(t: Table | null): DiscoveredBgpPeer[] {
 // Counters (monitoring)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Health (HOST-RESOURCES-MIB, plus MikroTik's own sensors when present)
+// ---------------------------------------------------------------------------
+
+export const HEALTH_OID = {
+  hrProcessorLoad: '1.3.6.1.2.1.25.3.3.1.2',
+  hrStorageEntry: '1.3.6.1.2.1.25.2.3.1',
+  hrStorageRam: '1.3.6.1.2.1.25.2.1.2',
+  hrStorageFixedDisk: '1.3.6.1.2.1.25.2.1.4',
+  // MIKROTIK-MIB: tenths of a degree / volt.
+  mtxrHlTemperature: '1.3.6.1.4.1.14988.1.1.3.10.0',
+  mtxrHlVoltage: '1.3.6.1.4.1.14988.1.1.3.8.0',
+  mtxrHlProcessorTemperature: '1.3.6.1.4.1.14988.1.1.3.11.0',
+};
+
+export function parseSnmpHealth(sys: Map<string, Value>, load: Table, storage: Table, mt: Map<string, Value>): HealthSnapshot {
+  const loads = [...(load.values().next().value?.values() ?? [])].map(num).filter((x): x is number => x !== null);
+  // hrStorage: type (2), allocation units (4), size (5), used (6), by index.
+  const types = storage.get(2) ?? new Map();
+  const unit = storage.get(4) ?? new Map();
+  const size = storage.get(5) ?? new Map();
+  const used = storage.get(6) ?? new Map();
+  const sum = (type: string) => {
+    let total = 0;
+    let usedB = 0;
+    let found = false;
+    for (const [idx, t] of types) {
+      if (String(t) !== type) continue;
+      const u = num(unit.get(idx)) ?? 1;
+      const sz = num(size.get(idx));
+      const us = num(used.get(idx));
+      if (sz === null || us === null) continue;
+      found = true;
+      total += sz * u;
+      usedB += us * u;
+    }
+    return found ? { total, used: usedB } : null;
+  };
+  const ram = sum(HEALTH_OID.hrStorageRam);
+  const disk = sum(HEALTH_OID.hrStorageFixedDisk);
+  const tenth = (v: Value | undefined) => {
+    const x = num(v);
+    return x === null ? null : x / 10;
+  };
+  const ticks = num(sys.get(OID.sysUpTime));
+  return {
+    cpuPct: loads.length ? loads.reduce((a, b) => a + b, 0) / loads.length : null,
+    cpuCount: loads.length || null,
+    memoryTotalBytes: ram?.total ?? null,
+    memoryUsedBytes: ram?.used ?? null,
+    diskTotalBytes: disk?.total ?? null,
+    diskUsedBytes: disk?.used ?? null,
+    temperatureC: tenth(mt.get(HEALTH_OID.mtxrHlTemperature)),
+    cpuTemperatureC: tenth(mt.get(HEALTH_OID.mtxrHlProcessorTemperature)),
+    voltage: tenth(mt.get(HEALTH_OID.mtxrHlVoltage)),
+    uptimeSeconds: ticks === null ? null : Math.floor(ticks / 100),
+    version: null,
+    board: null,
+    sensors: [],
+  };
+}
+
 /** Walks individual columns of a table (cheaper than whole rows when only a few columns are needed). */
 export async function walkColumns(tr: SnmpTransport, entry: string, cols: number[]): Promise<Table> {
   const out: Table = new Map();
@@ -472,6 +534,20 @@ export function snmpAdapter(kind: 'snmp_v2c' | 'snmp_v3', makeTransport = create
         const r = parseApcPower(outlets, device);
         if (!r) throw new Error('No supported power MIB found (APC PowerNet rPDU2 is supported for PDUs)');
         return r;
+      } finally {
+        tr.close();
+      }
+    },
+    async health(t: AdapterTarget): Promise<HealthSnapshot> {
+      const tr = makeTransport(t, kind);
+      try {
+        const sys = await tr.get([OID.sysUpTime]);
+        const load = await tr.walk(HEALTH_OID.hrProcessorLoad.split('.').slice(0, -1).join('.')).then((tb) => new Map([[2, tb.get(2) ?? new Map()]]) as Table);
+        const storage = await walkColumns(tr, HEALTH_OID.hrStorageEntry, [2, 4, 5, 6]);
+        const mt = await tr.get([HEALTH_OID.mtxrHlTemperature, HEALTH_OID.mtxrHlVoltage, HEALTH_OID.mtxrHlProcessorTemperature]).catch(() => new Map<string, Value>());
+        const h = parseSnmpHealth(sys, load, storage, mt);
+        if (h.cpuPct === null && h.memoryTotalBytes === null && h.temperatureC === null) throw new Error('No health data over SNMP (HOST-RESOURCES-MIB not available)');
+        return h;
       } finally {
         tr.close();
       }

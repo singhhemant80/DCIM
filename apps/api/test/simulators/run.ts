@@ -28,7 +28,7 @@ import { ROUTEROS_HEALTH, startRedfish } from './power-devices';
 import { startControlRedfish, startFileServer, startProxmox, startVirtualizor } from './provisioning-devices';
 
 void (async () => {
-  const agent = await startSnmpAgent(16161, undefined, { community: 'demo-public-ro', counters: 'hc' });
+  const agent = await startSnmpAgent(16161, undefined, { community: 'demo-public-ro', counters: 'hc', health: { cpu: [22, 41, 9, 30], ramKiB: [612_000, 1_048_576], tempTenths: 448, voltTenths: 241 } });
   const ros = await startRouterOs('dcim-ro', 'demo-pass', { ...ROUTEROS_FIXTURE, '/rest/system/health': ROUTEROS_HEALTH });
   const bmc = await startRedfish('root', 'demo-bmc-pass', { watts: 300, port: 18080 });
   const outletW = [180, 172, 95, 0, 240, 236, 60, 0];

@@ -82,5 +82,7 @@ export async function applyRetention(db: Db, now: Date = new Date()): Promise<{ 
   const fiveMinute = await del('interface_rates_5m', 'bucket', 'five_minute_days', 90);
   const hourly = await del('interface_rates_1h', 'bucket', 'hourly_days', 730);
   const notes = await db.execute(sql`delete from notifications where status <> 'pending' and created_at < ${n}::timestamptz - interval '30 days'`);
+  // Device health history (CPU, memory, temperature): 30 days.
+  await db.execute(sql`delete from device_health_samples where at < ${n}::timestamptz - interval '30 days'`);
   return { raw, fiveMinute, hourly, notifications: notes.rowCount ?? 0 };
 }

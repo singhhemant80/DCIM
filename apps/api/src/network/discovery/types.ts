@@ -122,6 +122,24 @@ export interface CounterSnapshot {
   interfaces: CounterReading[];
 }
 
+/** Device health from a read-only poll: load, memory, storage and sensors. Unknown values are null. */
+export interface HealthSnapshot {
+  cpuPct: number | null;
+  cpuCount: number | null;
+  memoryUsedBytes: number | null;
+  memoryTotalBytes: number | null;
+  diskUsedBytes: number | null;
+  diskTotalBytes: number | null;
+  temperatureC: number | null;
+  cpuTemperatureC: number | null;
+  voltage: number | null;
+  uptimeSeconds: number | null;
+  version: string | null;
+  board: string | null;
+  /** Other sensors as reported (fans, power supplies…). */
+  sensors: { name: string; value: string; unit: string | null }[];
+}
+
 /** One power reading of a device (measured), and for a PDU its outlets. */
 export interface PowerSnapshot {
   /** Measured input power of the device itself; null when it reports none (e.g. a PDU with outlet metering only). */
@@ -141,6 +159,8 @@ export interface Adapter {
   counters?(t: AdapterTarget): Promise<CounterSnapshot>;
   /** Read-only power collection (Phase 5). */
   power?(t: AdapterTarget): Promise<PowerSnapshot>;
+  /** Read-only device health (CPU, memory, storage, temperature…). */
+  health?(t: AdapterTarget): Promise<HealthSnapshot>;
   /** Read-only hardware inventory and event logs from a server's BMC. */
   hardware?(t: AdapterTarget): Promise<HardwareInventory>;
 }

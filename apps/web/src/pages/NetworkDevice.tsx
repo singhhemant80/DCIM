@@ -1,3 +1,4 @@
+import { DeviceHealthPanel } from '../components/DeviceHealth';
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
@@ -78,6 +79,7 @@ export function NetworkDevicePage() {
           <Kv k="OS (recorded)">{d.os ?? '—'}</Kv>
           <Kv k="Lifecycle">{d.lifecycleState}</Kv>
         </dl>
+        {can('monitoring.read') && <DeviceHealthPanel deviceId={d.id} />}
         {lastCollected && <Collected c={lastCollected} />}
         <PortsPanel device={d} list={ifaces} />
         <div className="grid gap-5 xl:grid-cols-2">

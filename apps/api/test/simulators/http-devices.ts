@@ -31,7 +31,7 @@ async function serve(handler: (req: http.IncomingMessage, body: string) => { sta
 // ----------------------------------------------------------------- RouterOS
 
 export const ROUTEROS_FIXTURE: Record<string, unknown> = {
-  '/rest/system/resource': { uptime: '2w3d04:05:06', version: '7.14.2 (stable)', 'board-name': 'CCR2004-1G-12S+2XS', 'cpu-load': '3' },
+  '/rest/system/resource': { uptime: '2w3d04:05:06', version: '7.14.2 (stable)', 'board-name': 'CCR2004-1G-12S+2XS', 'cpu-load': '3', 'cpu-count': '4', 'free-memory': '805306368', 'total-memory': '1073741824', 'free-hdd-space': '100663296', 'total-hdd-space': '134217728' },
   '/rest/system/identity': { name: 'edge-r1' },
   '/rest/system/routerboard': { model: 'CCR2004-1G-12S+2XS', 'serial-number': 'HD5087ABC12', routerboard: 'true' },
   '/rest/interface': [

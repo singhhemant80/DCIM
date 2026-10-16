@@ -36,6 +36,7 @@ type Infer<T extends z.ZodTypeAny> = z.infer<T>;
 const UUID = new ParseUUIDPipe();
 const totalsQuery = z.object({ datacenterId: z.string().uuid().optional(), range: z.enum([...RATE_RANGES, 'custom']).default('24h'), from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() });
 const deliveriesQuery = z.object({ channelId: z.string().uuid().optional() });
+const healthHistoryQuery = z.object({ range: z.enum(['24h', '7d', '30d']).default('24h') });
 
 /* ------------------------------------------------------------ monitoring */
 
@@ -69,6 +70,22 @@ export class MonitoringController {
       return { live: false, reason: 'The live feed is unavailable (Redis); the chart still updates with each poll' };
     }
     return { live: true, everySeconds: 1, until: new Date(Date.now() + LIVE_WATCH_TTL_MS).toISOString() };
+  }
+
+  @Get('health')
+  @StaffOnly()
+  @RequirePermissions('monitoring.read')
+  @ApiOperation({ summary: 'Polled devices with their latest health: CPU, memory, storage, temperature, voltage, uptime and version.' })
+  health(@CurrentPrincipal() p: Principal) {
+    return this.svc.health(p);
+  }
+
+  @Get('health/:deviceId/history')
+  @StaffOnly()
+  @RequirePermissions('monitoring.read')
+  @ApiZodQuery(healthHistoryQuery)
+  healthHistory(@CurrentPrincipal() p: Principal, @Param('deviceId', UUID) id: string, @Query(new ZodPipe(healthHistoryQuery)) q: Infer<typeof healthHistoryQuery>) {
+    return this.svc.healthHistory(p, id, q.range);
   }
 
   @Get('dashboard')

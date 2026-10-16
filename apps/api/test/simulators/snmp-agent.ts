@@ -90,7 +90,7 @@ const c64 = (v: bigint) => {
 };
 const c32 = (v: bigint) => Number(BigInt.asUintN(32, v));
 
-export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM, opts: { community?: string; v3User?: { name: string; authKey: string; privKey: string }; counters?: 'hc' | '32'; pdu?: SimPdu } = {}): Promise<RunningAgent> {
+export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM, opts: { community?: string; v3User?: { name: string; authKey: string; privKey: string }; counters?: 'hc' | '32'; pdu?: SimPdu; /** HOST-RESOURCES (CPU per core, RAM in KiB) and MikroTik sensors (tenths). */ health?: { cpu: number[]; ramKiB: [used: number, total: number]; tempTenths?: number; voltTenths?: number } } = {}): Promise<RunningAgent> {
   const agent = snmp.createAgent({ port, address: '127.0.0.1', disableAuthorization: false }, () => undefined);
   const auth = agent.getAuthorizer();
   if (opts.community) auth.addCommunity(opts.community);
@@ -125,6 +125,36 @@ export async function startSnmpAgent(port: number, sim: SimDevice = DEFAULT_SIM,
     });
     for (const r of rows) mib.addTableRow(name, r);
   };
+
+  if (opts.health) {
+    const h = opts.health;
+    table(
+      'hrProcessorTable',
+      '1.3.6.1.2.1.25.3.3.1',
+      [
+        { number: 2, name: 'hrProcessorLoad', type: T.Integer },
+        { number: 100, name: 'hrProcessorIndex', type: T.Integer, access: NA },
+      ],
+      ['hrProcessorIndex'],
+      h.cpu.map((load, i) => [load, i + 1]),
+    );
+    table(
+      'hrStorageTable',
+      '1.3.6.1.2.1.25.2.3.1',
+      [
+        { number: 1, name: 'hrStorageIndex', type: T.Integer },
+        { number: 2, name: 'hrStorageType', type: T.OID },
+        { number: 3, name: 'hrStorageDescr', type: T.OctetString },
+        { number: 4, name: 'hrStorageAllocationUnits', type: T.Integer },
+        { number: 5, name: 'hrStorageSize', type: T.Integer },
+        { number: 6, name: 'hrStorageUsed', type: T.Integer },
+      ],
+      ['hrStorageIndex'],
+      [[65536, '1.3.6.1.2.1.25.2.1.2', 'main memory', 1024, h.ramKiB[1], h.ramKiB[0]]],
+    );
+    if (h.tempTenths !== undefined) scalar('mtxrHlTemperature', '1.3.6.1.4.1.14988.1.1.3.10', T.Integer, h.tempTenths);
+    if (h.voltTenths !== undefined) scalar('mtxrHlVoltage', '1.3.6.1.4.1.14988.1.1.3.8', T.Integer, h.voltTenths);
+  }
 
   table(
     'ifTable',

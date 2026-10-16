@@ -158,7 +158,7 @@ beforeAll(async () => {
   noc = await Client.login(ctx.server, ctx.emails.noc);
   acme = await Client.login(ctx.server, ctx.emails.acmeAdmin);
   globex = await Client.login(ctx.server, ctx.emails.globexAdmin);
-  hc = await startSnmpAgent(HC_PORT, DEFAULT_SIM, { community: COMMUNITY, counters: 'hc' });
+  hc = await startSnmpAgent(HC_PORT, DEFAULT_SIM, { community: COMMUNITY, counters: 'hc', health: { cpu: [10, 30], ramKiB: [262_144, 1_048_576], tempTenths: 415, voltTenths: 241 } });
   c32 = await startSnmpAgent(C32_PORT, DEFAULT_SIM, { community: COMMUNITY, counters: '32' });
   tick(0);
   rosUptime();
@@ -257,6 +257,11 @@ describe('rates from a real SNMP agent (64-bit counters)', () => {
     expect(list.items.find((x: { name: string }) => x.name === 'sfp-sfpplus1').operUp).toBe(false);
   });
 
+  it('reads health over SNMP too (HOST-RESOURCES-MIB and MikroTik sensors)', async () => {
+    const r1 = (await ok(admin.get(`${M}/health`))).find((x: { deviceId: string }) => x.deviceId === ids.r1);
+    expect(r1).toMatchObject({ cpuPct: 20, cpuCount: 2, memoryPct: 25, memoryTotalBytes: 1073741824, temperatureC: 41.5, voltage: 24.1, healthError: null });
+  });
+
   it('treats a device restart as a counter reset: no spike, no negative rate', async () => {
     tick(60);
     hc.setUptime(3000); // rebooted 30 s ago
@@ -313,6 +318,18 @@ describe('RouterOS REST counters, LAG-aware totals and rollups', () => {
     expect(r.ports.find((p) => p.name === 'bond1')!.inBps).toBe(200_000_000);
     expect(rest.requests.every((q) => q.method === 'GET')).toBe(true);
     expect(rest.requests.some((q) => q.url.startsWith('/rest/interface?.proplist='))).toBe(true);
+  });
+
+  it('reads device health with the poll (CPU, memory, storage, version), staff only', async () => {
+    const list = await ok(admin.get(`${M}/health`));
+    const sw = list.find((x: { deviceId: string }) => x.deviceId === ids.sw);
+    expect(sw).toMatchObject({ cpuPct: 3, cpuCount: 4, memoryTotalBytes: 1073741824, memoryUsedBytes: 268435456, memoryPct: 25, diskPct: 25, version: '7.14.2 (stable)', board: 'CCR2004-1G-12S+2XS', healthError: null });
+    expect(sw.uptimeSeconds).toBeGreaterThan(1_000_000);
+    const hist = await ok(admin.get(`${M}/health/${ids.sw}/history?range=24h`));
+    expect(hist.points.length).toBeGreaterThanOrEqual(1);
+    expect(hist.points[0]).toMatchObject({ cpuPct: 3, memoryPct: 25 });
+    expect((await acme.get(`${M}/health`)).status).toBe(403);
+    expect((await acme.get(`${M}/health/${ids.sw}/history`)).status).toBe(403);
   });
 
   it('counts a LAG once, not the LAG plus its members', async () => {

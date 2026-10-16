@@ -1224,6 +1224,47 @@ export const channelKindEnum = pgEnum('channel_kind', ['email', 'webhook', 'slac
 export const notificationStatusEnum = pgEnum('notification_status', ['pending', 'sent', 'failed']);
 
 /** Polling configuration and health per device. */
+/** Latest health of a polled device (CPU, memory, storage, sensors), read with its monitoring credential. */
+export const deviceHealth = pgTable('device_health', {
+  deviceId: uuid('device_id')
+    .primaryKey()
+    .references(() => devices.id, { onDelete: 'cascade' }),
+  orgId: orgRef(),
+  at: ts('at'),
+  cpuPct: real('cpu_pct'),
+  cpuCount: integer('cpu_count'),
+  memoryUsedBytes: bigint('memory_used_bytes', { mode: 'number' }),
+  memoryTotalBytes: bigint('memory_total_bytes', { mode: 'number' }),
+  diskUsedBytes: bigint('disk_used_bytes', { mode: 'number' }),
+  diskTotalBytes: bigint('disk_total_bytes', { mode: 'number' }),
+  temperatureC: real('temperature_c'),
+  cpuTemperatureC: real('cpu_temperature_c'),
+  voltage: real('voltage'),
+  uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
+  version: text('version'),
+  board: text('board'),
+  sensors: jsonb('sensors').$type<{ name: string; value: string; unit: string | null }[]>().notNull().default(sql`'[]'::jsonb`),
+  /** Why the last health read failed (the counters poll itself may still be fine). */
+  lastError: text('last_error'),
+  lastAttemptAt: ts('last_attempt_at'),
+});
+
+/** Health over time, one row per read (about once a minute), kept 30 days. */
+export const deviceHealthSamples = pgTable(
+  'device_health_samples',
+  {
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    orgId: orgRef(),
+    at: ts('at').notNull(),
+    cpuPct: real('cpu_pct'),
+    memoryPct: real('memory_pct'),
+    temperatureC: real('temperature_c'),
+  },
+  (t) => [primaryKey({ columns: [t.deviceId, t.at] })],
+);
+
 /**
  * Routers that send flow records (NetFlow v5/v9, IPFIX — e.g. MikroTik Traffic
  * Flow) to the worker's UDP collector. Packets from any other source address

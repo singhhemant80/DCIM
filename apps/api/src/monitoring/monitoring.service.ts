@@ -108,6 +108,67 @@ export class MonitoringService {
        where i.monitored and ${MonitoringService.visible(p)} and ${where}`;
   }
 
+  /* ------------------------------------------------------------ device health */
+
+  /** Polled devices with their latest health (CPU, memory, storage, sensors). Staff only. */
+  async health(p: Principal) {
+    const r = await this.db.execute<Record<string, unknown>>(sql`
+      select d.id as device_id, coalesce(d.hostname, d.asset_tag) as device_name, d.category, d.platform, m.enabled as polling, m.last_ok_at, m.last_error as poll_error,
+             h.at, h.cpu_pct, h.cpu_count, h.memory_used_bytes, h.memory_total_bytes, h.disk_used_bytes, h.disk_total_bytes, h.temperature_c, h.cpu_temperature_c,
+             h.voltage, h.uptime_seconds, h.version, h.board, h.sensors, h.last_error as health_error, h.last_attempt_at
+        from device_monitoring m join devices d on d.id = m.device_id
+        left join device_health h on h.device_id = m.device_id
+       where m.org_id = ${p.orgId}
+       order by coalesce(h.cpu_pct, -1) desc, device_name`);
+    const pct = (u: unknown, t: unknown) => (u !== null && t ? (Number(u) / Number(t)) * 100 : null);
+    return r.rows.map((x) => ({
+      deviceId: x.device_id as string,
+      deviceName: x.device_name as string,
+      category: x.category as string,
+      platform: (x.platform as string | null) ?? null,
+      polling: !!x.polling,
+      pollError: (x.poll_error as string | null) ?? null,
+      at: (x.at as string | null) ?? null,
+      // Older than 5 minutes: shown as stale rather than as current.
+      fresh: !!x.at && Date.now() - new Date(x.at as string).getTime() < 5 * 60_000,
+      cpuPct: x.cpu_pct === null ? null : Number(x.cpu_pct),
+      cpuCount: (x.cpu_count as number | null) ?? null,
+      memoryUsedBytes: x.memory_used_bytes === null ? null : Number(x.memory_used_bytes),
+      memoryTotalBytes: x.memory_total_bytes === null ? null : Number(x.memory_total_bytes),
+      memoryPct: pct(x.memory_used_bytes, x.memory_total_bytes),
+      diskUsedBytes: x.disk_used_bytes === null ? null : Number(x.disk_used_bytes),
+      diskTotalBytes: x.disk_total_bytes === null ? null : Number(x.disk_total_bytes),
+      diskPct: pct(x.disk_used_bytes, x.disk_total_bytes),
+      temperatureC: x.temperature_c === null ? null : Number(x.temperature_c),
+      cpuTemperatureC: x.cpu_temperature_c === null ? null : Number(x.cpu_temperature_c),
+      voltage: x.voltage === null ? null : Number(x.voltage),
+      uptimeSeconds: x.uptime_seconds === null ? null : Number(x.uptime_seconds),
+      version: (x.version as string | null) ?? null,
+      board: (x.board as string | null) ?? null,
+      sensors: (x.sensors as { name: string; value: string; unit: string | null }[] | null) ?? [],
+      healthError: (x.health_error as string | null) ?? null,
+    }));
+  }
+
+  /** CPU, memory and temperature over time: every reading for 24 h, hourly averages for longer. */
+  async healthHistory(p: Principal, deviceId: string, range: '24h' | '7d' | '30d') {
+    await ownDevice(this.db, p, deviceId);
+    const hours = { '24h': 24, '7d': 168, '30d': 720 }[range];
+    const rows =
+      range === '24h'
+        ? await this.db.execute<{ t: string; cpu: number | null; mem: number | null; temp: number | null }>(sql`
+            select at as t, cpu_pct as cpu, memory_pct as mem, temperature_c as temp from device_health_samples
+             where device_id = ${deviceId} and org_id = ${p.orgId} and at > now() - make_interval(hours => ${hours}) order by at`)
+        : await this.db.execute<{ t: string; cpu: number | null; mem: number | null; temp: number | null }>(sql`
+            select date_trunc('hour', at) as t, avg(cpu_pct) as cpu, avg(memory_pct) as mem, avg(temperature_c) as temp from device_health_samples
+             where device_id = ${deviceId} and org_id = ${p.orgId} and at > now() - make_interval(hours => ${hours}) group by 1 order by 1`);
+    return {
+      range,
+      stepSeconds: range === '24h' ? 60 : 3600,
+      points: rows.rows.map((x) => ({ t: new Date(x.t).toISOString(), cpuPct: x.cpu === null ? null : Number(x.cpu), memoryPct: x.mem === null ? null : Number(x.mem), temperatureC: x.temp === null ? null : Number(x.temp) })),
+    };
+  }
+
   /* ------------------------------------------------------------ dashboard */
 
   /**

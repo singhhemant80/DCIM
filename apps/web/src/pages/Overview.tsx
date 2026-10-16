@@ -18,6 +18,7 @@ import { formatKwh, formatWattsShort } from '@crapplet/shared';
 import type { EnergyT, PowerNowT } from '../lib/power';
 import type { AllocationT, OverviewT as ColoOverviewT, TicketT } from '../lib/colocation';
 import type { PrefixT } from './Ipam';
+import { HealthOverviewPanel, strained, type HealthT } from '../components/DeviceHealth';
 
 interface DcimSummary {
   counts: { datacenters: number; rooms: number; racks: number; devices: number; unracked: number };
@@ -451,6 +452,8 @@ function AttentionPanel({ o }: { o: Overview }) {
   const bw = useQuery({ queryKey: ['overview', 'bandwidth'], queryFn: () => api.get<{ alerts: AlertSummaryT } | null>('/overview/bandwidth'), enabled: can('monitoring.read'), refetchInterval: 30_000 });
   const colo = useQuery({ queryKey: ['colo', 'overview'], queryFn: () => api.get<ColoOverviewT>('/colocation/overview'), enabled: can('services.read'), refetchInterval: 60_000 });
   const power = useQuery({ queryKey: ['overview', 'power'], queryFn: () => api.get<{ now: PowerNowT } | null>('/overview/power'), enabled: can('power.read'), refetchInterval: 60_000 });
+  const health = useQuery({ queryKey: ['monitoring', 'health'], queryFn: () => api.get<HealthT[]>('/monitoring/health'), enabled: can('monitoring.read'), refetchInterval: 30_000 });
+  const hot = (health.data ?? []).filter(strained);
   const integrity = useQuery({
     queryKey: ['audit-integrity'],
     queryFn: () => api.get<{ ok: boolean; checked: number; brokenAtId: number | null } | null>('/overview/audit-integrity'),
@@ -467,6 +470,7 @@ function AttentionPanel({ o }: { o: Overview }) {
     { label: 'Racks over contracted power', n: c?.overContract.length, to: '/colocation', tone: 'crit', note: c?.mayExceed.length ? `${c.mayExceed.length} may exceed` : undefined },
     { label: 'Warranties expired', n: d?.warranty.expired, to: '/hardware?warranty=0', tone: 'crit', note: d?.warranty.within90Days ? `${d.warranty.within90Days} more within 90 days` : undefined },
     { label: 'Spare parts at reorder level', n: d?.sparePartsLow, to: '/hardware?tab=spares', tone: 'warn' },
+    { label: 'Network devices under strain', n: health.data ? hot.length : undefined, to: hot[0] ? `/network/devices/${hot[0].deviceId}` : '/', tone: 'crit', note: hot.length ? hot.slice(0, 3).map((h) => h.deviceName).join(', ') + ' (CPU or memory ≥ 90 %, or ≥ 85 °C)' : undefined },
     { label: 'Devices without a power figure', n: power.data?.now.unknownDevices, to: '/power?tab=collection', tone: 'warn' },
     { label: 'Staff without two-step sign-in', n: o.users?.staffWithoutMfa, to: '/users', tone: 'warn' },
   ];
@@ -545,6 +549,7 @@ function StaffOverview() {
           {/* Two columns that end level: the last panel of each takes up any difference. */}
           <div className="flex flex-col gap-5 xl:col-span-8 [&>*:last-child]:flex-1">
             {can('monitoring.read') && <BandwidthPanel />}
+            {can('monitoring.read') && <HealthOverviewPanel />}
             {can('dcim.read') && <PhysicalPanel />}
           </div>
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 xl:col-span-4 xl:flex xl:flex-col [&>*:last-child]:flex-1">

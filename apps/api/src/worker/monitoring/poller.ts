@@ -1,9 +1,9 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 import type { Db } from '../../db/db';
-import { deviceCredentials, deviceMonitoring, interfaceCounters, interfaceRates, interfaces, type DeviceMonitoring, type InterfaceCounter } from '../../db/schema';
+import { deviceCredentials, deviceHealth, deviceHealthSamples, deviceMonitoring, interfaceCounters, interfaceRates, interfaces, type DeviceMonitoring, type InterfaceCounter } from '../../db/schema';
 import type { SecretBox } from '../../common/secret-box';
-import { credentialContext, type Adapter, type AdapterTarget, type CounterReading } from '../../network/discovery/types';
+import { credentialContext, type Adapter, type AdapterTarget, type CounterReading, type HealthSnapshot } from '../../network/discovery/types';
 import { computeRate, type CounterSample, type RateResult } from '../../monitoring/rate-engine';
 import { defaultAdapters, redact } from '../processor';
 import type { CredentialKind } from '@crapplet/shared';
@@ -186,7 +186,10 @@ export async function pollDevice(deps: PollerDeps, m: DeviceMonitoring): Promise
     }
     // The poll time is when the answer arrived (our clock, not the device's).
     const at = deps.now?.() ?? new Date();
-    return await store(deps, m, snapshot.uptimeSeconds, snapshot.interfaces, at, Date.now() - started);
+    const outcome = await store(deps, m, snapshot.uptimeSeconds, snapshot.interfaces, at, Date.now() - started);
+    // Device health (CPU, memory, sensors) rides along at most once a minute; a failure there never fails the poll.
+    if (adapter.health) await collectHealth(deps, m, adapter, target, secret);
+    return outcome;
   } catch (e) {
     return await fail(redact((e as Error)?.message || 'Unknown error', secret));
   } finally {
@@ -306,4 +309,56 @@ async function store(deps: PollerDeps, m: DeviceMonitoring, uptimeSeconds: numbe
       .where(eq(deviceMonitoring.deviceId, m.deviceId));
     return { orgId: m.orgId, deviceId: m.deviceId, ok: true, at, consecutiveFailures: 0, ports: updates, unmatched, intervalSeconds: m.intervalSeconds };
   });
+}
+
+/** Reads and stores device health when due (at most once a minute, or once per poll interval if longer). */
+export async function collectHealth(deps: PollerDeps, m: DeviceMonitoring, adapter: Adapter, target: AdapterTarget, secret: Record<string, unknown>) {
+  const { db } = deps;
+  const now = deps.now?.() ?? new Date();
+  try {
+    const [h] = await db.select({ last: deviceHealth.lastAttemptAt }).from(deviceHealth).where(eq(deviceHealth.deviceId, m.deviceId));
+    if (h?.last && now.getTime() - h.last.getTime() < Math.max(60, m.intervalSeconds) * 1000 - 2000) return;
+    let timer: NodeJS.Timeout | undefined;
+    let snap: HealthSnapshot;
+    try {
+      snap = await Promise.race([adapter.health!(target), new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error('No health answer within 10 s')), 10_000)))]);
+    } catch (e) {
+      const err = redact((e as Error)?.message || 'Unknown error', secret).slice(0, 300);
+      await db
+        .insert(deviceHealth)
+        .values({ deviceId: m.deviceId, orgId: m.orgId, lastError: err, lastAttemptAt: now })
+        .onConflictDoUpdate({ target: deviceHealth.deviceId, set: { lastError: err, lastAttemptAt: now } });
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
+    const clamp = (v: number | null, lo: number, hi: number) => (v === null || !Number.isFinite(v) || v < lo || v > hi ? null : v);
+    const cpu = clamp(snap.cpuPct, 0, 100);
+    const memPct = snap.memoryTotalBytes && snap.memoryUsedBytes !== null ? clamp((snap.memoryUsedBytes / snap.memoryTotalBytes) * 100, 0, 100) : null;
+    const temp = clamp(snap.temperatureC, -40, 150);
+    const row = {
+      at: now,
+      cpuPct: cpu,
+      cpuCount: snap.cpuCount,
+      memoryUsedBytes: snap.memoryUsedBytes,
+      memoryTotalBytes: snap.memoryTotalBytes,
+      diskUsedBytes: snap.diskUsedBytes,
+      diskTotalBytes: snap.diskTotalBytes,
+      temperatureC: temp,
+      cpuTemperatureC: clamp(snap.cpuTemperatureC, -40, 150),
+      voltage: clamp(snap.voltage, 0, 1000),
+      uptimeSeconds: snap.uptimeSeconds,
+      version: snap.version?.slice(0, 100) ?? null,
+      board: snap.board?.slice(0, 100) ?? null,
+      sensors: snap.sensors.slice(0, 50).map((x) => ({ name: x.name.slice(0, 60), value: x.value.slice(0, 60), unit: x.unit?.slice(0, 10) ?? null })),
+      lastError: null,
+      lastAttemptAt: now,
+    };
+    await db.transaction(async (tx) => {
+      await tx.insert(deviceHealth).values({ deviceId: m.deviceId, orgId: m.orgId, ...row }).onConflictDoUpdate({ target: deviceHealth.deviceId, set: row });
+      await tx.insert(deviceHealthSamples).values({ deviceId: m.deviceId, orgId: m.orgId, at: now, cpuPct: cpu, memoryPct: memPct, temperatureC: temp }).onConflictDoNothing();
+    });
+  } catch (e) {
+    deps.logger.warn({ deviceId: m.deviceId, err: (e as Error).message }, 'health read failed');
+  }
 }
