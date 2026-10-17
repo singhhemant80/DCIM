@@ -4,7 +4,7 @@ import { collectRedfishInventory } from './redfish-inventory';
 import { dellInventoryViaWsman, dellMemoryViaWsman, dellPowerViaWsman, dellSystemFromView, wsmanEnumerate } from './dell-wsman';
 
 /**
- * DMTF Redfish (Dell iDRAC 8/9, HPE iLO 5/6, Lenovo XClarity, Supermicro…).
+ * DMTF Redfish (Dell iDRAC 8/9, HPE iLO 4/5/6, Fujitsu iRMC S4/S5/S6, Lenovo XClarity, Supermicro…).
  * Read-only: only GET requests, and only to paths under /redfish/v1 on the
  * host stored with the credential. Power comes from the chassis
  * `Power.PowerControl[].PowerConsumedWatts` (all current BMCs) or, on newer
@@ -33,8 +33,8 @@ export function parseRedfishPower(doc: Row | null): number | null {
   return null;
 }
 
-/** Where common BMCs put their (single) system: Dell iDRAC, HPE iLO / Supermicro / Lenovo XClarity, AMI-based BMCs. */
-export const KNOWN_SYSTEM_PATHS = ['/redfish/v1/Systems/System.Embedded.1', '/redfish/v1/Systems/1', '/redfish/v1/Systems/Self', '/redfish/v1/Systems/system'];
+/** Where common BMCs put their (single) system: Dell iDRAC, HPE iLO / Supermicro / Lenovo XClarity, Fujitsu iRMC, AMI-based BMCs. */
+export const KNOWN_SYSTEM_PATHS = ['/redfish/v1/Systems/System.Embedded.1', '/redfish/v1/Systems/1', '/redfish/v1/Systems/0', '/redfish/v1/Systems/Self', '/redfish/v1/Systems/system'];
 
 const isAuth = (e: unknown) => e instanceof DeviceHttpError && (e.status === 401 || e.status === 403);
 
@@ -218,7 +218,7 @@ export function redfishAdapter(): Adapter {
         listErr = e;
       }
       // Older firmware: an empty or failing chassis list while the chassis itself answers.
-      if (!chassis.length) chassis = ['/redfish/v1/Chassis/System.Embedded.1', '/redfish/v1/Chassis/1', '/redfish/v1/Chassis/Self'];
+      if (!chassis.length) chassis = ['/redfish/v1/Chassis/System.Embedded.1', '/redfish/v1/Chassis/1', '/redfish/v1/Chassis/0', '/redfish/v1/Chassis/Self'];
       const listed = !listErr && chassis[0] !== '/redfish/v1/Chassis/System.Embedded.1';
       const tried: string[] = [];
       for (const c of chassis) {

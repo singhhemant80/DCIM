@@ -96,7 +96,7 @@ export function BmcHardwarePanel({ deviceId, canWrite, staff }: { deviceId: stri
   if (h.status === 'not_configured')
     return staff ? (
       <Panel title="Hardware from the BMC">
-        <p className="text-[13px] text-ink-2">Add a Redfish credential (iDRAC, iLO, XClarity) under Ports & network → Read-only access, and NexoraDC reads the CPUs, memory, drives, power supplies, fans, temperatures, network ports, firmware and event log automatically, then once a day.</p>
+        <p className="text-[13px] text-ink-2">Add a Redfish credential (iDRAC, iLO, iRMC, XClarity) under Ports & network → Read-only access, and NexoraDC reads the CPUs, memory, drives, power supplies, fans, temperatures, network ports, firmware and event log automatically, then once a day.</p>
       </Panel>
     ) : null;
   const inv = h.inventory;

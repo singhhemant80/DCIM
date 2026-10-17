@@ -125,7 +125,7 @@ export class HardwareService {
   async refresh(p: Principal, id: string, meta: RequestMeta) {
     await this.device(p, id, true);
     const [cred] = await this.db.select({ id: deviceCredentials.id }).from(deviceCredentials).where(and(eq(deviceCredentials.deviceId, id), eq(deviceCredentials.kind, 'redfish')));
-    if (!cred) throw new BadRequestException({ error: 'no_redfish', message: 'Add a Redfish (iDRAC, iLO, XClarity) credential to this device first' });
+    if (!cred) throw new BadRequestException({ error: 'no_redfish', message: 'Add a Redfish (iDRAC, iLO, iRMC, XClarity) credential to this device first' });
     await this.db
       .insert(deviceHardware)
       .values({ deviceId: id, orgId: p.orgId, requestedAt: new Date(), requestedBy: p.email })

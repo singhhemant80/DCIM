@@ -234,6 +234,34 @@ describe('Redfish when the BMC fails on its system list', () => {
     }
   });
 
+  it('Fujitsu iRMC (Redfish): connection test, hardware and power', async () => {
+    const sim = await startRedfish('root', 'pw', { fujitsu: true, watts: 141 });
+    try {
+      const a = redfishAdapter();
+      const r = await a.test(target(sim.port));
+      expect(r.ok).toBe(true);
+      expect(r.message).toMatch(/^Connected: FUJITSU PRIMERGY RX2530 M4 \(serial YMBQ006091\)/);
+      const inv = await a.hardware!(target(sim.port));
+      expect(inv.system).toMatchObject({ manufacturer: 'FUJITSU', model: 'PRIMERGY RX2530 M4' });
+      expect(inv.processors).toHaveLength(2);
+      expect(inv.memory.length).toBeGreaterThan(0);
+      expect((await a.power!(target(sim.port))).watts).toBe(141);
+    } finally {
+      await sim.close();
+    }
+  });
+
+  it('Fujitsu iRMC whose system list fails: the system is read at /Systems/0', async () => {
+    const sim = await startRedfish('root', 'pw', { fujitsu: true, systemsError: 500 });
+    try {
+      const r = await redfishAdapter().test(target(sim.port));
+      expect(r.ok).toBe(true);
+      expect(r.message).toMatch(/\/redfish\/v1\/Systems\/0 was read directly/);
+    } finally {
+      await sim.close();
+    }
+  });
+
   it('device error text is taken from the Redfish body, single line and capped', () => {
     expect(deviceErrorText(JSON.stringify({ error: { message: 'General', '@Message.ExtendedInfo': [{ Message: 'Bad\nthing.', Resolution: 'Reset.' }] } }))).toBe('Bad thing. Reset.');
     expect(deviceErrorText(JSON.stringify({ error: { message: 'x'.repeat(400) } }))!.length).toBe(240);

@@ -176,6 +176,13 @@
       "when": 1792138351715,
       "tag": "0024_device_health",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792209262322,
+      "tag": "0025_mgmt_type_irmc",
+      "breakpoints": true
     }
   ]
 }

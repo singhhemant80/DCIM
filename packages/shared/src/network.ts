@@ -110,7 +110,7 @@ export const CREDENTIAL_KIND_LABELS: Record<CredentialKind, string> = {
   fortios_rest: 'FortiGate REST API',
   nxapi: 'Cisco NX-API',
   routeros_api: 'MikroTik RouterOS API (api / api-ssl)',
-  redfish: 'Redfish (iDRAC, iLO, XClarity…)',
+  redfish: 'Redfish (iDRAC, iLO, iRMC, XClarity…)',
   ipmi: 'IPMI over LAN (DCMI)',
 };
 /** Access methods that only serve power readings and server facts, not network discovery. */

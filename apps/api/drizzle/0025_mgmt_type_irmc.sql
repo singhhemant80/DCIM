@@ -1,0 +1,1 @@
+ALTER TYPE "public"."mgmt_type" ADD VALUE 'irmc' BEFORE 'ipmi';

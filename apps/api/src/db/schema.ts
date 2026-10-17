@@ -280,7 +280,7 @@ export const rackNumberingEnum = pgEnum('rack_numbering', ['bottom_up', 'top_dow
 export const ownershipEnum = pgEnum('ownership', ['company', 'customer']);
 export const sparePartKindEnum = pgEnum('spare_part_kind', ['ram', 'ssd', 'hdd', 'nvme', 'cpu', 'nic', 'psu', 'rail', 'transceiver', 'cable', 'fan', 'other']);
 export const platformEnum = pgEnum('platform', ['routeros', 'nxos', 'ios', 'iosxe', 'fortios', 'junos', 'linux', 'windows', 'proxmox', 'other']);
-export const mgmtTypeEnum = pgEnum('mgmt_type', ['idrac', 'ilo', 'ipmi', 'redfish', 'other']);
+export const mgmtTypeEnum = pgEnum('mgmt_type', ['idrac', 'ilo', 'irmc', 'ipmi', 'redfish', 'other']);
 
 const orgRef = () =>
   uuid('org_id')

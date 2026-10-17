@@ -693,7 +693,7 @@ export class DevicesService {
       return s;
     };
     const mgmtType = v('mgmt_type');
-    if (mgmtType && !['idrac', 'ilo', 'ipmi', 'redfish', 'other'].includes(mgmtType)) fail('mgmt_type must be idrac, ilo, ipmi, redfish or other');
+    if (mgmtType && !['idrac', 'ilo', 'irmc', 'ipmi', 'redfish', 'other'].includes(mgmtType)) fail('mgmt_type must be idrac, ilo, irmc, ipmi, redfish or other');
 
     const input: DeviceCreateInput = {
       modelId: model!.id,

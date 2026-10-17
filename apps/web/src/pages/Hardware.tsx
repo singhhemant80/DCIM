@@ -231,13 +231,14 @@ export function DeviceForm({ device, onClose }: { device?: DeviceT; onClose: (sa
                 <option value="">None</option>
                 <option value="idrac">Dell iDRAC</option>
                 <option value="ilo">HPE iLO</option>
+                <option value="irmc">Fujitsu iRMC</option>
                 <option value="ipmi">IPMI</option>
                 <option value="redfish">Redfish</option>
                 <option value="other">Other</option>
               </Select>
             )}
           </Field>
-          <Field label="Management address" hint="BMC / iDRAC / iLO address">{(id, d) => <Input id={id} aria-describedby={d} value={f.mgmtAddress} onChange={set('mgmtAddress')} className="font-mono" placeholder="10.0.0.21" />}</Field>
+          <Field label="Management address" hint="BMC / iDRAC / iLO / iRMC address">{(id, d) => <Input id={id} aria-describedby={d} value={f.mgmtAddress} onChange={set('mgmtAddress')} className="font-mono" placeholder="10.0.0.21" />}</Field>
           <Field label="Server address" hint="The server's own IP or host name (OS), pinged for reachability. Empty: the host name, if it is a full name">{(id, d) => <Input id={id} aria-describedby={d} value={f.serverAddress} onChange={set('serverAddress')} className="font-mono" placeholder="203.0.113.10" />}</Field>
           <Field label="BMC firmware">{(id) => <Input id={id} value={f.bmcFirmware} onChange={set('bmcFirmware')} />}</Field>
         </div>

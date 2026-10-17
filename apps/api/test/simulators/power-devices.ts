@@ -53,7 +53,20 @@ export async function startRedfish(
     Message: i === 4 ? 'The power supply PS2 is not receiving power.' : i === 3 ? 'Correctable memory error rate exceeded for DIMM A2.' : 'Log cleared.',
     MessageId: i === 4 ? 'PSU0003' : i === 3 ? 'MEM0702' : 'SEL9901',
   }));
-  const docs = (): Record<string, unknown> => ({
+  const docs = (): Record<string, unknown> => {
+    const d = dellDocs();
+    if (!opts.fujitsu) return d;
+    const j = JSON.stringify(d)
+      .replace(/Systems\/System\.Embedded\.1/g, 'Systems/0')
+      .replace(/Chassis\/System\.Embedded\.1/g, 'Chassis/0')
+      .replace(/Managers\/iDRAC\.Embedded\.1/g, 'Managers/iRMC')
+      .replace(/"Dell Inc\."/g, '"FUJITSU"')
+      .replace(/"PowerEdge R650"/g, '"PRIMERGY RX2530 M4"')
+      .replace(/"HH90TAG"/g, '"S26361-K1567-V401"')
+      .replace(/"CN7XXXX"/g, '"YMBQ006091"');
+    return JSON.parse(j) as Record<string, unknown>;
+  };
+  const dellDocs = (): Record<string, unknown> => ({
     '/redfish/v1/Systems': coll([S]),
     [S]: {
       Manufacturer: 'Dell Inc.',
