@@ -158,6 +158,8 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
 
   const finish = async (status: 'completed' | 'failed' | 'cancelled', error?: string, result?: Record<string, unknown>) => {
     if (status !== 'completed' && kind?.cleanup) {
+      // Cleanup can report why the job ended (e.g. on the image it was preparing).
+      if (error) ctx.job = { ...ctx.job, error };
       try {
         await kind.cleanup(ctx);
       } catch (e) {
@@ -171,11 +173,21 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
       const owner = await tx.execute<{ customer_id: string | null }>(sql`
         select coalesce((select customer_id from devices where id = ${job.deviceId}), (select customer_id from virt_guests where id = ${job.guestId})) as customer_id`);
       await emitEvent(tx, {
-      orgId: job.orgId,
-      type: 'provisioning.job_finished',
-      customerId: owner.rows[0]?.customer_id ?? null,
-      subject: { type: 'provisioning_job', id: job.id },
-        payload: { jobId: job.id, kind: job.kind, status, verified: status === 'completed' ? result?.verified !== false : null, deviceId: job.deviceId, guestId: job.guestId, imageId: job.imageId, action: (job.params as Record<string, unknown>).action ?? null, error: error ?? null },
+        orgId: job.orgId,
+        type: 'provisioning.job_finished',
+        customerId: owner.rows[0]?.customer_id ?? null,
+        subject: { type: 'provisioning_job', id: job.id },
+        payload: {
+          jobId: job.id,
+          kind: job.kind,
+          status,
+          verified: status === 'completed' ? result?.verified !== false : null,
+          deviceId: job.deviceId,
+          guestId: job.guestId,
+          imageId: job.imageId,
+          action: (job.params as Record<string, unknown>).action ?? null,
+          error: error ?? null,
+        },
       });
     });
     const unverified = status === 'completed' && result?.verified === false;
@@ -195,7 +207,10 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
     if (claimed.previous === 'running' && !job.cancelRequested) {
       const step = steps[job.currentStep];
       if (step && !step.safeToRepeat) {
-        await db.update(provisioningSteps).set({ status: 'failed', error: 'Interrupted (worker stopped) while this step was running', finishedAt: now() }).where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, job.currentStep)));
+        await db
+          .update(provisioningSteps)
+          .set({ status: 'failed', error: 'Interrupted (worker stopped) while this step was running', finishedAt: now() })
+          .where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, job.currentStep)));
         await save({ status: 'recovery', leaseUntil: null, error: `Interrupted during “${step.name}”, which is not safe to repeat automatically. Check the server, then retry, skip or fail this step.` });
         await ctx.log(`Interrupted during “${step.name}”; waiting for an operator decision`, 'warn');
         return;
@@ -204,7 +219,7 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
     }
 
     for (;;) {
-      [job] = await db.select().from(provisioningJobs).where(eq(provisioningJobs.id, job.id)) as [ProvisioningJob];
+      [job] = (await db.select().from(provisioningJobs).where(eq(provisioningJobs.id, job.id))) as [ProvisioningJob];
       ctx.job = job;
       if (job.cancelRequested) {
         const failInstead = state.cancelAs === 'failed';
@@ -217,7 +232,10 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
         const result = (await kind.onCompleted?.(ctx)) ?? undefined;
         return await finish('completed', undefined, result ?? (state.result as Record<string, unknown> | undefined));
       }
-      const [row] = await db.select().from(provisioningSteps).where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
+      const [row] = await db
+        .select()
+        .from(provisioningSteps)
+        .where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
       const attempt = (row?.attempts ?? 0) + 1;
       await db
         .update(provisioningSteps)
@@ -230,13 +248,22 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
       } catch (e) {
         const msg = (e as Error)?.message || 'Unknown error';
         const max = step.maxAttempts ?? 3;
-        await db.update(provisioningSteps).set({ error: msg.slice(0, 1000) }).where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
+        await db
+          .update(provisioningSteps)
+          .set({ error: msg.slice(0, 1000) })
+          .where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
         if (e instanceof PermanentError || (step.safeToRepeat && attempt >= max)) {
-          await db.update(provisioningSteps).set({ status: 'failed', finishedAt: now() }).where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
+          await db
+            .update(provisioningSteps)
+            .set({ status: 'failed', finishedAt: now() })
+            .where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
           return await finish('failed', `${step.name}: ${msg}`);
         }
         if (!step.safeToRepeat) {
-          await db.update(provisioningSteps).set({ status: 'failed', finishedAt: now() }).where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
+          await db
+            .update(provisioningSteps)
+            .set({ status: 'failed', finishedAt: now() })
+            .where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
           await save({ status: 'recovery', leaseUntil: null, error: `“${step.name}” failed and may have partly happened: ${msg}. Check the server, then retry, skip or fail this step.` });
           await ctx.log(`“${step.name}” failed (${msg}); not repeated automatically`, 'warn');
           return;
@@ -247,9 +274,16 @@ export async function runJob(deps: EngineDeps, claimed: { job: ProvisioningJob; 
         return;
       }
       if ('wait' in res) {
-        if (res.detail) await db.update(provisioningSteps).set({ detail: res.detail.slice(0, 1000) }).where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
+        if (res.detail)
+          await db
+            .update(provisioningSteps)
+            .set({ detail: res.detail.slice(0, 1000) })
+            .where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
         // Waiting is not an attempt: the step will be polled again.
-        await db.update(provisioningSteps).set({ attempts: attempt - 1 }).where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
+        await db
+          .update(provisioningSteps)
+          .set({ attempts: attempt - 1 })
+          .where(and(eq(provisioningSteps.jobId, job.id), eq(provisioningSteps.seq, i)));
         await save({ status: res.status ?? 'waiting', leaseUntil: null, nextRunAt: new Date(now().getTime() + res.wait) });
         return;
       }

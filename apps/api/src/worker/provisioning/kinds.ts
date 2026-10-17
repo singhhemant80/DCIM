@@ -1,13 +1,16 @@
+import { imageProcessKind } from './image-process';
 import { guarded } from '../device-allow';
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { eq, sql } from 'drizzle-orm';
 import { POWER_ACTION_LABELS, GUEST_ACTION_LABELS, type GuestAction, type PowerAction } from '@crapplet/shared';
-import { controlCredentials, deviceEvents, devices, osImages, virtGuests, virtHosts, virtIntegrations, type ControlCredential, type OsImage, type VirtIntegration } from '../../db/schema';
+import { controlCredentials, deviceEvents, devices, osImages, pxeSettings, virtGuests, virtHosts, virtIntegrations, type ControlCredential, type OsImage, type VirtIntegration } from '../../db/schema';
 import type { AdapterTarget } from '../../network/discovery/types';
 import { AuditService } from '../../audit/audit.service';
-import { controlContext, GUEST_TARGET_STATUS, virtContext } from '../../provisioning/contexts';
+import { controlContext, GUEST_TARGET_STATUS, jobContext, virtContext } from '../../provisioning/contexts';
+import { bootBaseUrl } from '../../provisioning/boot-base';
+import { readPxeStatus } from '../pxe/desired';
 import { redact } from '../processor';
 import { PermanentError, type EngineDeps, type KindDef, type StepContext, type StepDef } from './engine';
 import { ipmiControl, redfishControl, type BmcControl } from './bmc';
@@ -24,6 +27,10 @@ export interface ProvisioningDeps extends EngineDeps {
   pollMs?: number;
   /** Allow image URLs on loopback/link-local addresses (CDCIM_IMAGE_ALLOW_LOCAL). */
   imageAllowLocal?: boolean;
+  /** Where uploaded ISOs live (CDCIM_IMAGE_DIR). */
+  imageDir?: string;
+  /** Where the PXE helper reports its status (CDCIM_PXE_OUT_DIR). */
+  pxeOutDir?: string;
 }
 
 const D = (ctx: StepContext) => ctx.deps as ProvisioningDeps;
@@ -136,6 +143,15 @@ export const powerActionKind: KindDef = {
 type Files = Pick<OsImage, 'isoUrl' | 'isoSha256' | 'kernelUrl' | 'kernelSha256' | 'initrdUrl' | 'initrdSha256'>;
 const filesOf = (ctx: StepContext, img: OsImage): Files => (ctx.job.params.files as Files | undefined) ?? img;
 
+/** The ISO URL a BMC mounts for an uploaded image: served by NexoraDC under the job's boot token. */
+async function uploadedIsoUrl(ctx: StepContext): Promise<string> {
+  const base = await bootBaseUrl(D(ctx).db, ctx.job.orgId, D(ctx).publicUrl);
+  if (!base) throw new PermanentError('No boot URL is set (OS & Images → PXE service, or CDCIM_PUBLIC_URL), so the BMC has no address to fetch the ISO from');
+  if (!ctx.job.secretEnc) throw new PermanentError('The job has no boot token');
+  const secret = JSON.parse(D(ctx).secrets.decrypt(ctx.job.secretEnc, jobContext(ctx.job.orgId, ctx.job.id))) as { bootToken: string };
+  return `${base}/api/v1/boot/files/${secret.bootToken}/iso`;
+}
+
 async function imageOf(ctx: StepContext): Promise<OsImage> {
   if (!ctx.job.imageId) throw new PermanentError('The image was deleted');
   const [img] = await D(ctx).db.select().from(osImages).where(eq(osImages.id, ctx.job.imageId));
@@ -154,8 +170,9 @@ function defaultTcp(host: string, port: number): Promise<boolean> {
 
 export const osInstallKind: KindDef = {
   steps: (job) => {
-    const p = job.params as { method: 'redfish_virtual_media' | 'pxe'; verify: { by: 'callback' | 'tcp'; port?: number }; network: { mode: string; address?: string } };
+    const p = job.params as { method: 'redfish_virtual_media' | 'pxe'; mode?: 'automatic' | 'interactive'; verify: { by: 'callback' | 'tcp'; port?: number }; network: { mode: string; address?: string } };
     const vm = p.method === 'redfish_virtual_media';
+    const interactive = p.mode === 'interactive';
     const steps: StepDef[] = [
       {
         name: 'Check image and settings',
@@ -166,9 +183,15 @@ export const osInstallKind: KindDef = {
           if (img.verifyStatus !== 'verified') throw new PermanentError(`The image is not verified (status: ${img.verifyStatus}); run its checksum verification first`);
           const f = filesOf(ctx, img);
           if ((Object.keys(f) as (keyof Files)[]).some((k) => f[k] !== img[k])) throw new PermanentError('The image’s files changed after this job was requested; request the installation again');
+          const base = await bootBaseUrl(D(ctx).db, ctx.job.orgId, D(ctx).publicUrl);
+          if (img.source === 'upload') {
+            if (img.uploadStatus !== 'ready') throw new PermanentError('The uploaded ISO is not ready');
+            if (!base) throw new PermanentError('No boot URL is set (OS & Images → PXE service, or CDCIM_PUBLIC_URL), so the server has no address to fetch the installer from');
+            return { done: true, detail: `${img.name} (uploaded ISO, ${interactive ? 'interactive' : 'automatic'} install by ${vm ? 'virtual media' : 'network boot'}); boot files from ${base}` };
+          }
           if (vm && !f.isoUrl) throw new PermanentError('The image has no ISO for virtual media');
           if (!vm && (!f.kernelUrl || !f.initrdUrl)) throw new PermanentError('The image has no kernel and initrd for PXE');
-          if ((!vm || img.templateKind !== 'none') && !D(ctx).publicUrl) throw new PermanentError('CDCIM_PUBLIC_URL is not set, so the installer has no address to fetch its configuration from');
+          if ((!vm || img.templateKind !== 'none') && !base) throw new PermanentError('CDCIM_PUBLIC_URL is not set, so the installer has no address to fetch its configuration from');
           return { done: true, detail: `${img.name} (${vm ? 'ISO' : 'kernel + initrd'}), checksums verified` };
         },
       },
@@ -200,7 +223,8 @@ export const osInstallKind: KindDef = {
           safeToRepeat: true,
           run: async (ctx) => {
             const { bmc } = await bmcFor(ctx);
-            const iso = filesOf(ctx, await imageOf(ctx)).isoUrl!;
+            const img = await imageOf(ctx);
+            const iso = img.source === 'upload' ? await uploadedIsoUrl(ctx) : filesOf(ctx, img).isoUrl!;
             // Flag first: if the insert half-happens and the step fails, cleanup still ejects.
             ctx.state.mediaInserted = true;
             if ((await bmc.insertedMedia!()) !== iso) await bmc.insertMedia!(iso);
@@ -221,6 +245,24 @@ export const osInstallKind: KindDef = {
         },
       );
     } else {
+      steps.push({
+        name: 'Wait for the PXE service',
+        safeToRepeat: true,
+        run: async (ctx) => {
+          // Only when NexoraDC's own PXE service answers (proxy or DHCP mode): it must know this MAC before the server boots.
+          const [s] = await D(ctx).db.select().from(pxeSettings).where(eq(pxeSettings.orgId, ctx.job.orgId));
+          if (!s?.enabled || s.mode === 'external') return { done: true, detail: s?.enabled ? 'Your DHCP server hands out the boot file (external mode)' : 'NexoraDC’s PXE service is off: your DHCP server must chain-load iPXE' };
+          const mac = String(ctx.job.bootMac ?? '');
+          const st = await readPxeStatus(D(ctx).pxeOutDir);
+          // A report from before the last settings change (or another mode) does not count.
+          const fresh = !!st?.at && new Date(st.at).getTime() >= new Date(s.updatedAt).getTime() && st.mode === s.mode;
+          if (st?.ok && fresh && st.macs?.includes(mac)) return { done: true, detail: `The PXE service answers ${mac} (${s.mode} mode)` };
+          ctx.state.pxeWaitFrom ??= ctx.now().toISOString();
+          if (ctx.now().getTime() - new Date(String(ctx.state.pxeWaitFrom)).getTime() > 3 * 60_000)
+            throw new PermanentError(st?.ok === false ? `The PXE service is not running: ${st.error ?? 'unknown error'}` : 'The PXE service did not pick up this server within 3 minutes; check OS & Images → PXE service');
+          return { wait: poll(ctx, 3000), detail: st?.ok === false ? `The PXE service reports a problem: ${st.error ?? ''}` : 'Waiting for the PXE service to add this server' };
+        },
+      });
       steps.push({
         name: 'Set one-time network boot',
         safeToRepeat: true,
@@ -277,6 +319,10 @@ export const osInstallKind: KindDef = {
           if (await bmc.bootOverride()) return { wait: poll(ctx, 15_000), detail: 'Waiting for the server to boot the install media (one-time boot still pending)' };
           ctx.state.overrideConsumed = ctx.now().toISOString();
         }
+        if (interactive) {
+          if (ctx.job.signals?.operatorFinished) return { done: true, detail: `Marked finished by ${String((ctx.job.signals.operatorFinished as { by?: string }).by ?? 'an operator')}` };
+          return { wait: poll(ctx, 30_000), detail: 'The installer is running: finish it in the server console, then press “Mark finished” on this job' };
+        }
         if (p.verify.by === 'callback') {
           const cb = ctx.job.signals?.callback as { status?: string; message?: string } | undefined;
           if (cb?.status === 'done') return { done: true, detail: 'The installer reported completion' };
@@ -287,7 +333,10 @@ export const osInstallKind: KindDef = {
         // The old system may answer on the same address until the installer takes over: count only an answer after the port was seen closed.
         if (!ok) ctx.state.portWasDown = true;
         if (ok && ctx.state.portWasDown) return { done: true, detail: `${p.network.address}:${p.verify.port ?? 22} answers again after the install` };
-        return { wait: poll(ctx, 30_000), detail: ok ? `${p.network.address}:${p.verify.port ?? 22} still answers (previous system); waiting for the installer to take over` : `Waiting for ${p.network.address}:${p.verify.port ?? 22} to answer` };
+        return {
+          wait: poll(ctx, 30_000),
+          detail: ok ? `${p.network.address}:${p.verify.port ?? 22} still answers (previous system); waiting for the installer to take over` : `Waiting for ${p.network.address}:${p.verify.port ?? 22} to answer`,
+        };
       },
     });
     if (vm) {
@@ -316,8 +365,12 @@ export const osInstallKind: KindDef = {
           problems.push(`a one-time ${override} boot was still pending (cleared)`);
         }
         if (vm && (await bmc.insertedMedia!())) problems.push('the ISO is still inserted');
-        if (p.verify.by === 'tcp' && !(await (D(ctx).tcpCheck ?? defaultTcp)(p.network.address!, p.verify.port ?? 22))) problems.push(`${p.network.address}:${p.verify.port ?? 22} does not answer`);
-        if (!problems.length) return { done: true, detail: `Power on, no boot override${vm ? ', ISO ejected' : ''}${p.verify.by === 'callback' ? ', installer reported success' : `, ${p.network.address}:${p.verify.port ?? 22} answers`}` };
+        if (!interactive && p.verify.by === 'tcp' && !(await (D(ctx).tcpCheck ?? defaultTcp)(p.network.address!, p.verify.port ?? 22))) problems.push(`${p.network.address}:${p.verify.port ?? 22} does not answer`);
+        if (!problems.length)
+          return {
+            done: true,
+            detail: `Power on, no boot override${vm ? ', ISO ejected' : ''}${interactive ? ', install finished by hand (not verified by NexoraDC)' : p.verify.by === 'callback' ? ', installer reported success' : `, ${p.network.address}:${p.verify.port ?? 22} answers`}`,
+          };
         if (ctx.now().getTime() - new Date(String(ctx.state.verifyFrom)).getTime() > 10 * 60_000) throw new PermanentError(`Verification failed: ${problems.join('; ')}`);
         return { wait: poll(ctx, 10_000), status: 'verifying', detail: problems.join('; ') };
       },
@@ -339,6 +392,24 @@ export const osInstallKind: KindDef = {
     const img = await imageOf(ctx);
     const host = String(ctx.job.params.hostname);
     const os = img.version && !img.name.includes(img.version) ? `${img.name} ${img.version}` : img.name;
+    if (ctx.job.params.mode === 'interactive') {
+      // NexoraDC did not see the result, so the host name stays as recorded; only the event is kept.
+      const by = String((ctx.job.signals?.operatorFinished as { by?: string } | undefined)?.by ?? 'an operator');
+      const seen = await D(ctx).db.execute(sql`select 1 from device_events where device_id = ${ctx.job.deviceId} and kind = 'os_installed' and data->>'jobId' = ${ctx.job.id}`);
+      if (!seen.rows.length)
+        await D(ctx)
+          .db.insert(deviceEvents)
+          .values({
+            orgId: ctx.job.orgId,
+            deviceId: ctx.job.deviceId!,
+            actorId: ctx.job.createdByUserId,
+            actorLabel: ctx.job.createdBy,
+            kind: 'os_installed',
+            summary: `${os} installed interactively (marked finished by ${by}; not verified)`,
+            data: { jobId: ctx.job.id, method: String(ctx.job.params.method), interactive: true },
+          });
+      return { os, interactive: true };
+    }
     // Inventory follows the verified result.
     await D(ctx).db.transaction(async (tx) => {
       await tx.update(devices).set({ hostname: host, os }).where(eq(devices.id, ctx.job.deviceId!));
@@ -356,7 +427,15 @@ export const osInstallKind: KindDef = {
       });
     });
     const [already] = (await D(ctx).db.execute(sql`select 1 from audit_events where action = 'provisioning.install_completed' and metadata->>'jobId' = ${ctx.job.id} limit 1`)).rows;
-    if (!already) await new AuditService(D(ctx).db).record({ orgId: ctx.job.orgId, actor: { type: 'system', label: 'provisioning worker' }, action: 'provisioning.install_completed', target: { type: 'device', id: ctx.job.deviceId }, outcome: 'success', metadata: { jobId: ctx.job.id, hostname: host, os } });
+    if (!already)
+      await new AuditService(D(ctx).db).record({
+        orgId: ctx.job.orgId,
+        actor: { type: 'system', label: 'provisioning worker' },
+        action: 'provisioning.install_completed',
+        target: { type: 'device', id: ctx.job.deviceId },
+        outcome: 'success',
+        metadata: { jobId: ctx.job.id, hostname: host, os },
+      });
     return { hostname: host, os };
   },
 };
@@ -451,7 +530,10 @@ export const imageVerifyKind: KindDef = {
         (ctx.state.sizes as Record<string, number> | undefined) ?? (ctx.state.sizes = {});
         (ctx.state.sizes as Record<string, number>)[label] = r.size;
         if (r.sha256 !== f[shaKey]) {
-          await D(ctx).db.update(osImages).set({ verifyStatus: 'mismatch', verifyError: `${label}: expected ${f[shaKey]}, got ${r.sha256}` }).where(sql`${osImages.id} = ${img.id} and ${osImages.verifyStatus} = 'verifying'`);
+          await D(ctx)
+            .db.update(osImages)
+            .set({ verifyStatus: 'mismatch', verifyError: `${label}: expected ${f[shaKey]}, got ${r.sha256}` })
+            .where(sql`${osImages.id} = ${img.id} and ${osImages.verifyStatus} = 'verifying'`);
           ctx.state.mismatch = true;
           throw new PermanentError(`The ${label} does not match its checksum (got ${r.sha256})`);
         }
@@ -482,7 +564,11 @@ export const imageVerifyKind: KindDef = {
     ];
   },
   async cleanup(ctx) {
-    if (!ctx.state.mismatch && ctx.job.imageId) await D(ctx).db.update(osImages).set({ verifyStatus: 'error', verifyError: ctx.job.error ?? 'Verification did not finish' }).where(sql`${osImages.id} = ${ctx.job.imageId} and ${osImages.verifyStatus} = 'verifying'`);
+    if (!ctx.state.mismatch && ctx.job.imageId)
+      await D(ctx)
+        .db.update(osImages)
+        .set({ verifyStatus: 'error', verifyError: ctx.job.error ?? 'Verification did not finish' })
+        .where(sql`${osImages.id} = ${ctx.job.imageId} and ${osImages.verifyStatus} = 'verifying'`);
   },
 };
 
@@ -572,7 +658,8 @@ export const guestActionKind: KindDef = {
             return { done: true, detail: `The hypervisor reports the VM ${s}` };
           }
           const limit = action === 'shutdown' ? 300_000 : 180_000;
-          if (ctx.now().getTime() - new Date(String(ctx.state.verifyFrom)).getTime() > limit) throw new PermanentError(s === want ? `No restart of the VM was seen within ${limit / 1000} s (its uptime did not start over)` : `The VM did not reach “${want}” within ${limit / 1000} s (it is ${s})`);
+          if (ctx.now().getTime() - new Date(String(ctx.state.verifyFrom)).getTime() > limit)
+            throw new PermanentError(s === want ? `No restart of the VM was seen within ${limit / 1000} s (its uptime did not start over)` : `The VM did not reach “${want}” within ${limit / 1000} s (it is ${s})`);
           return { wait: poll(ctx, 5000), status: 'verifying', detail: `Waiting for ${want} (now ${s})` };
         },
       },
@@ -583,7 +670,7 @@ export const guestActionKind: KindDef = {
   },
 };
 
-export const PROVISIONING_KINDS: Record<string, KindDef> = { power_action: powerActionKind, os_install: osInstallKind, image_verify: imageVerifyKind, guest_action: guestActionKind };
+export const PROVISIONING_KINDS: Record<string, KindDef> = { power_action: powerActionKind, os_install: osInstallKind, image_verify: imageVerifyKind, guest_action: guestActionKind, image_process: imageProcessKind };
 
 /* ------------------------------------------------------------------ inventory sync (periodic, read-only) */
 

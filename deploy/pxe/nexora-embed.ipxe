@@ -1,0 +1,14 @@
+#!ipxe
+# NexoraDC network boot: get an address, then ask the NexoraDC PXE service what
+# to boot. Its address is the proxy DHCP server (proxy mode), or the DHCP
+# "next server" (NexoraDC DHCP, or your DHCP server pointing to NexoraDC).
+# Anything failing returns to the next boot device, so a server is never left
+# stuck here.
+dhcp || dhcp || goto fail
+isset ${proxydhcp/next-server} && chain tftp://${proxydhcp/next-server}/nexora.ipxe ||
+isset ${proxydhcp/dhcp-server} && chain tftp://${proxydhcp/dhcp-server}/nexora.ipxe ||
+isset ${next-server} && chain tftp://${next-server}/nexora.ipxe ||
+:fail
+echo NexoraDC: no network install for this server, continuing with the next boot device
+sleep 3
+exit

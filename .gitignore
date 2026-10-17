@@ -10,3 +10,4 @@ apps/web/dist/
 apps/api/dist/
 packages/*/dist/
 *.tsbuildinfo
+.data/

@@ -1,6 +1,8 @@
-import { Body, Controller, Delete, Get, Header, Headers, HttpCode, Param, ParseUUIDPipe, Post, Put, Query, Req } from '@nestjs/common';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Response } from 'express';
+import { Body, Controller, Delete, Get, Header, Headers, HttpCode, Param, ParseUUIDPipe, Post, Put, Query, Req, Res } from '@nestjs/common';
 import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import {
   bootCallbackSchema,
@@ -10,9 +12,12 @@ import {
   guestListQuerySchema,
   hostMapSchema,
   installSchema,
+  isoUploadStartSchema,
   jobListQuerySchema,
+  uploadedImageSchema,
   osImageSchema,
   powerActionSchema,
+  pxeSettingsSchema,
   recoveryDecisionSchema,
   virtIntegrationSchema,
 } from '@crapplet/shared';
@@ -21,6 +26,7 @@ import { CurrentPrincipal, Public, ReqMeta, RequirePermissions, StaffOnly } from
 import { normalizeIp, type AppRequest, type Principal, type RequestMeta } from '../auth/principal';
 import { ProvisioningService } from './provisioning.service';
 import { BootService } from './boot.service';
+import { serveSegments } from './iso/serve';
 
 type Infer<T extends z.ZodTypeAny> = z.infer<T>;
 const UUID = new ParseUUIDPipe();
@@ -65,6 +71,15 @@ export class ProvisioningController {
   @ApiOperation({ summary: 'Cancel a job. A queued job stops at once; a running one at the next step, after its cleanup (media ejected, boot override cleared).' })
   cancel(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() meta: RequestMeta) {
     return this.svc.cancel(p, id, meta);
+  }
+
+  @Post('jobs/:id/finish')
+  @HttpCode(200)
+  @RequirePermissions('provisioning.execute')
+  @StaffOnly()
+  @ApiOperation({ summary: 'Interactive install: you finished the installer in the console. The job then removes the virtual media / boot override and completes (not verified by NexoraDC).' })
+  finish(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() meta: RequestMeta) {
+    return this.svc.markFinished(p, id, meta);
   }
 
   @Post('jobs/:id/recovery')
@@ -150,6 +165,57 @@ export class ProvisioningController {
   @StaffOnly()
   deleteImage(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() meta: RequestMeta) {
     return this.svc.deleteImage(p, id, meta);
+  }
+
+  @Get('pxe')
+  @RequirePermissions('provisioning.read')
+  @StaffOnly()
+  pxe(@CurrentPrincipal() p: Principal) {
+    return this.svc.pxe(p);
+  }
+
+  @Put('pxe')
+  @RequirePermissions('provisioning.execute')
+  @StaffOnly()
+  @ApiOperation({ summary: 'PXE service settings (DHCP/TFTP for network installs). Applied by the worker and a root helper within seconds; it only ever answers servers with an active network install.' })
+  @ApiZodBody(pxeSettingsSchema)
+  putPxe(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(pxeSettingsSchema)) b: Infer<typeof pxeSettingsSchema>, @ReqMeta() meta: RequestMeta) {
+    return this.svc.putPxe(p, b, meta);
+  }
+
+  @Post('images/upload')
+  @RequirePermissions('provisioning.execute')
+  @StaffOnly()
+  @ApiOperation({ summary: 'Start uploading an ISO. Send the file with PUT images/:id/upload in chunks (Upload-Offset header), then POST images/:id/upload/complete.' })
+  @ApiZodBody(isoUploadStartSchema)
+  startUpload(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(isoUploadStartSchema)) b: Infer<typeof isoUploadStartSchema>, @ReqMeta() meta: RequestMeta) {
+    return this.svc.startUpload(p, b, meta);
+  }
+
+  @Put('images/:id/upload')
+  @RequirePermissions('provisioning.execute')
+  @StaffOnly()
+  @Throttle({ default: { ttl: 60_000, limit: 3000 } })
+  @ApiOperation({ summary: 'Append one chunk (application/octet-stream, at most 16 MiB) at the offset in the Upload-Offset header. 409 with uploadedBytes tells the client where to resume.' })
+  uploadChunk(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Headers('upload-offset') offset: string | undefined, @Headers('content-length') length: string | undefined, @Req() req: AppRequest) {
+    return this.svc.uploadChunk(p, id, Number(offset), Number(length), req as unknown as import('node:stream').Readable);
+  }
+
+  @Post('images/:id/upload/complete')
+  @RequirePermissions('provisioning.execute')
+  @StaffOnly()
+  @ApiOperation({ summary: 'All chunks sent (or a failed preparation to retry): queue the preparation (SHA-256, OS detection, boot files).' })
+  completeUpload(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Headers(IDEM) idem: string | undefined, @ReqMeta() meta: RequestMeta) {
+    return this.svc.completeUpload(p, id, idem, meta);
+  }
+
+  @Put('images/:id/settings')
+  @RequirePermissions('provisioning.execute')
+  @StaffOnly()
+  @ApiOperation({ summary: 'Name, install template, extra boot arguments and enabled flag of an uploaded ISO.' })
+  @ApiZodBody(uploadedImageSchema)
+  uploadedSettings(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(uploadedImageSchema)) b: Infer<typeof uploadedImageSchema>, @ReqMeta() meta: RequestMeta) {
+    return this.svc.updateUploadedImage(p, id, b, meta);
   }
 
   @Post('images/:id/verify')
@@ -286,6 +352,25 @@ export class BootController {
   @Header('Cache-Control', 'no-store')
   async configByToken(@Param('token') token: string, @Req() req: AppRequest) {
     return (await this.boot.config({ token }, BootController.ip(req))).body;
+  }
+
+  /** Install files of an uploaded ISO (ISO, kernel, initrd, extracted tree), for the job holding the token. Supports Range and HEAD. */
+  @Get('files/:token/*path')
+  @SkipThrottle()
+  async files(@Param('token') token: string, @Req() req: AppRequest, @Res() res: Response) {
+    const path = decodeURIComponent((req.path ?? '').replace(/^.*?\/boot\/files\/[^/]+\//, ''));
+    try {
+      const f = await this.boot.files(token, path, BootController.ip(req));
+      await serveSegments(req as unknown as IncomingMessage, res as unknown as ServerResponse, f.segments, f.contentType);
+    } catch (e) {
+      const status = (e as { getStatus?: () => number }).getStatus?.() ?? 500;
+      if (!res.headersSent)
+        res
+          .status(status)
+          .type('text/plain')
+          .send(status === 500 ? 'Error' : (e as Error).message);
+      else res.destroy();
+    }
   }
 
   /** Autoinstall (cloud-init NoCloud) fetches `<url>user-data` and `<url>meta-data`. */

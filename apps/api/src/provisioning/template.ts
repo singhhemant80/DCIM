@@ -28,7 +28,9 @@ export interface InstallVars {
 }
 
 const VAR = /\{\{\s*([a-zA-Z][a-zA-Z0-9]*)\s*\}\}/g;
-const IF = /\{\{#if\s+([a-zA-Z][a-zA-Z0-9]*)\s*\}\}([\s\S]*?)\{\{\/if\}\}/g;
+/** An {{#if}} block with no other {{#if}} inside: blocks are resolved innermost first, so they can nest. */
+const IF = /\{\{#if\s+([a-zA-Z][a-zA-Z0-9]*)\s*\}\}((?:(?!\{\{#if\b)[\s\S])*?)\{\{\/if\}\}/g;
+const IF_NAME = /\{\{#if\s+([a-zA-Z][a-zA-Z0-9]*)\s*\}\}/g;
 
 export class TemplateError extends Error {}
 
@@ -36,10 +38,15 @@ export function renderTemplate(template: string, vars: InstallVars): string {
   const check = (name: string) => {
     if (!(name in vars)) throw new TemplateError(`Unknown template variable {{${name}}}`);
   };
-  const withIfs = template.replace(IF, (_m, name: string, body: string) => {
-    check(name);
-    return vars[name] ? body : '';
-  });
+  let withIfs = template;
+  for (let i = 0; i < 50; i++) {
+    const next = withIfs.replace(IF, (_m, name: string, body: string) => {
+      check(name);
+      return vars[name] ? body : '';
+    });
+    if (next === withIfs) break;
+    withIfs = next;
+  }
   if (/\{\{[#/]/.test(withIfs)) throw new TemplateError('Unbalanced {{#if}} / {{/if}} in the template');
   return withIfs.replace(VAR, (_m, name: string) => {
     check(name);
@@ -51,7 +58,7 @@ export function renderTemplate(template: string, vars: InstallVars): string {
 export function templateVariables(template: string): string[] {
   const out = new Set<string>();
   for (const m of template.matchAll(VAR)) out.add(m[1]!);
-  for (const m of template.matchAll(IF)) out.add(m[1]!);
+  for (const m of template.matchAll(IF_NAME)) out.add(m[1]!);
   return [...out];
 }
 
@@ -70,6 +77,8 @@ export const TEMPLATE_VARIABLES = [
   'rootPasswordHash',
   'sshKeys',
   'sshKeysJson',
+  'sshKeysBase64',
+  'noPassword',
   'callbackUrl',
   'configUrl',
   'jobId',

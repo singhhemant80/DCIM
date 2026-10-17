@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { DateFilter, dateParams } from '../components/DateRange';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
-import { INSTALL_METHOD_LABELS, JOB_KINDS, OS_FAMILIES, TEMPLATE_KIND_LABELS, TEMPLATE_KINDS, type InstallMethod, type JobKind } from '@crapplet/shared';
+import { BOOT_KIND_LABELS, DEFAULT_TEMPLATES, INSTALL_METHOD_LABELS, INSTALL_MODE_LABELS, JOB_KINDS, OS_FAMILIES, TEMPLATE_KIND_LABELS, TEMPLATE_KINDS, type InstallMethod, type InstallMode, type JobKind } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatDateTime, relativeTime } from '../lib/format';
@@ -11,13 +11,16 @@ import { bytes, isActive, jobKindLabel, newIdempotencyKey, type JobT, type OsIma
 import { JobModal, JobStatusChip } from '../components/Jobs';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Stat, Table, Textarea } from '../components/ui';
 import { Tabs } from './Network';
+import { IsoUploadDialog } from '../components/IsoUpload';
+import { PxeSettingsPanel } from '../components/PxeSettings';
 
 /* ================================================================== jobs */
 
 const describe = (j: JobT) => {
   const p = j.params as Record<string, string>;
   if (j.kind === 'power_action') return String(p.action ?? '').replace(/_/g, ' ');
-  if (j.kind === 'os_install') return `${p.imageName ?? j.imageName ?? 'image'} as ${p.hostname ?? '?'} (${p.method === 'pxe' ? 'PXE' : 'virtual media'})`;
+  if (j.kind === 'os_install') return `${p.imageName ?? j.imageName ?? 'image'} as ${p.hostname ?? '?'} (${p.method === 'pxe' ? 'PXE' : 'virtual media'}${p.mode === 'interactive' ? ', interactive' : ''})`;
+  if (j.kind === 'image_process') return `preparing ${p.fileName ?? 'ISO'}`;
   if (j.kind === 'guest_action') return String(p.action ?? '');
   return 'checksum verification';
 };
@@ -95,7 +98,11 @@ function JobsTab({ onOpen }: { onOpen: (id: string) => void }) {
                   </td>
                   <td className="text-[13px]">
                     {j.stepCount ? `${Math.min(j.currentStep, j.stepCount)} / ${j.stepCount} steps` : '—'}
-                    {j.error && <div className="max-w-[48ch] truncate text-crit" title={j.error}>{j.error}</div>}
+                    {j.error && (
+                      <div className="max-w-[48ch] truncate text-crit" title={j.error}>
+                        {j.error}
+                      </div>
+                    )}
                   </td>
                   <td className="text-[13px] text-ink-2">
                     {j.createdBy}
@@ -125,7 +132,8 @@ function InstallForm({ initialDevice, onQueued }: { initialDevice: string | null
   const usable = (images.data ?? []).filter((i) => i.enabled && i.verifyStatus === 'verified');
   const [deviceId, setDeviceId] = useState(initialDevice ?? '');
   const [imageId, setImageId] = useState('');
-  const [method, setMethod] = useState<InstallMethod>('redfish_virtual_media');
+  const [method, setMethod] = useState<InstallMethod>('pxe');
+  const [mode, setMode] = useState<InstallMode>('automatic');
   const [hostname, setHostname] = useState('');
   const [mac, setMac] = useState('');
   const [netMode, setNetMode] = useState<'dhcp' | 'static'>('dhcp');
@@ -141,9 +149,25 @@ function InstallForm({ initialDevice, onQueued }: { initialDevice: string | null
   const [confirm, setConfirm] = useState('');
   const [wipe, setWipe] = useState(false);
   const [key] = useState(newIdempotencyKey);
-  const control = useQuery({ queryKey: ['provisioning', 'control', deviceId], queryFn: () => api.get<{ configured: boolean; credential: { kind: string } | null; name: string }>(`/provisioning/devices/${deviceId}/control`), enabled: !!deviceId });
+  const control = useQuery({
+    queryKey: ['provisioning', 'control', deviceId],
+    queryFn: () => api.get<{ configured: boolean; credential: { kind: string } | null; name: string }>(`/provisioning/devices/${deviceId}/control`),
+    enabled: !!deviceId,
+  });
   const device = devices.data?.items.find((d) => d.id === deviceId);
   const image = usable.find((i) => i.id === imageId);
+  const det = image?.source === 'upload' ? image.detected : null;
+  const methods: InstallMethod[] = det ? det.methods : ['redfish_virtual_media', 'pxe'];
+  const modes: InstallMode[] = det ? det.modes[method] : image && image.templateKind === 'none' ? ['interactive'] : ['automatic', 'interactive'];
+  // Boot NIC suggestions from the server's hardware inventory (read from its BMC).
+  const hw = useQuery({
+    queryKey: ['dcim', 'hardware', deviceId],
+    queryFn: () => api.get<{ inventory: { nics: { name: string; mac: string | null; linkStatus: string | null }[] } | null }>(`/dcim/devices/${deviceId}/hardware`),
+    enabled: !!deviceId,
+    retry: false,
+  });
+  const nics = (hw.data?.inventory?.nics ?? []).filter((n) => n.mac);
+  const interactive = mode === 'interactive';
   const deviceName = control.data?.name ?? device?.hostname ?? device?.assetTag ?? '';
   const m = useMutation({
     mutationFn: () =>
@@ -153,12 +177,16 @@ function InstallForm({ initialDevice, onQueued }: { initialDevice: string | null
           deviceId,
           imageId,
           method,
+          mode,
           hostname,
           macAddress: mac.trim() || null,
           network: netMode === 'dhcp' ? { mode: 'dhcp' } : { mode: 'static', address: address.trim(), prefixLength: Number(prefix), gateway: gateway.trim() || null, nameservers: dns.split(/[\s,]+/).filter(Boolean) },
           rootPassword: rootPassword || null,
-          sshKeys: sshKeys.split('\n').map((s) => s.trim()).filter(Boolean),
-          verify: verifyBy === 'tcp' ? { by: 'tcp', port: Number(verifyPort) } : { by: 'callback' },
+          sshKeys: sshKeys
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean),
+          verify: !interactive && verifyBy === 'tcp' ? { by: 'tcp', port: Number(verifyPort) } : { by: 'callback' },
           timeoutMinutes: Number(timeout),
           confirm,
           wipeAcknowledged: wipe,
@@ -167,7 +195,7 @@ function InstallForm({ initialDevice, onQueued }: { initialDevice: string | null
       ),
     onSuccess: (j) => onQueued(j.id),
   });
-  const methodOk = !image || (method === 'pxe' ? !!image.kernelUrl : !!image.isoUrl);
+  const methodOk = !image || (det ? det.methods.includes(method) && det.modes[method].includes(mode) : method === 'pxe' ? !!image.kernelUrl : !!image.isoUrl);
   const credOk = control.data?.configured && (method === 'pxe' || control.data.credential?.kind !== 'ipmi');
   return (
     <form
@@ -199,26 +227,55 @@ function InstallForm({ initialDevice, onQueued }: { initialDevice: string | null
           </Field>
           {deviceId && control.data && !control.data.configured && (
             <p className="rounded-md bg-warn-soft px-3 py-2 text-[13px] text-warn">
-              No BMC control account for this server. Set it up on the <Link className="underline" to={`/hardware/${deviceId}`}>server’s page</Link> first.
+              No BMC control account for this server. Set it up on the{' '}
+              <Link className="underline" to={`/hardware/${deviceId}`}>
+                server’s page
+              </Link>{' '}
+              first.
             </p>
           )}
           <Field label="Image" hint={images.data && !usable.length ? 'No verified image yet: add one under OS & Images and verify its checksums.' : 'Only enabled images with verified checksums are listed.'}>
             {(id) => (
-              <Select id={id} value={imageId} onChange={(e) => setImageId(e.target.value)} required>
+              <Select
+                id={id}
+                value={imageId}
+                onChange={(e) => {
+                  setImageId(e.target.value);
+                  const img = usable.find((i) => i.id === e.target.value);
+                  const d = img?.source === 'upload' ? img.detected : null;
+                  const m = d ? (d.methods.includes(method) ? method : d.methods[0]!) : method;
+                  setMethod(m);
+                  const ms = d ? d.modes[m] : img?.templateKind === 'none' ? (['interactive'] as InstallMode[]) : (['automatic', 'interactive'] as InstallMode[]);
+                  if (!ms.includes(mode)) setMode(ms[0]!);
+                }}
+                required
+              >
                 <option value="">Choose…</option>
                 {usable.map((i) => (
                   <option key={i.id} value={i.id}>
                     {i.name}
-                    {i.templateKind !== 'none' ? ` · ${i.templateKind}` : ''}
+                    {i.source === 'upload' ? ` · ${i.bootKind ? BOOT_KIND_LABELS[i.bootKind].split(' (')[0] : 'ISO'}` : i.templateKind !== 'none' ? ` · ${i.templateKind}` : ''}
                   </option>
                 ))}
               </Select>
             )}
           </Field>
-          <Field label="Boot method" error={!methodOk ? (method === 'pxe' ? 'This image has no kernel and initrd' : 'This image has no ISO') : deviceId && control.data?.configured && !credOk ? 'Virtual media needs a Redfish control account' : undefined}>
+          <Field
+            label="Boot method"
+            error={!methodOk ? (method === 'pxe' ? 'This image has no kernel and initrd' : 'This image has no ISO') : deviceId && control.data?.configured && !credOk ? 'Virtual media needs a Redfish control account' : undefined}
+          >
             {(id) => (
-              <Select id={id} value={method} onChange={(e) => setMethod(e.target.value as InstallMethod)}>
-                {(['redfish_virtual_media', 'pxe'] as const).map((x) => (
+              <Select
+                id={id}
+                value={method}
+                onChange={(e) => {
+                  const m = e.target.value as InstallMethod;
+                  setMethod(m);
+                  const ms = det ? det.modes[m] : modes;
+                  if (!ms.includes(mode)) setMode(ms[0]!);
+                }}
+              >
+                {methods.map((x) => (
                   <option key={x} value={x}>
                     {INSTALL_METHOD_LABELS[x]}
                   </option>
@@ -226,9 +283,48 @@ function InstallForm({ initialDevice, onQueued }: { initialDevice: string | null
               </Select>
             )}
           </Field>
-          <Field label={method === 'pxe' ? 'MAC address of the boot NIC' : 'MAC address (optional)'} hint={method === 'pxe' ? 'The iPXE script is matched to the server by this MAC.' : 'Lets an ISO remastered to fetch /api/v1/boot/config?mac=… find its configuration.'}>
-            {(id) => <Input id={id} value={mac} onChange={(e) => setMac(e.target.value)} placeholder="52:54:00:12:34:56" required={method === 'pxe'} />}
+          <Field
+            label="Install"
+            hint={
+              interactive
+                ? 'The server boots the installer; you finish it in the server’s console and then mark the job finished.'
+                : 'Host name, network, root password and SSH keys are filled in by the image’s install template; the installer reports back when done.'
+            }
+          >
+            {(id) => (
+              <Select id={id} value={mode} onChange={(e) => setMode(e.target.value as InstallMode)}>
+                {(['automatic', 'interactive'] as const).map((x) => (
+                  <option key={x} value={x} disabled={!modes.includes(x)}>
+                    {INSTALL_MODE_LABELS[x]}
+                    {!modes.includes(x) ? ' (not available for this image)' : ''}
+                  </option>
+                ))}
+              </Select>
+            )}
           </Field>
+          {det && det.notes.length > 0 && (
+            <ul className="list-disc rounded-md bg-sunken py-2 pr-3 pl-7 text-[12.5px] text-ink-2">
+              {det.notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          )}
+          <Field
+            label={method === 'pxe' ? 'MAC address of the boot NIC' : 'MAC address (optional)'}
+            hint={method === 'pxe' ? 'The network card the server boots from. NexoraDC answers only this MAC while the install runs.' : 'Lets an ISO remastered to fetch /api/v1/boot/config?mac=… find its configuration.'}
+          >
+            {(id) => <Input id={id} value={mac} onChange={(e) => setMac(e.target.value)} placeholder="52:54:00:12:34:56" required={method === 'pxe'} list={nics.length ? `${id}-nics` : undefined} />}
+          </Field>
+          {nics.length > 0 && (
+            <div className="-mt-1 flex flex-wrap gap-1 text-[12px]">
+              <span className="text-ink-3">From the server’s hardware:</span>
+              {nics.map((n) => (
+                <button key={n.mac} type="button" className="rounded border border-rule px-1.5 font-mono hover:border-accent" onClick={() => setMac(n.mac!.toLowerCase())} title={`${n.name}${n.linkStatus ? ` · ${n.linkStatus}` : ''}`}>
+                  {n.mac!.toLowerCase()}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </Panel>
       <Panel title="2 · New system">
@@ -244,7 +340,9 @@ function InstallForm({ initialDevice, onQueued }: { initialDevice: string | null
           </Field>
           {netMode === 'static' && (
             <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-3">
-              <Field label="Address" hint="Must not be assigned to something else in IPAM">{(id) => <Input id={id} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="203.0.113.10" required />}</Field>
+              <Field label="Address" hint="Must not be assigned to something else in IPAM">
+                {(id) => <Input id={id} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="203.0.113.10" required />}
+              </Field>
               <Field label="Prefix length">{(id) => <Input id={id} inputMode="numeric" value={prefix} onChange={(e) => setPrefix(e.target.value.replace(/\D/g, ''))} required />}</Field>
               <Field label="Gateway">{(id) => <Input id={id} value={gateway} onChange={(e) => setGateway(e.target.value)} />}</Field>
               <Field label="DNS servers">{(id) => <Input id={id} value={dns} onChange={(e) => setDns(e.target.value)} placeholder="1.1.1.1 9.9.9.9" />}</Field>
@@ -258,24 +356,35 @@ function InstallForm({ initialDevice, onQueued }: { initialDevice: string | null
           </Field>
         </div>
       </Panel>
-      <Panel title="3 · Verification">
-        <div className="flex flex-col gap-3">
-          <Field label="Success is confirmed by" hint={verifyBy === 'callback' ? 'The template must POST {"status":"done"} to {{callbackUrl}} at the end of the install.' : 'The installed system must answer on this TCP port at the static address. An answer counts only after the port was seen closed (the previous system may answer until the installer takes over); the callback is the stronger check.'}>
-            {(id) => (
-              <Select id={id} value={verifyBy} onChange={(e) => setVerifyBy(e.target.value as 'callback' | 'tcp')}>
-                <option value="callback">Installer callback</option>
-                <option value="tcp" disabled={netMode !== 'static'}>
-                  TCP port on the new system{netMode !== 'static' ? ' (needs a static address)' : ''}
-                </option>
-              </Select>
-            )}
-          </Field>
-          {verifyBy === 'tcp' && <Field label="Port">{(id) => <Input id={id} inputMode="numeric" value={verifyPort} onChange={(e) => setVerifyPort(e.target.value.replace(/\D/g, ''))} />}</Field>}
-          <Field label="Give up after (minutes)">{(id) => <Input id={id} inputMode="numeric" value={timeout} onChange={(e) => setTimeoutMin(e.target.value.replace(/\D/g, ''))} />}</Field>
-          <p className="text-[12.5px] text-ink-3">The job completes only after the installer (or the TCP check) confirms it, the server is on, the one-time boot override is gone and the ISO is ejected. Inventory (host name, OS) is updated after that.</p>
-        </div>
-      </Panel>
-      <Panel title="4 · Confirm">
+      {!interactive && (
+        <Panel title="3 · Verification">
+          <div className="flex flex-col gap-3">
+            <Field
+              label="Success is confirmed by"
+              hint={
+                verifyBy === 'callback'
+                  ? 'The template must POST {"status":"done"} to {{callbackUrl}} at the end of the install.'
+                  : 'The installed system must answer on this TCP port at the static address. An answer counts only after the port was seen closed (the previous system may answer until the installer takes over); the callback is the stronger check.'
+              }
+            >
+              {(id) => (
+                <Select id={id} value={verifyBy} onChange={(e) => setVerifyBy(e.target.value as 'callback' | 'tcp')}>
+                  <option value="callback">Installer callback</option>
+                  <option value="tcp" disabled={netMode !== 'static'}>
+                    TCP port on the new system{netMode !== 'static' ? ' (needs a static address)' : ''}
+                  </option>
+                </Select>
+              )}
+            </Field>
+            {verifyBy === 'tcp' && <Field label="Port">{(id) => <Input id={id} inputMode="numeric" value={verifyPort} onChange={(e) => setVerifyPort(e.target.value.replace(/\D/g, ''))} />}</Field>}
+            <Field label="Give up after (minutes)">{(id) => <Input id={id} inputMode="numeric" value={timeout} onChange={(e) => setTimeoutMin(e.target.value.replace(/\D/g, ''))} />}</Field>
+            <p className="text-[12.5px] text-ink-3">
+              The job completes only after the installer (or the TCP check) confirms it, the server is on, the one-time boot override is gone and the ISO is ejected. Inventory (host name, OS) is updated after that.
+            </p>
+          </div>
+        </Panel>
+      )}
+      <Panel title={interactive ? '3 · Confirm' : '4 · Confirm'}>
         <div className="flex flex-col gap-3">
           <p className="rounded-md border border-crit/30 bg-crit-soft px-3 py-2 text-[13px] text-crit">Installing erases the disks of {deviceName || 'the selected server'}. The server is restarted if it is running.</p>
           <label className="flex items-start gap-2 text-[13px]">
@@ -350,7 +459,139 @@ export function ProvisioningPage() {
 
 /* ================================================================== images */
 
-const VARS = ['hostname', 'shortname', 'domain', 'networkMode', 'static', 'dhcp', 'ip', 'prefix', 'netmask', 'gateway', 'nameservers', 'nameserversCsv', 'mac', 'rootPasswordHash', 'sshKeys', 'sshKeysJson', 'callbackUrl', 'configUrl', 'jobId', 'imageName'];
+const VARS = [
+  'hostname',
+  'shortname',
+  'domain',
+  'networkMode',
+  'static',
+  'dhcp',
+  'ip',
+  'prefix',
+  'netmask',
+  'gateway',
+  'nameservers',
+  'nameserversCsv',
+  'mac',
+  'rootPasswordHash',
+  'noPassword',
+  'sshKeys',
+  'sshKeysJson',
+  'sshKeysBase64',
+  'callbackUrl',
+  'configUrl',
+  'jobId',
+  'imageName',
+];
+
+/** Settings of an uploaded ISO: name, install template and extra kernel arguments (its files come from the upload). */
+function UploadedImageDialog({ image, onClose }: { image: OsImageT; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [f, setF] = useState({ name: image.name, templateKind: image.templateKind, template: image.template ?? '', bootArgs: image.bootArgs ?? '', enabled: image.enabled, notes: image.notes ?? '' });
+  const def = image.bootKind ? DEFAULT_TEMPLATES[image.bootKind] : undefined;
+  const save = useMutation({
+    mutationFn: () => api.put(`/provisioning/images/${image.id}/settings`, { ...f, template: f.templateKind === 'none' ? null : f.template, bootArgs: f.bootArgs.trim() || null, notes: f.notes.trim() || null }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['provisioning', 'images'] });
+      onClose();
+    },
+  });
+  const auto = image.detected ? [...image.detected.modes.pxe, ...image.detected.modes.redfish_virtual_media].includes('automatic') : false;
+  return (
+    <Modal open onOpenChange={(o) => !o && onClose()} title={`Settings · ${image.name}`} description={image.detected?.label ? `Found in the ISO: ${image.detected.label}` : undefined} wide>
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save.mutate();
+        }}
+      >
+        <Field label="Name">{(id) => <Input id={id} value={f.name} onChange={(e) => setF((x) => ({ ...x, name: e.target.value }))} required />}</Field>
+        {auto ? (
+          <>
+            <Field label="Install template (automatic installs)">
+              {(id) => (
+                <Select id={id} value={f.templateKind} onChange={(e) => setF((x) => ({ ...x, templateKind: e.target.value as typeof f.templateKind }))}>
+                  {TEMPLATE_KINDS.map((k) => (
+                    <option key={k} value={k}>
+                      {TEMPLATE_KIND_LABELS[k]}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            {f.templateKind !== 'none' && (
+              <Field
+                label="Template"
+                hint={
+                  <>
+                    Variables:{' '}
+                    {VARS.map((v) => (
+                      <code key={v} className="mr-1">{`{{${v}}}`}</code>
+                    ))}{' '}
+                    and <code>{'{{#if static}}…{{/if}}'}</code> (blocks may nest). It must report <code>{'{"status":"done"}'}</code> to <code>{'{{callbackUrl}}'}</code> at the end.
+                  </>
+                }
+              >
+                {(id) => <Textarea id={id} rows={16} className="font-mono text-[12px]" value={f.template} onChange={(e) => setF((x) => ({ ...x, template: e.target.value }))} />}
+              </Field>
+            )}
+            {def && (
+              <div>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setF((x) => ({ ...x, templateKind: def.kind, template: def.template }))}>
+                  Reset to NexoraDC’s default template
+                </Button>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="rounded-md bg-sunken px-3 py-2 text-[13px] text-ink-2">This ISO is installed interactively (in the server’s console), so it has no install template.</p>
+        )}
+        {image.detected?.methods.includes('pxe') && image.bootKind !== 'esxi' && (
+          <Field label="Extra kernel arguments (network boot)" hint="Added after NexoraDC’s own, e.g. console=ttyS0,115200 for a serial console. Variables like {{hostname}} work here too.">
+            {(id) => <Input id={id} className="font-mono text-[12px]" value={f.bootArgs} onChange={(e) => setF((x) => ({ ...x, bootArgs: e.target.value }))} />}
+          </Field>
+        )}
+        <Field label="Notes">{(id) => <Input id={id} value={f.notes} onChange={(e) => setF((x) => ({ ...x, notes: e.target.value }))} />}</Field>
+        <label className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={f.enabled} onChange={(e) => setF((x) => ({ ...x, enabled: e.target.checked }))} /> Available for new installations
+        </label>
+        <ErrorNote error={save.error} />
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" busy={save.isPending}>
+            Save
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** Status of an uploaded ISO: uploading (with %), being prepared, ready (checksum), or failed. */
+function UploadStatus({ i }: { i: OsImageT }) {
+  if (i.uploadStatus === 'uploading')
+    return (
+      <Chip tone="warn" title="Choose Resume and the same file to continue">
+        Uploaded {i.uploadSize ? Math.floor((i.uploadedBytes / i.uploadSize) * 100) : 0}%
+      </Chip>
+    );
+  if (i.uploadStatus === 'processing') return <Chip tone="accent">Preparing…</Chip>;
+  if (i.uploadStatus === 'failed')
+    return (
+      <>
+        <Chip tone="crit">Preparation failed</Chip>
+        {i.processError && <div className="mt-1 max-w-[44ch] text-[12px] text-crit">{i.processError}</div>}
+      </>
+    );
+  return (
+    <Chip tone="ok" title={i.isoSha256 ? `SHA-256 ${i.isoSha256}` : undefined}>
+      Ready
+    </Chip>
+  );
+}
 
 const VERIFY_TONE: Record<OsImageT['verifyStatus'], 'ok' | 'warn' | 'crit' | 'accent' | 'neutral'> = { verified: 'ok', unverified: 'warn', verifying: 'accent', mismatch: 'crit', error: 'crit' };
 const VERIFY_LABEL: Record<OsImageT['verifyStatus'], string> = { verified: 'Checksums verified', unverified: 'Not verified', verifying: 'Verifying…', mismatch: 'Checksum mismatch', error: 'Verification failed' };
@@ -405,7 +646,13 @@ function ImageDialog({ image, open, onClose }: { image: OsImageT | null; open: b
     </div>
   );
   return (
-    <Modal open={open} onOpenChange={(o) => !o && onClose()} title={image ? `Edit ${image.name}` : 'Add an image'} description="Files are fetched by the BMC or the installing server; DCIM downloads them once to check their SHA-256. Changing a file or checksum requires a new verification." wide>
+    <Modal
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title={image ? `Edit ${image.name}` : 'Add an image'}
+      description="Files are fetched by the BMC or the installing server; DCIM downloads them once to check their SHA-256. Changing a file or checksum requires a new verification."
+      wide
+    >
       <form
         className="flex flex-col gap-3"
         onSubmit={(e) => {
@@ -450,7 +697,18 @@ function ImageDialog({ image, open, onClose }: { image: OsImageT | null; open: b
           )}
         </Field>
         {f.templateKind !== 'none' && (
-          <Field label="Template" hint={<>Variables: {VARS.map((v) => <code key={v} className="mr-1">{`{{${v}}}`}</code>)} and <code>{'{{#if static}}…{{/if}}'}</code>. Unknown variables are rejected.</>}>
+          <Field
+            label="Template"
+            hint={
+              <>
+                Variables:{' '}
+                {VARS.map((v) => (
+                  <code key={v} className="mr-1">{`{{${v}}}`}</code>
+                ))}{' '}
+                and <code>{'{{#if static}}…{{/if}}'}</code>. Unknown variables are rejected.
+              </>
+            }
+          >
             {(id) => <Textarea id={id} rows={12} className="font-mono text-[12px]" value={f.template} onChange={set('template')} />}
           </Field>
         )}
@@ -476,12 +734,22 @@ export function ImagesPage() {
   const { can } = useAuth();
   const canExecute = can('provisioning.execute');
   const qc = useQueryClient();
+  const [params, setParams] = useSearchParams();
+  const tab = params.get('tab') === 'pxe' ? 'pxe' : 'images';
   const q = useQuery({
     queryKey: ['provisioning', 'images'],
     queryFn: () => api.get<OsImageT[]>('/provisioning/images'),
-    refetchInterval: (query) => (query.state.data?.some((i) => i.verifyStatus === 'verifying') ? 4000 : false),
+    refetchInterval: (query) => (query.state.data?.some((i) => i.verifyStatus === 'verifying' || i.uploadStatus === 'processing') ? 4000 : false),
   });
   const [edit, setEdit] = useState<OsImageT | null | 'new'>(null);
+  const [upload, setUpload] = useState<{ resume: OsImageT | null } | null>(null);
+  const prepare = useMutation({
+    mutationFn: (id: string) => api.post<JobT>(`/provisioning/images/${id}/upload/complete`, {}, { 'Idempotency-Key': newIdempotencyKey() }),
+    onSuccess: (j) => {
+      void qc.invalidateQueries({ queryKey: ['provisioning'] });
+      setJob(j.id);
+    },
+  });
   const [job, setJob] = useState<string | null>(null);
   const verify = useMutation({
     mutationFn: (id: string) => api.post<JobT>(`/provisioning/images/${id}/verify`, {}, { 'Idempotency-Key': newIdempotencyKey() }),
@@ -502,91 +770,165 @@ export function ImagesPage() {
     <>
       <PageHeader
         title="OS & images"
-        description="Installation media with their SHA-256 checksums and unattended-install templates. An image can be installed only after DCIM has downloaded every file and matched its checksum."
+        description="Upload an installer ISO and NexoraDC prepares it for network install (PXE) or the server’s virtual media. Images can also come from a mirror (URL and SHA-256). Every image is checked against its SHA-256 before it can be installed."
         actions={
-          canExecute && (
-            <Button variant="primary" onClick={() => setEdit('new')}>
-              Add image
-            </Button>
+          canExecute &&
+          tab === 'images' && (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="ghost" onClick={() => setEdit('new')}>
+                Add from a URL
+              </Button>
+              <Button variant="primary" onClick={() => setUpload({ resume: null })}>
+                Upload ISO
+              </Button>
+            </div>
           )
         }
       />
-      <Panel flush>
-        {q.isLoading ? (
-          <Loading />
-        ) : q.error ? (
-          <ErrorNote error={q.error} className="m-4" />
-        ) : !q.data!.length ? (
-          <EmptyState title="No images yet">Add an ISO for Redfish virtual media, or a kernel and initrd for PXE, with the checksums published by the distribution.</EmptyState>
-        ) : (
-          <Table label="Images">
-            <thead>
-              <tr>
-                <th>Image</th>
-                <th>Boot</th>
-                <th>Template</th>
-                <th>Checksums</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {q.data!.map((i) => (
-                <tr key={i.id}>
-                  <td>
-                    <div className="font-medium">
-                      {i.name} {!i.enabled && <Chip>Disabled</Chip>}
-                    </div>
-                    <div className="text-[12.5px] text-ink-3">
-                      {i.family}
-                      {i.version ? ` ${i.version}` : ''} · {i.arch}
-                    </div>
-                  </td>
-                  <td className="text-[13px]">
-                    {i.isoUrl && <div>ISO {i.sizes.ISO ? `(${bytes(i.sizes.ISO)})` : ''}</div>}
-                    {i.kernelUrl && <div>PXE kernel + initrd</div>}
-                  </td>
-                  <td className="text-[13px]">{i.templateKind === 'none' ? '—' : TEMPLATE_KIND_LABELS[i.templateKind]}</td>
-                  <td>
-                    <Chip tone={VERIFY_TONE[i.verifyStatus]} title={i.verifyError ?? (i.verifiedAt ? `Verified ${formatDateTime(i.verifiedAt)}` : undefined)}>
-                      {VERIFY_LABEL[i.verifyStatus]}
-                    </Chip>
-                    {i.verifyError && <div className="mt-1 max-w-[40ch] truncate text-[12px] text-crit" title={i.verifyError}>{i.verifyError}</div>}
-                  </td>
-                  <td className="text-right whitespace-nowrap">
-                    {canExecute && (
-                      <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="ghost" disabled={i.verifyStatus === 'verifying'} busy={verify.isPending && verify.variables === i.id} onClick={() => verify.mutate(i.id)}>
-                          Verify
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => setEdit(i)}>
-                          Edit
-                        </Button>
-                        <Button size="sm" variant="ghost" className="text-crit" onClick={() => (remove.reset(), setDeleting(i))}>
-                          Delete
-                        </Button>
-                      </div>
-                    )}
-                  </td>
+      <Tabs
+        tabs={[
+          { key: 'images', label: 'Images' },
+          { key: 'pxe', label: 'PXE service' },
+        ]}
+        value={tab}
+        onChange={(k) => setParams(k === 'images' ? {} : { tab: k })}
+        label="OS & images"
+      />
+      {tab === 'pxe' ? (
+        <PxeSettingsPanel canEdit={canExecute} />
+      ) : (
+        <Panel flush>
+          {q.isLoading ? (
+            <Loading />
+          ) : q.error ? (
+            <ErrorNote error={q.error} className="m-4" />
+          ) : !q.data!.length ? (
+            <EmptyState title="No images yet">Upload an installer ISO (Ubuntu, Debian, Rocky/Alma/RHEL, Proxmox VE, ESXi or Windows), or add one from a mirror by URL and SHA-256.</EmptyState>
+          ) : (
+            <Table label="Images">
+              <thead>
+                <tr>
+                  <th>Image</th>
+                  <th>Boot</th>
+                  <th>Template</th>
+                  <th>Checksums</th>
+                  <th />
                 </tr>
-              ))}
-            </tbody>
-          </Table>
-        )}
-        <ErrorNote error={verify.error} className="m-4" />
-      </Panel>
+              </thead>
+              <tbody>
+                {q.data!.map((i) => (
+                  <tr key={i.id}>
+                    <td>
+                      <div className="font-medium">
+                        {i.name} {!i.enabled && <Chip>Disabled</Chip>}
+                      </div>
+                      <div className="text-[12.5px] text-ink-3">
+                        {i.source === 'upload' ? (i.detected?.label ?? i.uploadFileName) : `${i.family}${i.version ? ` ${i.version}` : ''}`} · {i.arch}
+                      </div>
+                    </td>
+                    <td className="text-[13px]">
+                      {i.source === 'upload' ? (
+                        <>
+                          <div>
+                            Uploaded ISO{i.uploadSize ? ` (${bytes(i.uploadSize)})` : ''}
+                            {i.bootKind && i.bootKind !== 'unknown' ? ` · ${BOOT_KIND_LABELS[i.bootKind].split(' (')[0]}` : ''}
+                          </div>
+                          {i.detected && (
+                            <div className="text-[12px] text-ink-3">
+                              {i.detected.methods.includes('pxe') ? `Network boot: ${i.detected.modes.pxe.join(' or ')}${i.detected.uefiOnly ? ' (UEFI)' : ''}` : 'No network boot'} · Virtual media: interactive
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {i.isoUrl && <div>ISO {i.sizes.ISO ? `(${bytes(i.sizes.ISO)})` : ''}</div>}
+                          {i.kernelUrl && <div>PXE kernel + initrd</div>}
+                        </>
+                      )}
+                    </td>
+                    <td className="text-[13px]">{i.templateKind === 'none' ? '—' : TEMPLATE_KIND_LABELS[i.templateKind]}</td>
+                    <td>
+                      {i.source === 'upload' ? (
+                        <UploadStatus i={i} />
+                      ) : (
+                        <>
+                          <Chip tone={VERIFY_TONE[i.verifyStatus]} title={i.verifyError ?? (i.verifiedAt ? `Verified ${formatDateTime(i.verifiedAt)}` : undefined)}>
+                            {VERIFY_LABEL[i.verifyStatus]}
+                          </Chip>
+                          {i.verifyError && (
+                            <div className="mt-1 max-w-[40ch] truncate text-[12px] text-crit" title={i.verifyError}>
+                              {i.verifyError}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </td>
+                    <td className="text-right whitespace-nowrap">
+                      {canExecute && (
+                        <div className="flex justify-end gap-1">
+                          {i.source === 'upload' ? (
+                            <>
+                              {i.uploadStatus === 'uploading' && (
+                                <Button size="sm" variant="ghost" onClick={() => setUpload({ resume: i })}>
+                                  Resume
+                                </Button>
+                              )}
+                              {i.uploadStatus === 'failed' && (
+                                <Button size="sm" variant="ghost" busy={prepare.isPending && prepare.variables === i.id} onClick={() => prepare.mutate(i.id)}>
+                                  Prepare again
+                                </Button>
+                              )}
+                              {i.uploadStatus === 'ready' && (
+                                <Button size="sm" variant="ghost" onClick={() => setEdit(i)}>
+                                  Settings
+                                </Button>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <Button size="sm" variant="ghost" disabled={i.verifyStatus === 'verifying'} busy={verify.isPending && verify.variables === i.id} onClick={() => verify.mutate(i.id)}>
+                                Verify
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => setEdit(i)}>
+                                Edit
+                              </Button>
+                            </>
+                          )}
+                          <Button size="sm" variant="ghost" className="text-crit" onClick={() => (remove.reset(), setDeleting(i))}>
+                            Delete
+                          </Button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
+          <ErrorNote error={verify.error ?? prepare.error} className="m-4" />
+        </Panel>
+      )}
       <ConfirmDialog
         open={!!deleting}
         onOpenChange={(o) => !o && setDeleting(null)}
         title={`Delete ${deleting?.name ?? ''}?`}
-        body="The image is removed from the library. Past jobs keep their record. Files on the mirror are not touched."
+        body={
+          deleting?.source === 'upload'
+            ? 'The image and its uploaded ISO (with the files prepared from it) are deleted from this server. Past jobs keep their record.'
+            : 'The image is removed from the library. Past jobs keep their record. Files on the mirror are not touched.'
+        }
         confirmLabel="Delete image"
         busy={remove.isPending}
         error={remove.error}
         onConfirm={() => deleting && remove.mutate(deleting.id)}
       />
-      {edit && <ImageDialog key={edit === 'new' ? 'new' : edit.id} image={edit === 'new' ? null : edit} open onClose={() => setEdit(null)} />}
+      {edit && edit !== 'new' && edit.source === 'upload' ? (
+        <UploadedImageDialog key={edit.id} image={edit} onClose={() => setEdit(null)} />
+      ) : (
+        edit && <ImageDialog key={edit === 'new' ? 'new' : edit.id} image={edit === 'new' ? null : edit} open onClose={() => setEdit(null)} />
+      )}
+      {upload && <IsoUploadDialog key={upload.resume?.id ?? 'new'} open resume={upload.resume} onClose={() => setUpload(null)} />}
       <JobModal id={job} onClose={() => setJob(null)} />
     </>
   );
 }
-

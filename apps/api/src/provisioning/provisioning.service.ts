@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createWriteStream, promises as fs } from 'node:fs';
+import type { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { Transform } from 'node:stream';
 import { dateFilter } from '../common/date-range';
 import { isIP } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type { z } from 'zod';
@@ -9,8 +14,13 @@ import {
   POWER_ACTIONS,
   type ControlCredentialInput,
   type GuestAction,
+  type DetectedIso,
   type InstallInput,
+  type IsoUploadStart,
   type OsImageInput,
+  type PxeSettingsInput,
+  UPLOAD_CHUNK_BYTES,
+  uploadedImageSchema,
   type PowerAction,
   type VirtIntegrationInput,
   guestListQuerySchema,
@@ -18,6 +28,9 @@ import {
   recoveryDecisionSchema,
 } from '@crapplet/shared';
 import { DB, type Db, type DbOrTx } from '../db/db';
+import { APP_CONFIG, type AppConfig } from '../config/config';
+import { freeBytes, imagePaths } from './iso/store';
+import { bootBaseUrl, bootSettingsVersion } from './boot-base';
 import {
   controlCredentials,
   customers,
@@ -26,6 +39,7 @@ import {
   provisioningEvents,
   provisioningJobs,
   provisioningSteps,
+  pxeSettings,
   virtGuests,
   virtHosts,
   virtIntegrations,
@@ -62,6 +76,7 @@ export class ProvisioningService {
     @Inject(DB) private readonly db: Db,
     private readonly audit: AuditService,
     private readonly secrets: SecretBox,
+    @Inject(APP_CONFIG) private readonly cfg: AppConfig,
   ) {}
 
   private record(p: Principal, meta: RequestMeta, action: string, target: { type: string; id: string | null }, metadata?: Record<string, unknown>, tx?: DbOrTx) {
@@ -71,7 +86,10 @@ export class ProvisioningService {
   /* ---------------------------------------------------------------- shared */
 
   private async device(p: Principal, id: string, opts: { customerAllowed: boolean }) {
-    const [d] = await this.db.select().from(devices).where(and(eq(devices.id, id), eq(devices.orgId, p.orgId)));
+    const [d] = await this.db
+      .select()
+      .from(devices)
+      .where(and(eq(devices.id, id), eq(devices.orgId, p.orgId)));
     if (!d) throw new NotFoundException({ error: 'not_found', message: 'Device not found' });
     if (p.userType !== 'staff' && (!opts.customerAllowed || d.customerId !== p.customerId)) throw new NotFoundException({ error: 'not_found', message: 'Device not found' });
     return d;
@@ -98,7 +116,10 @@ export class ProvisioningService {
     const key = idempotencyKey?.trim() || null;
     if (key && (key.length > 200 || !/^[\x21-\x7e]+$/.test(key))) throw new BadRequestException({ error: 'invalid_idempotency_key', message: 'Idempotency-Key must be up to 200 printable characters' });
     if (key) {
-      const [prev] = await this.db.select().from(provisioningJobs).where(and(eq(provisioningJobs.orgId, p.orgId), eq(provisioningJobs.idempotencyKey, key)));
+      const [prev] = await this.db
+        .select()
+        .from(provisioningJobs)
+        .where(and(eq(provisioningJobs.orgId, p.orgId), eq(provisioningJobs.idempotencyKey, key)));
       if (prev) {
         if (prev.requestHash !== requestHash) throw new ConflictException({ error: 'idempotency_conflict', message: 'This Idempotency-Key was already used for a different request' });
         return { job: prev, replayed: true };
@@ -112,12 +133,22 @@ export class ProvisioningService {
           .returning();
         await tx.insert(provisioningEvents).values({ jobId: job!.id, message: `Requested by ${p.email}` });
         if (alsoInTx) await alsoInTx(tx, job!);
-        await this.record(p, meta, auditAction, { type: values.deviceId ? 'device' : values.guestId ? 'virt_guest' : 'os_image', id: (values.deviceId ?? values.guestId ?? values.imageId ?? null) as string | null }, { jobId: job!.id, ...auditMeta }, tx);
+        await this.record(
+          p,
+          meta,
+          auditAction,
+          { type: values.deviceId ? 'device' : values.guestId ? 'virt_guest' : 'os_image', id: (values.deviceId ?? values.guestId ?? values.imageId ?? null) as string | null },
+          { jobId: job!.id, ...auditMeta },
+          tx,
+        );
         return { job: job!, replayed: false };
       });
     } catch (e) {
       if (isPg(e, '23505', 'provisioning_jobs_idem_uq') && key) {
-        const [prev] = await this.db.select().from(provisioningJobs).where(and(eq(provisioningJobs.orgId, p.orgId), eq(provisioningJobs.idempotencyKey, key)));
+        const [prev] = await this.db
+          .select()
+          .from(provisioningJobs)
+          .where(and(eq(provisioningJobs.orgId, p.orgId), eq(provisioningJobs.idempotencyKey, key)));
         if (prev && prev.requestHash === requestHash) return { job: prev, replayed: true };
         throw new ConflictException({ error: 'idempotency_conflict', message: 'This Idempotency-Key was already used for a different request' });
       }
@@ -125,8 +156,15 @@ export class ProvisioningService {
       if (isPg(e, '23505', 'provisioning_jobs_image_verify_active_uq')) throw new ConflictException({ error: 'job_in_progress', message: 'A verification of this image is already running' });
       if (isPg(e, '23505', 'provisioning_jobs_device_active_uq') || isPg(e, '23505', 'provisioning_jobs_guest_active_uq')) {
         const target = values.deviceId ? eq(provisioningJobs.deviceId, values.deviceId) : eq(provisioningJobs.guestId, values.guestId!);
-        const [active] = await this.db.select({ id: provisioningJobs.id, kind: provisioningJobs.kind }).from(provisioningJobs).where(and(target, inArray(provisioningJobs.status, [...ACTIVE_JOB_STATUSES])));
-        throw new ConflictException({ error: 'job_in_progress', message: `Another job is still active for this ${values.deviceId ? 'server' : 'VM'}${active ? ` (${active.kind.replace('_', ' ')})` : ''}; wait for it or cancel it`, jobId: active?.id });
+        const [active] = await this.db
+          .select({ id: provisioningJobs.id, kind: provisioningJobs.kind })
+          .from(provisioningJobs)
+          .where(and(target, inArray(provisioningJobs.status, [...ACTIVE_JOB_STATUSES])));
+        throw new ConflictException({
+          error: 'job_in_progress',
+          message: `Another job is still active for this ${values.deviceId ? 'server' : 'VM'}${active ? ` (${active.kind.replace('_', ' ')})` : ''}; wait for it or cancel it`,
+          jobId: active?.id,
+        });
       }
       throw e;
     }
@@ -210,15 +248,44 @@ export class ProvisioningService {
   }
 
   /** Cancel: a queued job stops at once; a running one at the next step boundary, after cleanup. */
+  /** Interactive install: the operator finished the installer in the console. */
+  async markFinished(p: Principal, id: string, meta: RequestMeta) {
+    const [j] = await this.db
+      .select()
+      .from(provisioningJobs)
+      .where(and(eq(provisioningJobs.id, id), eq(provisioningJobs.orgId, p.orgId)));
+    if (!j || j.kind !== 'os_install') throw new NotFoundException({ error: 'not_found', message: 'Installation not found' });
+    if ((j.params as { mode?: string }).mode !== 'interactive') throw new BadRequestException({ error: 'not_interactive', message: 'Only an interactive install is marked finished by hand' });
+    if (!['running', 'waiting', 'verifying'].includes(j.status)) throw new ConflictException({ error: 'not_active', message: 'The installation is not running' });
+    const patch = { operatorFinished: { by: p.email, at: new Date().toISOString() } };
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(provisioningJobs)
+        .set({ signals: sql`coalesce(${provisioningJobs.signals}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`, nextRunAt: sql`case when ${provisioningJobs.status} = 'waiting' then now() else ${provisioningJobs.nextRunAt} end` })
+        .where(eq(provisioningJobs.id, id));
+      await tx.insert(provisioningEvents).values({ jobId: id, message: `Marked finished by ${p.email}` });
+      await this.record(p, meta, 'provisioning.install_marked_finished', { type: 'device', id: j.deviceId }, { jobId: id }, tx);
+    });
+    return { ok: true };
+  }
+
   async cancel(p: Principal, id: string, meta: RequestMeta) {
     return this.db.transaction(async (tx) => {
-      const [j] = await tx.select().from(provisioningJobs).where(and(eq(provisioningJobs.id, id), eq(provisioningJobs.orgId, p.orgId))).for('update');
+      const [j] = await tx
+        .select()
+        .from(provisioningJobs)
+        .where(and(eq(provisioningJobs.id, id), eq(provisioningJobs.orgId, p.orgId)))
+        .for('update');
       if (!j) throw new NotFoundException({ error: 'not_found', message: 'Job not found' });
       if (!ACTIVE_JOB_STATUSES.includes(j.status)) throw new ConflictException({ error: 'job_finished', message: 'The job has already finished' });
       if (j.status === 'queued') {
         await tx.update(provisioningJobs).set({ status: 'cancelled', finishedAt: new Date(), bootTokenHash: null, bootMac: null, secretEnc: null }).where(eq(provisioningJobs.id, id));
         // Nothing ran, so nothing to clean up on the equipment; only the image's status was set up front.
-        if (j.kind === 'image_verify' && j.imageId) await tx.update(osImages).set({ verifyStatus: 'unverified', verifyError: 'Verification was cancelled' }).where(and(eq(osImages.id, j.imageId), eq(osImages.verifyStatus, 'verifying')));
+        if (j.kind === 'image_verify' && j.imageId)
+          await tx
+            .update(osImages)
+            .set({ verifyStatus: 'unverified', verifyError: 'Verification was cancelled' })
+            .where(and(eq(osImages.id, j.imageId), eq(osImages.verifyStatus, 'verifying')));
       } else {
         // A job waiting for a decision is handed back to the worker so its cleanup runs.
         await tx
@@ -235,16 +302,29 @@ export class ProvisioningService {
   /** Operator decision for a job in `recovery`. */
   async recover(p: Principal, id: string, d: z.infer<typeof recoveryDecisionSchema>, meta: RequestMeta) {
     return this.db.transaction(async (tx) => {
-      const [j] = await tx.select().from(provisioningJobs).where(and(eq(provisioningJobs.id, id), eq(provisioningJobs.orgId, p.orgId))).for('update');
+      const [j] = await tx
+        .select()
+        .from(provisioningJobs)
+        .where(and(eq(provisioningJobs.id, id), eq(provisioningJobs.orgId, p.orgId)))
+        .for('update');
       if (!j) throw new NotFoundException({ error: 'not_found', message: 'Job not found' });
       if (j.status !== 'recovery') throw new ConflictException({ error: 'not_in_recovery', message: 'The job is not waiting for a decision' });
       const base = { status: 'waiting' as const, nextRunAt: new Date(), leaseUntil: null, workerId: null, error: null };
       if (d.decision === 'retry') {
-        await tx.update(provisioningSteps).set({ status: 'pending', error: null }).where(and(eq(provisioningSteps.jobId, id), eq(provisioningSteps.seq, j.currentStep)));
+        await tx
+          .update(provisioningSteps)
+          .set({ status: 'pending', error: null })
+          .where(and(eq(provisioningSteps.jobId, id), eq(provisioningSteps.seq, j.currentStep)));
         await tx.update(provisioningJobs).set(base).where(eq(provisioningJobs.id, id));
       } else if (d.decision === 'skip') {
-        await tx.update(provisioningSteps).set({ status: 'skipped', finishedAt: new Date(), detail: `Skipped by ${p.email}${d.note ? `: ${d.note}` : ''}` }).where(and(eq(provisioningSteps.jobId, id), eq(provisioningSteps.seq, j.currentStep)));
-        await tx.update(provisioningJobs).set({ ...base, currentStep: j.currentStep + 1 }).where(eq(provisioningJobs.id, id));
+        await tx
+          .update(provisioningSteps)
+          .set({ status: 'skipped', finishedAt: new Date(), detail: `Skipped by ${p.email}${d.note ? `: ${d.note}` : ''}` })
+          .where(and(eq(provisioningSteps.jobId, id), eq(provisioningSteps.seq, j.currentStep)));
+        await tx
+          .update(provisioningJobs)
+          .set({ ...base, currentStep: j.currentStep + 1 })
+          .where(eq(provisioningJobs.id, id));
       } else {
         await tx
           .update(provisioningJobs)
@@ -284,7 +364,10 @@ export class ProvisioningService {
     const secretEnc = this.secrets.encrypt(JSON.stringify({ password }), controlContext(p.orgId, d.id, kind, host, port ?? null));
     return this.db.transaction(async (tx) => {
       const values = { kind, host, port: port ?? null, username, params, secretEnc, rotatedAt: new Date(), lastTestAt: null, lastTestOk: null, lastTestMessage: null };
-      await tx.insert(controlCredentials).values({ deviceId: d.id, orgId: p.orgId, ...values }).onConflictDoUpdate({ target: controlCredentials.deviceId, set: values });
+      await tx
+        .insert(controlCredentials)
+        .values({ deviceId: d.id, orgId: p.orgId, ...values })
+        .onConflictDoUpdate({ target: controlCredentials.deviceId, set: values });
       await this.record(p, meta, 'provisioning.control_credential', { type: 'device', id: d.id }, { kind, host, port: port ?? null, username }, tx);
       return { deviceId: d.id, kind, host, port: port ?? null, username, secretConfigured: true };
     });
@@ -293,7 +376,10 @@ export class ProvisioningService {
   async deleteControlCredential(p: Principal, deviceId: string, meta: RequestMeta) {
     await this.device(p, deviceId, { customerAllowed: false });
     return this.db.transaction(async (tx) => {
-      const rows = await tx.delete(controlCredentials).where(and(eq(controlCredentials.deviceId, deviceId), eq(controlCredentials.orgId, p.orgId))).returning();
+      const rows = await tx
+        .delete(controlCredentials)
+        .where(and(eq(controlCredentials.deviceId, deviceId), eq(controlCredentials.orgId, p.orgId)))
+        .returning();
       if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'No control credential' });
       await this.record(p, meta, 'provisioning.control_credential_delete', { type: 'device', id: deviceId }, undefined, tx);
       return { ok: true };
@@ -316,12 +402,25 @@ export class ProvisioningService {
   async install(p: Principal, input: InstallInput, idem: string | undefined, meta: RequestMeta) {
     const d = await this.device(p, input.deviceId, { customerAllowed: false });
     if (!ProvisioningService.confirmMatches(input.confirm, [d.hostname, d.assetTag])) throw new BadRequestException({ error: 'confirmation_mismatch', message: `Type the server's current name (${d.hostname ?? d.assetTag}) to confirm` });
-    const [img] = await this.db.select().from(osImages).where(and(eq(osImages.id, input.imageId), eq(osImages.orgId, p.orgId)));
+    const [img] = await this.db
+      .select()
+      .from(osImages)
+      .where(and(eq(osImages.id, input.imageId), eq(osImages.orgId, p.orgId)));
     if (!img) throw new BadRequestException({ error: 'invalid_image', message: 'Image not found' });
     if (!img.enabled) throw new BadRequestException({ error: 'image_disabled', message: 'The image is disabled' });
-    if (img.verifyStatus !== 'verified') throw new BadRequestException({ error: 'image_unverified', message: 'Verify the image checksums before installing it' });
-    if (input.method === 'redfish_virtual_media' && !img.isoUrl) throw new BadRequestException({ error: 'method_unsupported', message: 'This image has no ISO for virtual media' });
-    if (input.method === 'pxe' && !img.kernelUrl) throw new BadRequestException({ error: 'method_unsupported', message: 'This image has no kernel/initrd for PXE' });
+    if (img.source === 'upload') {
+      if (img.uploadStatus !== 'ready') throw new BadRequestException({ error: 'image_not_ready', message: 'The ISO is still being uploaded or prepared' });
+      const det = img.detected as unknown as DetectedIso | null;
+      if (!det?.methods.includes(input.method)) throw new BadRequestException({ error: 'method_unsupported', message: `${img.name} cannot be installed by ${input.method === 'pxe' ? 'network boot (PXE)' : 'virtual media'}` });
+      if (!det.modes[input.method].includes(input.mode))
+        throw new BadRequestException({ error: 'mode_unsupported', message: `${img.name} supports only ${det.modes[input.method].join(' or ')} installs by ${input.method === 'pxe' ? 'network boot' : 'virtual media'}` });
+      if (input.mode === 'automatic' && img.templateKind === 'none') throw new BadRequestException({ error: 'no_template', message: 'An automatic install needs an install template on the image' });
+      if (input.mode === 'automatic' && det.bootKind === 'esxi' && !input.rootPassword) throw new BadRequestException({ error: 'password_required', message: 'ESXi needs a root password' });
+    } else {
+      if (img.verifyStatus !== 'verified') throw new BadRequestException({ error: 'image_unverified', message: 'Verify the image checksums before installing it' });
+      if (input.method === 'redfish_virtual_media' && !img.isoUrl) throw new BadRequestException({ error: 'method_unsupported', message: 'This image has no ISO for virtual media' });
+      if (input.method === 'pxe' && !img.kernelUrl) throw new BadRequestException({ error: 'method_unsupported', message: 'This image has no kernel/initrd for PXE' });
+    }
     const [c] = await this.db.select({ kind: controlCredentials.kind }).from(controlCredentials).where(eq(controlCredentials.deviceId, d.id));
     if (!c) throw new BadRequestException({ error: 'no_control_credential', message: 'Set up the BMC control credential first' });
     if (input.method === 'redfish_virtual_media' && c.kind !== 'redfish') throw new BadRequestException({ error: 'method_unsupported', message: 'Virtual media needs a Redfish control credential' });
@@ -416,7 +515,10 @@ export class ProvisioningService {
     ProvisioningService.checkTemplate(input);
     try {
       return await this.db.transaction(async (tx) => {
-        const [i] = await tx.insert(osImages).values({ ...ProvisioningService.imageValues(input), orgId: p.orgId }).returning();
+        const [i] = await tx
+          .insert(osImages)
+          .values({ ...ProvisioningService.imageValues(input), orgId: p.orgId })
+          .returning();
         await this.record(p, meta, 'provisioning.image_create', { type: 'os_image', id: i!.id }, { name: input.name }, tx);
         return i!;
       });
@@ -430,13 +532,21 @@ export class ProvisioningService {
     ProvisioningService.checkTemplate(input);
     try {
       return await this.db.transaction(async (tx) => {
-        const [cur] = await tx.select().from(osImages).where(and(eq(osImages.id, id), eq(osImages.orgId, p.orgId))).for('update');
+        const [cur] = await tx
+          .select()
+          .from(osImages)
+          .where(and(eq(osImages.id, id), eq(osImages.orgId, p.orgId)))
+          .for('update');
         if (!cur) throw new NotFoundException({ error: 'not_found', message: 'Image not found' });
+        if (cur.source === 'upload') throw new BadRequestException({ error: 'uploaded_image', message: 'An uploaded ISO is edited through its settings, not its file URLs' });
         const v = ProvisioningService.imageValues(input);
         // New files or checksums need a new verification.
         const filesChanged = (['isoUrl', 'isoSha256', 'kernelUrl', 'kernelSha256', 'initrdUrl', 'initrdSha256'] as const).some((k) => v[k] !== cur[k]);
         if (filesChanged) {
-          const [busy] = await tx.select({ id: provisioningJobs.id }).from(provisioningJobs).where(and(eq(provisioningJobs.imageId, id), inArray(provisioningJobs.status, [...ACTIVE_JOB_STATUSES])));
+          const [busy] = await tx
+            .select({ id: provisioningJobs.id })
+            .from(provisioningJobs)
+            .where(and(eq(provisioningJobs.imageId, id), inArray(provisioningJobs.status, [...ACTIVE_JOB_STATUSES])));
           if (busy) throw new ConflictException({ error: 'in_use', message: 'A job is using this image; its files and checksums can change once it has finished', jobId: busy.id });
         }
         const [i] = await tx
@@ -454,33 +564,229 @@ export class ProvisioningService {
   }
 
   async deleteImage(p: Principal, id: string, meta: RequestMeta) {
-    return this.db.transaction(async (tx) => {
-      const [busy] = await tx.select({ id: provisioningJobs.id }).from(provisioningJobs).where(and(eq(provisioningJobs.imageId, id), inArray(provisioningJobs.status, [...ACTIVE_JOB_STATUSES])));
-      if (busy) throw new ConflictException({ error: 'in_use', message: 'A job is using this image' });
-      const rows = await tx.delete(osImages).where(and(eq(osImages.id, id), eq(osImages.orgId, p.orgId))).returning();
-      if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'Image not found' });
-      await this.record(p, meta, 'provisioning.image_delete', { type: 'os_image', id }, { name: rows[0]!.name }, tx);
-      return { ok: true };
-    });
+    return this.db
+      .transaction(async (tx) => {
+        const [busy] = await tx
+          .select({ id: provisioningJobs.id })
+          .from(provisioningJobs)
+          .where(and(eq(provisioningJobs.imageId, id), inArray(provisioningJobs.status, [...ACTIVE_JOB_STATUSES])));
+        if (busy) throw new ConflictException({ error: 'in_use', message: 'A job is using this image' });
+        const rows = await tx
+          .delete(osImages)
+          .where(and(eq(osImages.id, id), eq(osImages.orgId, p.orgId)))
+          .returning();
+        if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'Image not found' });
+        await this.record(p, meta, 'provisioning.image_delete', { type: 'os_image', id }, { name: rows[0]!.name }, tx);
+        return rows[0]!;
+      })
+      .then(async (img) => {
+        if (img.source === 'upload') await fs.rm(imagePaths(this.cfg.CDCIM_IMAGE_DIR, img.id).dir, { recursive: true, force: true });
+        return { ok: true };
+      });
   }
 
   async verifyImage(p: Principal, id: string, idem: string | undefined, meta: RequestMeta) {
-    const [img] = await this.db.select().from(osImages).where(and(eq(osImages.id, id), eq(osImages.orgId, p.orgId)));
+    const [img] = await this.db
+      .select()
+      .from(osImages)
+      .where(and(eq(osImages.id, id), eq(osImages.orgId, p.orgId)));
     if (!img) throw new NotFoundException({ error: 'not_found', message: 'Image not found' });
+    if (img.source === 'upload') throw new BadRequestException({ error: 'uploaded_image', message: 'Uploaded ISOs are checked when they are prepared; use Prepare again instead' });
     const files = ProvisioningService.fileSnapshot(img);
+    const r = await this.createJob(p, { kind: 'image_verify', imageId: id, params: { image: img.name, files } }, idem, { op: 'verify', id, files }, meta, 'provisioning.image_verify', { name: img.name }, async (tx) => {
+      await tx.update(osImages).set({ verifyStatus: 'verifying', verifyError: null }).where(eq(osImages.id, id));
+    });
+    return { ...ProvisioningService.publicJob(r.job), replayed: r.replayed };
+  }
+
+  /* ---------------------------------------------------------------- uploaded ISOs */
+
+  private async uploadedImage(p: Principal, id: string) {
+    const [img] = await this.db
+      .select()
+      .from(osImages)
+      .where(and(eq(osImages.id, id), eq(osImages.orgId, p.orgId)));
+    if (!img || img.source !== 'upload') throw new NotFoundException({ error: 'not_found', message: 'Uploaded image not found' });
+    return img;
+  }
+
+  /** Starts an ISO upload: checks the name and free disk space, and reserves the file. */
+  async startUpload(p: Principal, input: IsoUploadStart, meta: RequestMeta) {
+    const base = this.cfg.CDCIM_IMAGE_DIR;
+    const free = await freeBytes(base);
+    // Room for the ISO plus an extracted copy (RHEL family and ESXi installers read the extracted tree).
+    if (free < input.size * 2.05) {
+      const gb = (n: number) => `${(n / 1024 ** 3).toFixed(1)} GB`;
+      throw new BadRequestException({ error: 'disk_full', message: `Not enough disk space: ${gb(input.size * 2.05)} needed (the ISO and an extracted copy), ${gb(free)} free` });
+    }
+    const id = randomUUID();
+    const paths = imagePaths(base, id);
+    await fs.mkdir(paths.dir, { recursive: true, mode: 0o750 });
+    await fs.writeFile(paths.iso, '');
+    try {
+      return await this.db.transaction(async (tx) => {
+        const [i] = await tx
+          .insert(osImages)
+          .values({
+            id,
+            orgId: p.orgId,
+            name: input.name,
+            family: 'other',
+            source: 'upload',
+            uploadStatus: 'uploading',
+            uploadFileName: input.fileName,
+            uploadSize: input.size,
+            uploadedBytes: 0,
+            expectedSha256: input.expectedSha256 ?? null,
+            notes: input.notes ?? null,
+            templateKind: 'none',
+            verifyStatus: 'unverified',
+          })
+          .returning();
+        await this.record(p, meta, 'provisioning.image_upload', { type: 'os_image', id }, { name: input.name, fileName: input.fileName, size: input.size }, tx);
+        return i!;
+      });
+    } catch (e) {
+      await fs.rm(paths.dir, { recursive: true, force: true });
+      if (isPg(e, '23505', 'os_images_org_name_uq')) throw new ConflictException({ error: 'duplicate_name', message: 'An image with this name already exists' });
+      throw e;
+    }
+  }
+
+  /**
+   * Appends one chunk. The client sends chunks in order with the offset it
+   * believes is next; a mismatch (lost response, second tab) gets 409 with the
+   * server's offset so the client resumes from there.
+   */
+  async uploadChunk(p: Principal, id: string, offset: number, length: number, body: Readable) {
+    const img = await this.uploadedImage(p, id);
+    if (img.uploadStatus !== 'uploading') throw new ConflictException({ error: 'not_uploading', message: 'This upload is already complete' });
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1) throw new BadRequestException({ error: 'invalid_chunk', message: 'Upload-Offset and Content-Length are required' });
+    if (length > UPLOAD_CHUNK_BYTES * 2) throw new BadRequestException({ error: 'chunk_too_large', message: `Chunks are at most ${(UPLOAD_CHUNK_BYTES * 2) / 1024 ** 2} MiB` });
+    if (offset !== img.uploadedBytes) throw new ConflictException({ error: 'offset_mismatch', message: 'Resume from the server’s offset', uploadedBytes: img.uploadedBytes });
+    if (offset + length > (img.uploadSize ?? 0)) throw new BadRequestException({ error: 'too_large', message: 'The upload is larger than announced' });
+    const iso = imagePaths(this.cfg.CDCIM_IMAGE_DIR, id).iso;
+    let n = 0;
+    const limit = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        n += chunk.length;
+        if (n > length) return cb(new BadRequestException({ error: 'too_large', message: 'The chunk is larger than its Content-Length' }));
+        cb(null, chunk);
+      },
+    });
+    await pipeline(body, limit, createWriteStream(iso, { flags: 'r+', start: offset }));
+    if (n !== length) throw new BadRequestException({ error: 'incomplete_chunk', message: 'The chunk arrived incomplete; send it again' });
+    const r = await this.db
+      .update(osImages)
+      .set({ uploadedBytes: offset + length })
+      .where(and(eq(osImages.id, id), eq(osImages.uploadedBytes, offset), eq(osImages.uploadStatus, 'uploading')))
+      .returning({ uploadedBytes: osImages.uploadedBytes });
+    if (!r.length) {
+      const [cur] = await this.db.select({ uploadedBytes: osImages.uploadedBytes }).from(osImages).where(eq(osImages.id, id));
+      throw new ConflictException({ error: 'offset_mismatch', message: 'Resume from the server’s offset', uploadedBytes: cur?.uploadedBytes ?? 0 });
+    }
+    return { uploadedBytes: r[0]!.uploadedBytes, uploadSize: img.uploadSize };
+  }
+
+  /** All bytes are in: queue the preparation (checksum, detection, boot files). */
+  async completeUpload(p: Principal, id: string, idem: string | undefined, meta: RequestMeta) {
+    const img = await this.uploadedImage(p, id);
+    if (img.uploadStatus === 'uploading' && img.uploadedBytes !== img.uploadSize) throw new BadRequestException({ error: 'incomplete', message: `${img.uploadedBytes} of ${img.uploadSize} bytes uploaded` });
+    if (img.uploadStatus !== 'uploading' && img.uploadStatus !== 'failed') throw new ConflictException({ error: 'already_complete', message: 'The ISO is already being prepared or is ready' });
+    const st = await fs.stat(imagePaths(this.cfg.CDCIM_IMAGE_DIR, id).iso).catch(() => null);
+    if (!st || st.size !== img.uploadSize) throw new BadRequestException({ error: 'incomplete', message: 'The file on the server is incomplete; upload it again' });
+    const [busy] = await this.db
+      .select({ id: provisioningJobs.id })
+      .from(provisioningJobs)
+      .where(and(eq(provisioningJobs.imageId, id), inArray(provisioningJobs.status, [...ACTIVE_JOB_STATUSES])));
+    if (busy) throw new ConflictException({ error: 'job_in_progress', message: 'The ISO is already being prepared', jobId: busy.id });
     const r = await this.createJob(
       p,
-      { kind: 'image_verify', imageId: id, params: { image: img.name, files } },
+      { kind: 'image_process', imageId: id, params: { image: img.name, fileName: img.uploadFileName } },
       idem,
-      { op: 'verify', id, files },
+      { op: 'process', id, attempt: img.processError ?? null },
       meta,
-      'provisioning.image_verify',
+      'provisioning.image_process',
       { name: img.name },
       async (tx) => {
-        await tx.update(osImages).set({ verifyStatus: 'verifying', verifyError: null }).where(eq(osImages.id, id));
+        await tx.update(osImages).set({ uploadStatus: 'processing', processError: null, verifyStatus: 'verifying' }).where(eq(osImages.id, id));
       },
     );
     return { ...ProvisioningService.publicJob(r.job), replayed: r.replayed };
+  }
+
+  /** Name, template and boot arguments of an uploaded image (its files come from the upload). */
+  async updateUploadedImage(p: Principal, id: string, input: z.infer<typeof uploadedImageSchema>, meta: RequestMeta) {
+    await this.uploadedImage(p, id);
+    const vars = [...templateVariables(input.template ?? ''), ...templateVariables(input.bootArgs ?? '')];
+    const unknown = vars.filter((v) => !(TEMPLATE_VARIABLES as readonly string[]).includes(v));
+    if (unknown.length) throw new BadRequestException({ error: 'invalid_template', message: `Unknown template variable(s): ${unknown.map((v) => `{{${v}}}`).join(', ')}` });
+    if (input.templateKind !== 'none' && !input.template?.trim()) throw new BadRequestException({ error: 'invalid_template', message: 'Enter the template' });
+    if (input.bootArgs && /[\r\n]/.test(input.bootArgs)) throw new BadRequestException({ error: 'invalid_boot_args', message: 'Boot arguments must be one line' });
+    try {
+      const [i] = await this.db
+        .update(osImages)
+        .set({ name: input.name, templateKind: input.templateKind, template: input.templateKind === 'none' ? null : (input.template ?? null), bootArgs: input.bootArgs ?? null, enabled: input.enabled, notes: input.notes ?? null })
+        .where(and(eq(osImages.id, id), eq(osImages.orgId, p.orgId)))
+        .returning();
+      await this.record(p, meta, 'provisioning.image_update', { type: 'os_image', id }, { name: input.name, uploaded: true });
+      return i!;
+    } catch (e) {
+      if (isPg(e, '23505', 'os_images_org_name_uq')) throw new ConflictException({ error: 'duplicate_name', message: 'An image with this name already exists' });
+      throw e;
+    }
+  }
+
+  /* ---------------------------------------------------------------- PXE service */
+
+  async pxe(p: Principal) {
+    const [s] = await this.db.select().from(pxeSettings).where(eq(pxeSettings.orgId, p.orgId));
+    const active = await this.db.execute<{ n: number }>(sql`
+      select count(*)::int as n from provisioning_jobs
+       where org_id = ${p.orgId} and kind = 'os_install' and status in ('queued','running','waiting','verifying','recovery') and params->>'method' = 'pxe'`);
+    // This server's addresses, to help pick the interface and the address servers reach it at.
+    const nics = Object.entries(networkInterfaces())
+      .filter(([name]) => name !== 'lo')
+      .map(([name, addrs]) => ({ name, addresses: (addrs ?? []).filter((a) => a.family === 'IPv4' && !a.internal).map((a) => a.cidr ?? a.address) }))
+      .filter((n) => n.addresses.length);
+    return {
+      settings: s ?? null,
+      bootBase: await bootBaseUrl(this.db, p.orgId, this.cfg.CDCIM_PUBLIC_URL),
+      activeNetworkInstalls: active.rows[0]?.n ?? 0,
+      interfaces: nics,
+    };
+  }
+
+  async putPxe(p: Principal, input: PxeSettingsInput, meta: RequestMeta) {
+    for (const r of input.ranges) {
+      const toN = (a: string) => a.split('.').reduce((n, o) => ((n << 8) | Number(o)) >>> 0, 0);
+      const [net, len] = r.network.split('/') as [string, string];
+      const mask = Number(len) === 0 ? 0 : (0xffffffff << (32 - Number(len))) >>> 0;
+      const inNet = (a: string) => (toN(a) & mask) >>> 0 === (toN(net) & mask) >>> 0;
+      if (!inNet(r.start) || !inNet(r.end)) throw new BadRequestException({ error: 'invalid_range', message: `${r.start}–${r.end} is not inside ${r.network}` });
+      if (toN(r.start) > toN(r.end)) throw new BadRequestException({ error: 'invalid_range', message: `${r.start} comes after ${r.end}` });
+      if (r.gateway && !inNet(r.gateway)) throw new BadRequestException({ error: 'invalid_range', message: `The gateway ${r.gateway} is not inside ${r.network}` });
+    }
+    const values = {
+      enabled: input.enabled,
+      mode: input.mode,
+      interface: input.interface || null,
+      serverAddress: input.serverAddress,
+      proxyNetworks: input.proxyNetworks,
+      ranges: input.ranges.map((r) => ({ ...r, gateway: r.gateway ?? null })),
+      bootBaseUrl: input.bootBaseUrl ?? null,
+      allowNetworks: input.allowNetworks,
+      appliedAt: null,
+      applyError: null,
+    };
+    const [row] = await this.db
+      .insert(pxeSettings)
+      .values({ orgId: p.orgId, ...values })
+      .onConflictDoUpdate({ target: pxeSettings.orgId, set: values })
+      .returning();
+    bootSettingsVersion.n++;
+    await this.record(p, meta, 'provisioning.pxe_settings', { type: 'pxe_settings', id: null }, { enabled: input.enabled, mode: input.mode, interface: input.interface ?? null, serverAddress: input.serverAddress });
+    return row!;
   }
 
   /* ---------------------------------------------------------------- virtualization */
@@ -538,7 +844,11 @@ export class ProvisioningService {
     const secretEnc = this.secrets.encrypt(JSON.stringify(secret), virtContext(p.orgId, id, input.kind, input.url));
     try {
       return await this.db.transaction(async (tx) => {
-        const [cur] = await tx.select().from(virtIntegrations).where(and(eq(virtIntegrations.id, id), eq(virtIntegrations.orgId, p.orgId))).for('update');
+        const [cur] = await tx
+          .select()
+          .from(virtIntegrations)
+          .where(and(eq(virtIntegrations.id, id), eq(virtIntegrations.orgId, p.orgId)))
+          .for('update');
         if (!cur) throw new NotFoundException({ error: 'not_found', message: 'Integration not found' });
         if (cur.kind !== input.kind) throw new BadRequestException({ error: 'kind_fixed', message: 'The type of an integration cannot change' });
         const [i] = await tx
@@ -557,9 +867,14 @@ export class ProvisioningService {
 
   async deleteIntegration(p: Principal, id: string, meta: RequestMeta) {
     return this.db.transaction(async (tx) => {
-      const [busy] = await tx.execute<{ id: string }>(sql`select j.id from provisioning_jobs j join virt_guests g on g.id = j.guest_id where g.integration_id = ${id} and j.status in ('queued','running','waiting','verifying','recovery') limit 1`).then((r) => r.rows);
+      const [busy] = await tx
+        .execute<{ id: string }>(sql`select j.id from provisioning_jobs j join virt_guests g on g.id = j.guest_id where g.integration_id = ${id} and j.status in ('queued','running','waiting','verifying','recovery') limit 1`)
+        .then((r) => r.rows);
       if (busy) throw new ConflictException({ error: 'in_use', message: 'A VM action is still running for this integration' });
-      const rows = await tx.delete(virtIntegrations).where(and(eq(virtIntegrations.id, id), eq(virtIntegrations.orgId, p.orgId))).returning();
+      const rows = await tx
+        .delete(virtIntegrations)
+        .where(and(eq(virtIntegrations.id, id), eq(virtIntegrations.orgId, p.orgId)))
+        .returning();
       if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'Integration not found' });
       await this.record(p, meta, 'virt.integration_delete', { type: 'virt_integration', id }, { name: rows[0]!.name }, tx);
       return { ok: true };
@@ -567,7 +882,11 @@ export class ProvisioningService {
   }
 
   async syncNow(p: Principal, id: string, meta: RequestMeta) {
-    const rows = await this.db.update(virtIntegrations).set({ nextSyncAt: new Date() }).where(and(eq(virtIntegrations.id, id), eq(virtIntegrations.orgId, p.orgId))).returning({ id: virtIntegrations.id });
+    const rows = await this.db
+      .update(virtIntegrations)
+      .set({ nextSyncAt: new Date() })
+      .where(and(eq(virtIntegrations.id, id), eq(virtIntegrations.orgId, p.orgId)))
+      .returning({ id: virtIntegrations.id });
     if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'Integration not found' });
     await this.record(p, meta, 'virt.sync_requested', { type: 'virt_integration', id });
     return { ok: true, message: 'The worker will sync within 30 seconds' };
@@ -603,7 +922,11 @@ export class ProvisioningService {
 
   async mapHost(p: Principal, id: string, deviceId: string | null, meta: RequestMeta) {
     if (deviceId) await this.device(p, deviceId, { customerAllowed: false });
-    const rows = await this.db.update(virtHosts).set({ deviceId }).where(and(eq(virtHosts.id, id), eq(virtHosts.orgId, p.orgId))).returning({ id: virtHosts.id });
+    const rows = await this.db
+      .update(virtHosts)
+      .set({ deviceId })
+      .where(and(eq(virtHosts.id, id), eq(virtHosts.orgId, p.orgId)))
+      .returning({ id: virtHosts.id });
     if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'Host not found' });
     await this.record(p, meta, 'virt.host_map', { type: 'virt_host', id }, { deviceId });
     return { ok: true };
@@ -657,25 +980,37 @@ export class ProvisioningService {
 
   async assignGuest(p: Principal, id: string, customerId: string | null, meta: RequestMeta) {
     if (customerId) {
-      const [c] = await this.db.select({ id: customers.id }).from(customers).where(and(eq(customers.id, customerId), eq(customers.orgId, p.orgId)));
+      const [c] = await this.db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(and(eq(customers.id, customerId), eq(customers.orgId, p.orgId)));
       if (!c) throw new BadRequestException({ error: 'invalid_customer', message: 'Customer does not exist' });
     }
-    const rows = await this.db.update(virtGuests).set({ customerId }).where(and(eq(virtGuests.id, id), eq(virtGuests.orgId, p.orgId))).returning({ id: virtGuests.id, name: virtGuests.name });
+    const rows = await this.db
+      .update(virtGuests)
+      .set({ customerId })
+      .where(and(eq(virtGuests.id, id), eq(virtGuests.orgId, p.orgId)))
+      .returning({ id: virtGuests.id, name: virtGuests.name });
     // Addresses recorded from the hypervisor for this VM follow its customer (addresses entered by a person are not touched).
-    if (rows.length) await this.db.execute(sql`update ip_addresses set customer_id = ${customerId}, updated_at = now() where org_id = ${p.orgId} and guest_id = ${id} and source = 'hypervisor' and status <> 'released'`).catch(() => undefined);
+    if (rows.length)
+      await this.db.execute(sql`update ip_addresses set customer_id = ${customerId}, updated_at = now() where org_id = ${p.orgId} and guest_id = ${id} and source = 'hypervisor' and status <> 'released'`).catch(() => undefined);
     if (!rows.length) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
     await this.record(p, meta, 'virt.guest_assign', { type: 'virt_guest', id }, { customerId, name: rows[0]!.name });
     return { ok: true };
   }
 
   async guestAction(p: Principal, id: string, input: { action: GuestAction; confirm: string }, idem: string | undefined, meta: RequestMeta) {
-    const [g] = await this.db.select().from(virtGuests).where(and(eq(virtGuests.id, id), eq(virtGuests.orgId, p.orgId)));
+    const [g] = await this.db
+      .select()
+      .from(virtGuests)
+      .where(and(eq(virtGuests.id, id), eq(virtGuests.orgId, p.orgId)));
     if (!g || (p.userType !== 'staff' && g.customerId !== p.customerId)) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
     if (g.missingSince) throw new ConflictException({ error: 'vm_missing', message: 'The hypervisor no longer reports this VM' });
     const [i] = await this.db.select().from(virtIntegrations).where(eq(virtIntegrations.id, g.integrationId));
     if (!i?.enabled || !i.actionsEnabled) throw new ForbiddenException({ error: 'actions_disabled', message: 'VM actions are not enabled for this hypervisor' });
     // Virtualizor's suspend/unsuspend is the panel's administrative suspension (e.g. for non-payment), not a VM pause.
-    if (i.kind === 'virtualizor' && (input.action === 'suspend' || input.action === 'resume')) throw new BadRequestException({ error: 'action_unsupported', message: 'Suspend and resume are administrative actions in Virtualizor; use the panel' });
+    if (i.kind === 'virtualizor' && (input.action === 'suspend' || input.action === 'resume'))
+      throw new BadRequestException({ error: 'action_unsupported', message: 'Suspend and resume are administrative actions in Virtualizor; use the panel' });
     if (!ProvisioningService.confirmMatches(input.confirm, [g.name, g.externalId])) throw new BadRequestException({ error: 'confirmation_mismatch', message: `Type the VM's name (${g.name}) to confirm` });
     const r = await this.createJob(p, { kind: 'guest_action', guestId: g.id, params: { action: input.action, vm: g.name } }, idem, { op: 'guest', id, action: input.action }, meta, 'virt.guest_action', { action: input.action, vm: g.name });
     return { ...ProvisioningService.publicJob(r.job), replayed: r.replayed };
@@ -689,4 +1024,3 @@ export class ProvisioningService {
     return { active: ['queued', 'running', 'waiting', 'verifying'].reduce((a, k) => a + (by[k] ?? 0), 0), recovery: by.recovery ?? 0, completed7d: by.completed ?? 0, unverified7d: by.unverified ?? 0, failed7d: by.failed ?? 0 };
   }
 }
-

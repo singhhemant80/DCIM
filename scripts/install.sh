@@ -61,6 +61,7 @@ CONF_FILE="$ENV_DIR/install.conf"
 BACKUP_KEY="$ENV_DIR/backup.key"
 STATE_DIR=/var/lib/crapplet-dcim
 ANCHOR_DIR=/var/lib/crapplet-dcim-anchors
+PXE_OUT_DIR=/var/lib/crapplet-dcim-pxe
 BACKUP_DIR=/var/backups/crapplet-dcim
 LOG_DIR=/var/log/crapplet-dcim
 SERVICE=crapplet-dcim
@@ -136,7 +137,7 @@ if [ -n "$DOMAIN" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-step "Installing system packages (PostgreSQL, Redis, Git, ipmitool)"
+step "Installing system packages (PostgreSQL, Redis, Git, ipmitool, dnsmasq, bsdtar)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq || die "apt-get update failed: check the network and /etc/apt/sources.list*"
 REDIS_POLICY="$(apt-cache policy redis-server 2>/dev/null || true)"   # captured first: grep -q in a pipe trips pipefail
@@ -150,7 +151,8 @@ if [ "${ID:-}" = ubuntu ] && ! grep -q 'Candidate: [0-9]' <<<"$REDIS_POLICY"; th
   fi
   apt-get update -qq
 fi
-PKGS="ca-certificates curl gnupg git openssl rsync postgresql redis-server ipmitool iputils-ping iproute2 unattended-upgrades"
+# dnsmasq-base: the PXE service (DHCP/TFTP for network installs; no DNS, started only when enabled). libarchive-tools: reading uploaded ISOs.
+PKGS="ca-certificates curl gnupg git openssl rsync postgresql redis-server ipmitool iputils-ping iproute2 unattended-upgrades dnsmasq-base libarchive-tools"
 [ -n "$DOMAIN" ] && PKGS="$PKGS nginx" && [ "$TLS_MODE" = letsencrypt ] && PKGS="$PKGS certbot"
 # shellcheck disable=SC2086
 apt-get install -y -qq $PKGS >/dev/null || die "Package installation failed (see the apt messages above)"
@@ -177,7 +179,9 @@ ok "PostgreSQL $(runuser -u postgres -- psql -qtAX -c 'show server_version' | cu
 step "Preparing user and directories"
 id "$RUN_USER" >/dev/null 2>&1 || useradd --system --home-dir "$PREFIX" --shell /usr/sbin/nologin "$RUN_USER"
 install -d -o root -g root -m 0755 "$PREFIX" "$RELEASES" "$PREFIX/bin"
-install -d -o "$RUN_USER" -g "$RUN_USER" -m 0750 "$STATE_DIR" "$LOG_DIR" "$PREFIX/.npm" "$PREFIX/build"
+install -d -o "$RUN_USER" -g "$RUN_USER" -m 0750 "$STATE_DIR" "$LOG_DIR" "$PREFIX/.npm" "$PREFIX/build" "$STATE_DIR/images" "$STATE_DIR/pxe"
+# Written only by the root PXE helper; dnsmasq reads it.
+install -d -o root -g root -m 0755 "$PXE_OUT_DIR"
 install -d -o root -g "$RUN_USER" -m 0750 "$ENV_DIR"
 install -d -o root -g root -m 0700 "$BACKUP_DIR" "$ANCHOR_DIR"
 # Installs before the release layout kept a single checkout in $APP_DIR: keep it as the first release.
@@ -288,6 +292,23 @@ open_flow_port() {
 }
 open_flow_port
 
+# PXE service: DHCP (67), TFTP (69) and proxy-DHCP boot server (4011) over UDP. dnsmasq runs only
+# when the PXE service is enabled in NexoraDC, and answers only servers with an active network install.
+open_pxe_ports() {
+  [ "${CDCIM_PXE_PORTS:-1}" = "0" ] && return 0
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    local changed=0 p
+    for p in 67/udp 69/udp 4011/udp; do firewall-cmd --permanent --query-port="$p" >/dev/null 2>&1 || { firewall-cmd --permanent --add-port="$p" >/dev/null && changed=1; }; done
+    [ "$changed" = 1 ] && firewall-cmd --reload >/dev/null
+    ok "Firewall (firewalld): UDP 67, 69 and 4011 open for the PXE service (CDCIM_PXE_PORTS=0 skips this)"
+  elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    local p
+    for p in 67/udp 69/udp 4011/udp; do ufw allow "$p" >/dev/null || true; done
+    ok "Firewall (ufw): UDP 67, 69 and 4011 open for the PXE service (CDCIM_PXE_PORTS=0 skips this)"
+  fi
+}
+open_pxe_ports
+
 # ---------------------------------------------------------------------------
 step "Configuring database and secrets"
 if [ "$UPGRADE" -eq 0 ]; then
@@ -331,6 +352,10 @@ LOG_LEVEL=info
 # CDCIM_DEVICE_ALLOW=10.10.0.0/16
 # UDP port for flow records from routers (NetFlow/IPFIX, e.g. MikroTik Traffic Flow); 0 turns it off.
 # CDCIM_FLOW_PORT=2055
+# Uploaded ISOs and the PXE service (OS & Images → PXE service).
+CDCIM_IMAGE_DIR=$STATE_DIR/images
+CDCIM_PXE_DIR=$STATE_DIR/pxe
+CDCIM_PXE_OUT_DIR=$PXE_OUT_DIR
 $INSECURE
 EOF
   umask 022
@@ -340,6 +365,10 @@ else
   chown root:"$RUN_USER" "$ENV_FILE"; chmod 0640 "$ENV_FILE"
   # Older installs pointed WEB_DIST_DIR into the checkout; it now follows the current release.
   sed -i "s#^WEB_DIST_DIR=.*#WEB_DIST_DIR=$APP_DIR/apps/web/dist#" "$ENV_FILE"
+  # Settings added by later releases.
+  grep -q '^CDCIM_IMAGE_DIR=' "$ENV_FILE" || echo "CDCIM_IMAGE_DIR=$STATE_DIR/images" >>"$ENV_FILE"
+  grep -q '^CDCIM_PXE_DIR=' "$ENV_FILE" || echo "CDCIM_PXE_DIR=$STATE_DIR/pxe" >>"$ENV_FILE"
+  grep -q '^CDCIM_PXE_OUT_DIR=' "$ENV_FILE" || echo "CDCIM_PXE_OUT_DIR=$PXE_OUT_DIR" >>"$ENV_FILE"
   if [ -n "$DOMAIN" ]; then
     # Moving an existing install behind nginx with TLS: loopback only, secure cookies, one proxy hop.
     sed -i -e "s#^HOST=.*#HOST=127.0.0.1#" -e "s#^WEB_ORIGIN=.*#WEB_ORIGIN=https://$DOMAIN#" -e "s#^TRUST_PROXY_HOPS=.*#TRUST_PROXY_HOPS=1#" \
@@ -468,8 +497,58 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+    # PXE service. The worker writes only a small desired-state file; this root helper validates it,
+    # renders dnsmasq's configuration and restarts or reloads dnsmasq. dnsmasq drops to its own user.
+    cat >/etc/systemd/system/$SERVICE-pxe.service <<EOF
+[Unit]
+Description=NexoraDC PXE service (dnsmasq: DHCP/TFTP for network installs)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=$PXE_OUT_DIR/dnsmasq.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=$PXE_OUT_DIR/dnsmasq.conf
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+EOF
+    cat >/etc/systemd/system/$SERVICE-pxe-apply.service <<EOF
+[Unit]
+Description=Apply NexoraDC PXE settings
+
+[Service]
+Type=oneshot
+ExecStart=$NODE_BIN $APP_DIR/apps/api/dist/cli/pxe-apply.js --desired $STATE_DIR/pxe/desired.json --out $PXE_OUT_DIR --ipxe $APP_DIR/deploy/pxe/ipxe --owner $RUN_USER --service $SERVICE-pxe
+EOF
+    cat >/etc/systemd/system/$SERVICE-pxe-apply.path <<EOF
+[Unit]
+Description=Apply NexoraDC PXE settings when they change
+
+[Path]
+PathChanged=$STATE_DIR/pxe/desired.json
+Unit=$SERVICE-pxe-apply.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    cat >/etc/systemd/system/$SERVICE-pxe-apply.timer <<EOF
+[Unit]
+Description=Re-apply NexoraDC PXE settings every minute (in case a change was missed)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
     systemctl daemon-reload
     systemctl enable "$SERVICE" "$SERVICE-worker" >/dev/null 2>&1
+    systemctl enable --now "$SERVICE-pxe-apply.path" "$SERVICE-pxe-apply.timer" >/dev/null 2>&1 || warn "Could not enable the PXE settings helper ($SERVICE-pxe-apply)"
     systemctl enable --now "$SERVICE-backup.timer" "$SERVICE-anchor.timer" >/dev/null 2>&1
   else
     cat >"$PREFIX/bin/nosystemd" <<EOF

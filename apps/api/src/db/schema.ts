@@ -54,7 +54,10 @@ export const organizations = pgTable('organizations', {
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
   /** Validated by `settingsSchema` in @crapplet/shared. */
-  settings: jsonb('settings').$type<OrgSettings>().notNull().default(sql`'{}'::jsonb`),
+  settings: jsonb('settings')
+    .$type<OrgSettings>()
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -86,10 +89,7 @@ export const customers = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [
-    uniqueIndex('customers_org_code_uq').on(t.orgId, t.code),
-    index('customers_org_name_idx').on(t.orgId, t.name),
-  ],
+  (t) => [uniqueIndex('customers_org_code_uq').on(t.orgId, t.code), index('customers_org_name_idx').on(t.orgId, t.name)],
 );
 
 export const users = pgTable(
@@ -137,14 +137,14 @@ export const roles = pgTable(
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
     scope: userTypeEnum('scope').notNull(),
-    permissions: text('permissions').array().notNull().default(sql`'{}'::text[]`),
+    permissions: text('permissions')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [
-    uniqueIndex('roles_org_name_uq').on(t.orgId, t.name),
-    uniqueIndex('roles_org_system_key_uq').on(t.orgId, t.systemKey),
-  ],
+  (t) => [uniqueIndex('roles_org_name_uq').on(t.orgId, t.name), uniqueIndex('roles_org_system_key_uq').on(t.orgId, t.systemKey)],
 );
 
 export const userRoles = pgTable(
@@ -240,7 +240,10 @@ export const auditEvents = pgTable(
     ip: inet('ip'),
     userAgent: text('user_agent'),
     requestId: text('request_id'),
-    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    metadata: jsonb('metadata')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     prevHash: text('prev_hash'),
     hash: text('hash').notNull(),
   },
@@ -337,10 +340,7 @@ export const rooms = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [
-    uniqueIndex('rooms_building_name_uq').on(t.buildingId, t.name),
-    check('rooms_grid_ck', sql`${t.gridCols} between 1 and 200 and ${t.gridRows} between 1 and 200`),
-  ],
+  (t) => [uniqueIndex('rooms_building_name_uq').on(t.buildingId, t.name), check('rooms_grid_ck', sql`${t.gridCols} between 1 and 200 and ${t.gridRows} between 1 and 200`)],
 );
 
 export const rackRows = pgTable(
@@ -386,7 +386,9 @@ export const racks = pgTable(
   },
   (t) => [
     uniqueIndex('racks_room_name_uq').on(t.roomId, t.name),
-    uniqueIndex('racks_room_grid_uq').on(t.roomId, t.gridX, t.gridY).where(sql`${t.gridX} is not null and ${t.gridY} is not null`),
+    uniqueIndex('racks_room_grid_uq')
+      .on(t.roomId, t.gridX, t.gridY)
+      .where(sql`${t.gridX} is not null and ${t.gridY} is not null`),
     index('racks_org_idx').on(t.orgId),
     check('racks_u_height_ck', sql`${t.uHeight} between 1 and 60`),
     check('racks_grid_pair_ck', sql`(${t.gridX} is null) = (${t.gridY} is null)`),
@@ -499,9 +501,15 @@ export const devices = pgTable(
     cpuCount: integer('cpu_count'),
     ramGb: integer('ram_gb'),
     dimmLayout: text('dimm_layout'),
-    disks: jsonb('disks').$type<DeviceDisk[]>().notNull().default(sql`'[]'::jsonb`),
+    disks: jsonb('disks')
+      .$type<DeviceDisk[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     raid: text('raid'),
-    nics: jsonb('nics').$type<DeviceNic[]>().notNull().default(sql`'[]'::jsonb`),
+    nics: jsonb('nics')
+      .$type<DeviceNic[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     mgmtType: mgmtTypeEnum('mgmt_type'),
     mgmtAddress: text('mgmt_address'),
     /** The server's own (OS) IP or host name, pinged for reachability alongside the BMC. */
@@ -516,13 +524,18 @@ export const devices = pgTable(
     warrantyExpires: date('warranty_expires'),
     eolDate: date('eol_date'),
     notes: text('notes'),
-    custom: jsonb('custom').$type<Record<string, string | number | boolean | null>>().notNull().default(sql`'{}'::jsonb`),
+    custom: jsonb('custom')
+      .$type<Record<string, string | number | boolean | null>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     uniqueIndex('devices_org_asset_tag_uq').on(t.orgId, sql`lower(${t.assetTag})`),
-    uniqueIndex('devices_org_serial_uq').on(t.orgId, sql`lower(${t.serial})`).where(sql`${t.serial} is not null and ${t.serial} <> ''`),
+    uniqueIndex('devices_org_serial_uq')
+      .on(t.orgId, sql`lower(${t.serial})`)
+      .where(sql`${t.serial} is not null and ${t.serial} <> ''`),
     index('devices_org_state_idx').on(t.orgId, t.lifecycleState),
     index('devices_rack_idx').on(t.rackId),
     index('devices_customer_idx').on(t.customerId),
@@ -555,7 +568,10 @@ export const deviceEvents = pgTable(
     actorLabel: text('actor_label'),
     kind: text('kind').notNull(),
     summary: text('summary').notNull(),
-    data: jsonb('data').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    data: jsonb('data')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
   },
   (t) => [index('device_events_device_idx').on(t.deviceId, t.occurredAt)],
 );
@@ -573,7 +589,10 @@ export const rackEvents = pgTable(
     actorLabel: text('actor_label'),
     kind: text('kind').notNull(),
     summary: text('summary').notNull(),
-    data: jsonb('data').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    data: jsonb('data')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
   },
   (t) => [index('rack_events_rack_idx').on(t.rackId, t.occurredAt)],
 );
@@ -630,7 +649,6 @@ export type DeviceModel = typeof deviceModels.$inferSelect;
 export type Device = typeof devices.$inferSelect;
 export type SparePart = typeof spareParts.$inferSelect;
 
-
 /* ======================================================================
  * Phase 3: network infrastructure and IPAM
  *
@@ -675,7 +693,12 @@ export const vrfs = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('vrfs_org_name_uq').on(t.orgId, t.name), uniqueIndex('vrfs_org_rd_uq').on(t.orgId, t.rd).where(sql`${t.rd} is not null`)],
+  (t) => [
+    uniqueIndex('vrfs_org_name_uq').on(t.orgId, t.name),
+    uniqueIndex('vrfs_org_rd_uq')
+      .on(t.orgId, t.rd)
+      .where(sql`${t.rd} is not null`),
+  ],
 );
 
 export const vlans = pgTable(
@@ -693,10 +716,7 @@ export const vlans = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [
-    uniqueIndex('vlans_scope_vid_uq').on(t.orgId, sql`coalesce(${t.datacenterId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.vid),
-    check('vlans_vid_ck', sql`${t.vid} between 1 and 4094`),
-  ],
+  (t) => [uniqueIndex('vlans_scope_vid_uq').on(t.orgId, sql`coalesce(${t.datacenterId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.vid), check('vlans_vid_ck', sql`${t.vid} between 1 and 4094`)],
 );
 
 export const interfaces = pgTable(
@@ -848,7 +868,9 @@ export const circuits = pgTable(
   },
   (t) => [
     uniqueIndex('circuits_provider_cid_uq').on(t.providerId, sql`lower(${t.cid})`),
-    uniqueIndex('circuits_interface_uq').on(t.interfaceId).where(sql`${t.interfaceId} is not null and ${t.status} <> 'decommissioned'`),
+    uniqueIndex('circuits_interface_uq')
+      .on(t.interfaceId)
+      .where(sql`${t.interfaceId} is not null and ${t.status} <> 'decommissioned'`),
   ],
 );
 
@@ -928,7 +950,10 @@ export const ipAddresses = pgTable(
     dnsError: text('dns_error'),
     dnsSyncedAt: ts('dns_synced_at'),
     /** Records DCIM created for this address (so it only ever changes or deletes its own records). */
-    dnsRecords: jsonb('dns_records').$type<ManagedDnsRecord[]>().notNull().default(sql`'[]'::jsonb`),
+    dnsRecords: jsonb('dns_records')
+      .$type<ManagedDnsRecord[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1058,7 +1083,10 @@ export const ipEvents = pgTable(
     actorLabel: text('actor_label'),
     action: text('action').notNull(),
     summary: text('summary').notNull(),
-    data: jsonb('data').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    data: jsonb('data')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
   },
   (t) => [index('ip_events_ip_idx').on(t.ipId, t.occurredAt)],
 );
@@ -1091,7 +1119,10 @@ export const deviceCredentials = pgTable(
     username: text('username'),
     /** SecretBox ciphertext of a JSON object (community / keys / password / token). Never returned by the API. */
     secretEnc: text('secret_enc').notNull(),
-    params: jsonb('params').$type<CredentialParams>().notNull().default(sql`'{}'::jsonb`),
+    params: jsonb('params')
+      .$type<CredentialParams>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     lastTestAt: ts('last_test_at'),
     lastTestOk: boolean('last_test_ok'),
     lastTestMessage: text('last_test_message'),
@@ -1136,7 +1167,9 @@ export const discoveryRuns = pgTable(
   },
   (t) => [
     index('discovery_runs_device_idx').on(t.deviceId, t.createdAt),
-    uniqueIndex('discovery_runs_one_active_uq').on(t.deviceId).where(sql`${t.status} in ('queued', 'running')`),
+    uniqueIndex('discovery_runs_one_active_uq')
+      .on(t.deviceId)
+      .where(sql`${t.status} in ('queued', 'running')`),
   ],
 );
 
@@ -1243,7 +1276,10 @@ export const deviceHealth = pgTable('device_health', {
   uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
   version: text('version'),
   board: text('board'),
-  sensors: jsonb('sensors').$type<{ name: string; value: string; unit: string | null }[]>().notNull().default(sql`'[]'::jsonb`),
+  sensors: jsonb('sensors')
+    .$type<{ name: string; value: string; unit: string | null }[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
   /** Why the last health read failed (the counters poll itself may still be fine). */
   lastError: text('last_error'),
   lastAttemptAt: ts('last_attempt_at'),
@@ -1433,7 +1469,10 @@ export const interfaceRates = pgTable(
     utilIn: real('util_in'),
     utilOut: real('util_out'),
     speedBps: bigint('speed_bps', { mode: 'number' }),
-    flags: text('flags').array().notNull().default(sql`'{}'::text[]`),
+    flags: text('flags')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
   },
   (t) => [primaryKey({ columns: [t.interfaceId, t.at] }), index('interface_rates_at_idx').on(t.at)],
 );
@@ -1494,9 +1533,18 @@ export const alertRules = pgTable('alert_rules', {
   severity: alertSeverityEnum('severity').notNull().default('warning'),
   scope: text('scope').notNull().default('all'),
   datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'cascade' }),
-  deviceIds: uuid('device_ids').array().notNull().default(sql`'{}'::uuid[]`),
-  interfaceIds: uuid('interface_ids').array().notNull().default(sql`'{}'::uuid[]`),
-  channelIds: uuid('channel_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  deviceIds: uuid('device_ids')
+    .array()
+    .notNull()
+    .default(sql`'{}'::uuid[]`),
+  interfaceIds: uuid('interface_ids')
+    .array()
+    .notNull()
+    .default(sql`'{}'::uuid[]`),
+  channelIds: uuid('channel_ids')
+    .array()
+    .notNull()
+    .default(sql`'{}'::uuid[]`),
   notifyOnResolve: boolean('notify_on_resolve').notNull().default(true),
   createdBy: uuid('created_by'),
   createdAt: createdAt(),
@@ -1548,7 +1596,9 @@ export const alerts = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    uniqueIndex('alerts_one_firing_uq').on(t.ruleId, t.targetKey).where(sql`${t.status} = 'firing'`),
+    uniqueIndex('alerts_one_firing_uq')
+      .on(t.ruleId, t.targetKey)
+      .where(sql`${t.status} = 'firing'`),
     index('alerts_org_status_idx').on(t.orgId, t.status, t.startedAt),
   ],
 );
@@ -1563,7 +1613,10 @@ export const maintenanceWindows = pgTable(
     endsAt: ts('ends_at').notNull(),
     scope: text('scope').notNull().default('devices'),
     datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'cascade' }),
-    deviceIds: uuid('device_ids').array().notNull().default(sql`'{}'::uuid[]`),
+    deviceIds: uuid('device_ids')
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
     notes: text('notes'),
     /** Shown to affected customers (those with equipment or space at the site or on the devices). */
     customerVisible: boolean('customer_visible').notNull().default(false),
@@ -1584,7 +1637,10 @@ export const notificationChannels = pgTable(
     kind: channelKindEnum('kind').notNull(),
     enabled: boolean('enabled').notNull().default(true),
     /** Non-secret settings (recipients, SMTP host…). */
-    config: jsonb('config').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    config: jsonb('config')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     /** SecretBox ciphertext of the secret fields; never returned. */
     secretEnc: text('secret_enc').notNull(),
     lastSentAt: ts('last_sent_at'),
@@ -1780,7 +1836,7 @@ export type PowerTariff = typeof powerTariffs.$inferSelect;
 
 /* ============================================================== Phase 6: provisioning and virtualization */
 
-export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action']);
+export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process']);
 export const jobStatusEnum = pgEnum('job_status', ['queued', 'running', 'waiting', 'verifying', 'completed', 'failed', 'cancelled', 'recovery']);
 export const stepStatusEnum = pgEnum('job_step_status', ['pending', 'running', 'done', 'failed', 'skipped']);
 export const bmcKindEnum = pgEnum('bmc_kind', ['redfish', 'ipmi']);
@@ -1800,7 +1856,10 @@ export const controlCredentials = pgTable('control_credentials', {
   host: text('host').notNull(),
   port: integer('port'),
   username: text('username').notNull(),
-  params: jsonb('params').$type<CredentialParams>().notNull().default(sql`'{}'::jsonb`),
+  params: jsonb('params')
+    .$type<CredentialParams>()
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   /** SecretBox ciphertext, AAD (org, device, "control", kind, host, port). */
   secretEnc: text('secret_enc').notNull(),
   rotatedAt: ts('rotated_at').notNull().defaultNow(),
@@ -1828,7 +1887,10 @@ export const consoleCredentials = pgTable(
     host: text('host'),
     port: integer('port'),
     username: text('username'),
-    params: jsonb('params').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    params: jsonb('params')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     /** SecretBox ciphertext (AAD: org, device, "console", kind, host, port); null for the web address. */
     secretEnc: text('secret_enc'),
     rotatedAt: ts('rotated_at').notNull().defaultNow(),
@@ -1868,7 +1930,9 @@ export const consoleSessions = pgTable(
   (t) => [
     index('console_sessions_device_idx').on(t.deviceId, t.createdAt),
     // One live session per server and console type (BMCs allow only one SOL session anyway).
-    uniqueIndex('console_sessions_live_uq').on(t.deviceId, t.kind).where(sql`${t.status} in ('pending', 'connecting', 'active')`),
+    uniqueIndex('console_sessions_live_uq')
+      .on(t.deviceId, t.kind)
+      .where(sql`${t.status} in ('pending', 'connecting', 'active')`),
   ],
 );
 
@@ -1896,12 +1960,55 @@ export const osImages = pgTable(
     verifiedAt: ts('verified_at'),
     verifyError: text('verify_error'),
     /** Sizes found by the last verification, per file. */
-    sizes: jsonb('sizes').$type<Record<string, number>>().notNull().default(sql`'{}'::jsonb`),
+    sizes: jsonb('sizes')
+      .$type<Record<string, number>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    /** 'url': files on a mirror (verified by download); 'upload': an ISO uploaded to this server. */
+    source: text('source').notNull().default('url'),
+    /** Uploaded ISOs: uploading → processing → ready (or failed). */
+    uploadStatus: text('upload_status'),
+    uploadFileName: text('upload_file_name'),
+    uploadSize: bigint('upload_size', { mode: 'number' }),
+    uploadedBytes: bigint('uploaded_bytes', { mode: 'number' }).notNull().default(0),
+    expectedSha256: text('expected_sha256'),
+    /** How the uploaded ISO boots (ubuntu, rhel, …), found by looking inside it. */
+    bootKind: text('boot_kind'),
+    detected: jsonb('detected').$type<Record<string, unknown>>(),
+    processError: text('process_error'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex('os_images_org_name_uq').on(t.orgId, sql`lower(${t.name})`)],
 );
+
+/** The built-in PXE service (DHCP/TFTP for network installs), one per organization. */
+export const pxeSettings = pgTable('pxe_settings', {
+  orgId: uuid('org_id')
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  enabled: boolean('enabled').notNull().default(false),
+  mode: text('mode').notNull().default('proxy'),
+  interface: text('interface'),
+  serverAddress: text('server_address').notNull(),
+  proxyNetworks: jsonb('proxy_networks')
+    .$type<string[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
+  ranges: jsonb('ranges')
+    .$type<{ network: string; start: string; end: string; gateway?: string | null; dns: string[] }[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
+  bootBaseUrl: text('boot_base_url'),
+  allowNetworks: jsonb('allow_networks')
+    .$type<string[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
+  /** Written by the worker: when the service configuration was last applied, and any problem. */
+  appliedAt: ts('applied_at'),
+  applyError: text('apply_error'),
+  updatedAt: updatedAt(),
+});
 
 /**
  * Provisioning jobs. A job runs as numbered steps; each step is recorded so an
@@ -1918,11 +2025,20 @@ export const provisioningJobs = pgTable(
     guestId: uuid('guest_id'),
     imageId: uuid('image_id').references(() => osImages.id, { onDelete: 'set null' }),
     /** What was asked (no secrets). */
-    params: jsonb('params').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    params: jsonb('params')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     /** Working data written by the steps (what was done, for idempotent re-runs and cleanup). */
-    state: jsonb('state').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    state: jsonb('state')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     /** Written only by the boot endpoints (script fetched, config fetched, installer callback); read by the steps. */
-    signals: jsonb('signals').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    signals: jsonb('signals')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     /** SecretBox ciphertext of job secrets (e.g. the root password), AAD bound to the job. */
     secretEnc: text('secret_enc'),
     idempotencyKey: text('idempotency_key'),
@@ -1947,14 +2063,26 @@ export const provisioningJobs = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
-    uniqueIndex('provisioning_jobs_idem_uq').on(t.orgId, t.idempotencyKey).where(sql`${t.idempotencyKey} is not null`),
+    uniqueIndex('provisioning_jobs_idem_uq')
+      .on(t.orgId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} is not null`),
     // One active job per device and per VM: no two operations fight over the same machine.
-    uniqueIndex('provisioning_jobs_device_active_uq').on(t.deviceId).where(sql`${t.deviceId} is not null and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
-    uniqueIndex('provisioning_jobs_guest_active_uq').on(t.guestId).where(sql`${t.guestId} is not null and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
-    uniqueIndex('provisioning_jobs_boot_token_uq').on(t.bootTokenHash).where(sql`${t.bootTokenHash} is not null`),
+    uniqueIndex('provisioning_jobs_device_active_uq')
+      .on(t.deviceId)
+      .where(sql`${t.deviceId} is not null and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
+    uniqueIndex('provisioning_jobs_guest_active_uq')
+      .on(t.guestId)
+      .where(sql`${t.guestId} is not null and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
+    uniqueIndex('provisioning_jobs_boot_token_uq')
+      .on(t.bootTokenHash)
+      .where(sql`${t.bootTokenHash} is not null`),
     // Boot endpoints look jobs up by MAC across organizations: one active install per MAC (cleared when a job ends).
-    uniqueIndex('provisioning_jobs_mac_active_uq').on(t.bootMac).where(sql`${t.bootMac} is not null`),
-    uniqueIndex('provisioning_jobs_image_verify_active_uq').on(t.imageId).where(sql`${t.kind} = 'image_verify' and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
+    uniqueIndex('provisioning_jobs_mac_active_uq')
+      .on(t.bootMac)
+      .where(sql`${t.bootMac} is not null`),
+    uniqueIndex('provisioning_jobs_image_verify_active_uq')
+      .on(t.imageId)
+      .where(sql`${t.kind} = 'image_verify' and ${t.status} in ('queued','running','waiting','verifying','recovery')`),
     index('provisioning_jobs_due_idx').on(t.status, t.nextRunAt),
     index('provisioning_jobs_org_idx').on(t.orgId, t.createdAt),
   ],
@@ -2002,7 +2130,10 @@ export const virtIntegrations = pgTable(
     url: text('url').notNull(),
     verifyTls: boolean('verify_tls').notNull().default(true),
     /** Non-secret settings (token ids). */
-    params: jsonb('params').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    params: jsonb('params')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     secretEnc: text('secret_enc').notNull(),
     actionsEnabled: boolean('actions_enabled').notNull().default(false),
     enabled: boolean('enabled').notNull().default(true),
@@ -2059,7 +2190,10 @@ export const virtGuests = pgTable(
     memBytes: bigint('mem_bytes', { mode: 'number' }),
     diskBytes: bigint('disk_bytes', { mode: 'number' }),
     uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
-    ipAddresses: text('ip_addresses').array().notNull().default(sql`'{}'::text[]`),
+    ipAddresses: text('ip_addresses')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     lastSeenAt: ts('last_seen_at'),
     missingSince: ts('missing_since'),
@@ -2069,6 +2203,7 @@ export const virtGuests = pgTable(
 
 export type ProvisioningJob = typeof provisioningJobs.$inferSelect;
 export type OsImage = typeof osImages.$inferSelect;
+export type PxeSettings = typeof pxeSettings.$inferSelect;
 export type ControlCredential = typeof controlCredentials.$inferSelect;
 export type VirtIntegration = typeof virtIntegrations.$inferSelect;
 export type VirtGuest = typeof virtGuests.$inferSelect;
@@ -2157,11 +2292,7 @@ export const coloAllocations = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [
-    index('colo_allocations_customer_idx').on(t.customerId),
-    index('colo_allocations_rack_idx').on(t.rackId),
-    check('colo_allocations_range_ck', sql`${t.startU} >= 1 and ${t.endU} >= ${t.startU}`),
-  ],
+  (t) => [index('colo_allocations_customer_idx').on(t.customerId), index('colo_allocations_rack_idx').on(t.rackId), check('colo_allocations_range_ck', sql`${t.startU} >= 1 and ${t.endU} >= ${t.startU}`)],
 );
 
 export const crossConnects = pgTable(
@@ -2353,7 +2484,12 @@ export const domainEvents = pgTable(
     at: ts('at').notNull().defaultNow(),
     processedAt: ts('processed_at'),
   },
-  (t) => [index('domain_events_pending_idx').on(t.id).where(sql`${t.processedAt} is null`), index('domain_events_org_idx').on(t.orgId, t.id)],
+  (t) => [
+    index('domain_events_pending_idx')
+      .on(t.id)
+      .where(sql`${t.processedAt} is null`),
+    index('domain_events_org_idx').on(t.orgId, t.id),
+  ],
 );
 
 export const apiKeys = pgTable(
@@ -2517,7 +2653,10 @@ export const workflowRuns = pgTable(
     /** completed, skipped (conditions not met), waiting_approval, rejected, failed */
     status: text('status').notNull(),
     nextAction: integer('next_action').notNull().default(0),
-    log: jsonb('log').$type<{ at: string; message: string; level?: string }[]>().notNull().default(sql`'[]'::jsonb`),
+    log: jsonb('log')
+      .$type<{ at: string; message: string; level?: string }[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     decidedBy: text('decided_by'),
     decidedAt: ts('decided_at'),
     /** Times the worker crashed while advancing the run; the run fails after a few. */
@@ -2528,7 +2667,9 @@ export const workflowRuns = pgTable(
   (t) => [
     uniqueIndex('workflow_runs_event_uq').on(t.workflowId, t.eventId),
     index('workflow_runs_org_idx').on(t.orgId, t.createdAt),
-    index('workflow_runs_due_idx').on(t.createdAt).where(sql`${t.status} in ('pending', 'approved')`),
+    index('workflow_runs_due_idx')
+      .on(t.createdAt)
+      .where(sql`${t.status} in ('pending', 'approved')`),
   ],
 );
 
@@ -2566,7 +2707,10 @@ export const incidents = pgTable(
     severity: text('severity').notNull(),
     status: text('status').notNull().default('investigating'),
     datacenterId: uuid('datacenter_id').references(() => datacenters.id, { onDelete: 'set null' }),
-    customerIds: uuid('customer_ids').array().notNull().default(sql`'{}'::uuid[]`),
+    customerIds: uuid('customer_ids')
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
     public: boolean('public').notNull().default(true),
     startedAt: ts('started_at').notNull().defaultNow(),
     resolvedAt: ts('resolved_at'),

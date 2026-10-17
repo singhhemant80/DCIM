@@ -25,6 +25,7 @@ import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { FLOW_COLLECTOR_STATUS_KEY, WORKER_HEARTBEAT_KEY, flowLiveKey } from '../health/worker-heartbeat';
 import { applyFlowRetention, startFlowCollector } from './flows/collector';
 import { createTorchLoop } from './flows/torch';
+import { createPxeLoop } from './pxe/desired';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
 import { createJobLoop } from './provisioning/engine';
@@ -109,7 +110,16 @@ async function main() {
       void publish(orgId, { type: 'alert', ...rest });
     }
   };
-  const provisioning: ProvisioningDeps = { db, secrets, logger, kinds: PROVISIONING_KINDS, publicUrl: config.CDCIM_PUBLIC_URL, imageAllowLocal: process.env.CDCIM_IMAGE_ALLOW_LOCAL === 'true' };
+  const provisioning: ProvisioningDeps = {
+    db,
+    secrets,
+    logger,
+    kinds: PROVISIONING_KINDS,
+    publicUrl: config.CDCIM_PUBLIC_URL,
+    imageDir: config.CDCIM_IMAGE_DIR,
+    pxeOutDir: config.CDCIM_PXE_OUT_DIR,
+    imageAllowLocal: process.env.CDCIM_IMAGE_ALLOW_LOCAL === 'true',
+  };
   const automation: AutomationDeps = { db, secrets, logger, allowPrivate: process.env.CDCIM_WEBHOOK_ALLOW_PRIVATE === 'true' };
   const pollConcurrency = Math.max(1, Math.min(64, Number(process.env.POLL_CONCURRENCY ?? 16) || 16));
 
@@ -120,7 +130,10 @@ async function main() {
   });
   // Flow records (NetFlow v5/v9, IPFIX, e.g. MikroTik Traffic Flow) for bandwidth per IP address.
   const flowPort = Number(process.env.CDCIM_FLOW_PORT ?? 2055);
-  const flows = await startFlowCollector({ db, logger, onLive: (orgId, snap) => void pub.set(flowLiveKey(orgId), JSON.stringify(snap), 'EX', 30).catch(() => undefined) }, { port: Number.isInteger(flowPort) && flowPort >= 0 && flowPort < 65536 ? flowPort : 2055, bind: process.env.CDCIM_FLOW_BIND || '0.0.0.0' }).catch((e) => {
+  const flows = await startFlowCollector(
+    { db, logger, onLive: (orgId, snap) => void pub.set(flowLiveKey(orgId), JSON.stringify(snap), 'EX', 30).catch(() => undefined) },
+    { port: Number.isInteger(flowPort) && flowPort >= 0 && flowPort < 65536 ? flowPort : 2055, bind: process.env.CDCIM_FLOW_BIND || '0.0.0.0' },
+  ).catch((e) => {
     logger.error({ err: (e as Error).message }, 'flow collector could not start; bandwidth per IP is unavailable');
     return null;
   });
@@ -138,6 +151,7 @@ async function main() {
       const r = await applyFlowRetention(db);
       if (r.minute + r.hourly) logger.info(r, 'old per-IP traffic removed');
     }),
+    every('pxe', 10_000, createPxeLoop({ db, logger, pxeDir: config.CDCIM_PXE_DIR, outDir: config.CDCIM_PXE_OUT_DIR, publicUrl: config.CDCIM_PUBLIC_URL })),
     every('schedules', 60_000, async () => {
       const ids = await runDueSchedules(db, async (runId) => {
         await producer.add('run', { runId }, { jobId: runId, attempts: 1, removeOnComplete: 1000, removeOnFail: 1000 });

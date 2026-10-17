@@ -113,7 +113,10 @@ function installer(mac: string, outcome: 'done' | 'failed' | null = 'done') {
     if (cfg.status !== 200 || !outcome) return;
     const cb = /(http:\/\/\S+\/api\/v1\/boot\/callback\/[\w-]+)/.exec(cfg.text)![1]!;
     await request(ctx.server).post(new URL(cb).pathname).send({ status: 'started' }).expect(200);
-    await request(ctx.server).post(new URL(cb).pathname).send({ status: outcome, message: outcome === 'failed' ? 'anaconda: no disks found' : undefined }).expect(200);
+    await request(ctx.server)
+      .post(new URL(cb).pathname)
+      .send({ status: outcome, message: outcome === 'failed' ? 'anaconda: no disks found' : undefined })
+      .expect(200);
   };
 }
 
@@ -485,7 +488,19 @@ describe('OS installation', () => {
         })(),
       );
     });
-    const j = await ok(admin.post(`${P}/installs`, installBody({ method: 'pxe', hostname: 'db-01.example.net', macAddress: '52:54:00:aa:bb:02', network: { mode: 'static', address: '203.0.113.60', prefixLength: 24, gateway: '203.0.113.1', nameservers: ['1.1.1.1', '9.9.9.9'] }, verify: { by: 'tcp', port: 22 }, confirm: 'SRV-01' })));
+    const j = await ok(
+      admin.post(
+        `${P}/installs`,
+        installBody({
+          method: 'pxe',
+          hostname: 'db-01.example.net',
+          macAddress: '52:54:00:aa:bb:02',
+          network: { mode: 'static', address: '203.0.113.60', prefixLength: 24, gateway: '203.0.113.1', nameservers: ['1.1.1.1', '9.9.9.9'] },
+          verify: { by: 'tcp', port: 22 },
+          confirm: 'SRV-01',
+        }),
+      ),
+    );
     const done = await drive(j.id);
     expect(done.status).toBe('completed');
     expect((await stepsOf(j.id)).map((s) => s.name)).toContain('Wait for network boot');
@@ -549,7 +564,9 @@ describe('OS installation', () => {
     await resetBmc(bmc, 'On');
     hooks.tcpUp = true; // the old OS answers on :22
     bmc.onBoot(() => undefined);
-    const j = await ok(admin.post(`${P}/installs`, installBody({ hostname: 'tcp-01.example.net', confirm: 'SRV-01', network: { mode: 'static', address: '203.0.113.70', prefixLength: 24, gateway: '203.0.113.1' }, verify: { by: 'tcp', port: 22 } })));
+    const j = await ok(
+      admin.post(`${P}/installs`, installBody({ hostname: 'tcp-01.example.net', confirm: 'SRV-01', network: { mode: 'static', address: '203.0.113.70', prefixLength: 24, gateway: '203.0.113.1' }, verify: { by: 'tcp', port: 22 } })),
+    );
     const mid = await drive(j.id, { max: 5 }).catch(() => null);
     expect(mid).toBeNull(); // still waiting
     const step = (await stepsOf(j.id)).find((x) => x.name === 'Wait for the installer')!;
@@ -568,9 +585,9 @@ describe('OS installation', () => {
     expect((await request(ctx.server).get('/api/v1/boot/config/not-a-real-token-xxxxxxxxxx')).status).toBe(404);
     expect((await request(ctx.server).post('/api/v1/boot/callback/not-a-real-token-xxxxxxxxxx').send({ status: 'done' })).status).toBe(404);
     const boot = ctx.app.get(BootService);
-    expect(() => boot.checkSource('8.8.8.8')).toThrow(/not available from this network/);
-    expect(() => boot.checkSource('10.20.30.40')).not.toThrow();
-    expect(() => boot.checkSource('::ffff:192.168.1.5')).not.toThrow();
+    await expect(boot.checkSource('8.8.8.8')).rejects.toThrow(/not available from this network/);
+    await expect(boot.checkSource('10.20.30.40')).resolves.toBeUndefined();
+    await expect(boot.checkSource('::ffff:192.168.1.5')).resolves.toBeUndefined();
   });
 
   it('an installer that reports failure fails the job and cleans up the BMC', async () => {
@@ -671,7 +688,17 @@ describe('OS installation', () => {
 
 describe('hypervisors', () => {
   it('Proxmox: read-only sync, secrets write-only, no guessed host links', async () => {
-    const body = { kind: 'proxmox', name: 'PVE cluster', url: `http://127.0.0.1:${pve.port}`, verifyTls: false, tokenId: 'dcim@pve!read', tokenSecret: 'pve-read-secret-1', actionTokenId: 'dcim@pve!ops', actionTokenSecret: 'pve-ops-secret-2', syncMinutes: 5 };
+    const body = {
+      kind: 'proxmox',
+      name: 'PVE cluster',
+      url: `http://127.0.0.1:${pve.port}`,
+      verifyTls: false,
+      tokenId: 'dcim@pve!read',
+      tokenSecret: 'pve-read-secret-1',
+      actionTokenId: 'dcim@pve!ops',
+      actionTokenSecret: 'pve-ops-secret-2',
+      syncMinutes: 5,
+    };
     expect((await noc.post(`${V}/integrations`, body)).status).toBe(403);
     const i = await ok(admin.post(`${V}/integrations`, body));
     ids.pve = i.id;
@@ -763,7 +790,9 @@ describe('hypervisors', () => {
   it('Virtualizor: sends the admin API credentials and explains a rejected key', async () => {
     // The key and pass go in adminapikey / adminapipass (the mock only answers those).
     expect(vz.requests.length).toBeGreaterThan(0);
-    const bad = await ok(admin.post(`${V}/integrations`, { kind: 'virtualizor', name: 'VZ wrong key', url: `http://127.0.0.1:${vz.port}`, verifyTls: false, apiKey: 'WRONGKEY', apiPass: 'wrong-pass-123', actionsEnabled: false, syncMinutes: 10 }));
+    const bad = await ok(
+      admin.post(`${V}/integrations`, { kind: 'virtualizor', name: 'VZ wrong key', url: `http://127.0.0.1:${vz.port}`, verifyTls: false, apiKey: 'WRONGKEY', apiPass: 'wrong-pass-123', actionsEnabled: false, syncMinutes: 10 }),
+    );
     await syncDueIntegrations(deps(), { force: bad.id }).catch(() => undefined);
     const row = (await ok(admin.get(`${V}/integrations`))).find((x: { id: string }) => x.id === bad.id);
     expect(row.lastError).toMatch(/did not accept the API credentials/);

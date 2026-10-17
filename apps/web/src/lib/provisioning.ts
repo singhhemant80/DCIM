@@ -11,6 +11,7 @@ export interface JobT {
   imageId: string | null;
   imageName: string | null;
   params: Record<string, unknown>;
+  signals?: Record<string, unknown> | null;
   currentStep: number;
   stepCount: number | null;
   error: string | null;
@@ -54,7 +55,7 @@ export interface OsImageT {
   initrdUrl: string | null;
   initrdSha256: string | null;
   bootArgs: string | null;
-  templateKind: 'kickstart' | 'preseed' | 'autoinstall' | 'none';
+  templateKind: 'kickstart' | 'preseed' | 'autoinstall' | 'esxi' | 'none';
   template: string | null;
   enabled: boolean;
   notes: string | null;
@@ -62,6 +63,35 @@ export interface OsImageT {
   verifiedAt: string | null;
   verifyError: string | null;
   sizes: Record<string, number>;
+  /** 'url': files on a mirror; 'upload': an ISO uploaded to this server. */
+  source: 'url' | 'upload';
+  uploadStatus: 'uploading' | 'processing' | 'ready' | 'failed' | null;
+  uploadFileName: string | null;
+  uploadSize: number | null;
+  uploadedBytes: number;
+  bootKind: import('@crapplet/shared').BootKind | null;
+  detected: (import('@crapplet/shared').DetectedIso & { netbootSource?: string }) | null;
+  processError: string | null;
+}
+
+export interface PxeSettingsT {
+  enabled: boolean;
+  mode: import('@crapplet/shared').PxeMode;
+  interface: string | null;
+  serverAddress: string;
+  proxyNetworks: string[];
+  ranges: { network: string; start: string; end: string; gateway: string | null; dns: string[] }[];
+  bootBaseUrl: string | null;
+  allowNetworks: string[];
+  appliedAt: string | null;
+  applyError: string | null;
+  updatedAt: string;
+}
+export interface PxeViewT {
+  settings: PxeSettingsT | null;
+  bootBase: string | null;
+  activeNetworkInstalls: number;
+  interfaces: { name: string; addresses: string[] }[];
 }
 
 export interface ControlStatusT {
@@ -135,8 +165,7 @@ export interface VirtGuestT {
 
 export type Tone = 'ok' | 'warn' | 'crit' | 'est' | 'neutral' | 'accent';
 
-export const jobTone = (s: JobStatus): Tone =>
-  s === 'completed' ? 'ok' : s === 'failed' ? 'crit' : s === 'recovery' ? 'warn' : s === 'cancelled' ? 'neutral' : 'accent';
+export const jobTone = (s: JobStatus): Tone => (s === 'completed' ? 'ok' : s === 'failed' ? 'crit' : s === 'recovery' ? 'warn' : s === 'cancelled' ? 'neutral' : 'accent');
 export const jobStatusLabel = (s: JobStatus) => JOB_STATUS_LABELS[s] ?? s;
 export const jobKindLabel = (k: JobKind) => JOB_KIND_LABELS[k] ?? k;
 export const isActive = (s: JobStatus) => ['queued', 'running', 'waiting', 'verifying', 'recovery'].includes(s);

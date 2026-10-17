@@ -11,7 +11,10 @@ export const keyRing = z
   .transform((raw, ctx) => {
     // Format: "keyId:base64key,keyId2:base64key2" — the first key encrypts, all keys decrypt.
     const keys: { id: string; key: Buffer }[] = [];
-    for (const part of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+    for (const part of raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)) {
       const idx = part.indexOf(':');
       const id = part.slice(0, idx);
       const key = Buffer.from(part.slice(idx + 1), 'base64');
@@ -28,9 +31,7 @@ export const keyRing = z
     return keys;
   });
 
-const bool = z
-  .enum(['true', 'false', '1', '0'])
-  .transform((v) => v === 'true' || v === '1');
+const bool = z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1');
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -79,6 +80,14 @@ const envSchema = z.object({
    * TRUST_PROXY_HOPS is set, so allowing it must be a deliberate choice.
    */
   CDCIM_BOOT_ALLOW: z.string().default('10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,fc00::/7'),
+  /** Where uploaded ISOs and the files prepared from them are kept (the installer sets /var/lib/crapplet-dcim/images). */
+  CDCIM_IMAGE_DIR: z.string().default('./.data/images'),
+  /** Where the worker writes the PXE service configuration and TFTP files (the installer sets /var/lib/crapplet-dcim/pxe). */
+  CDCIM_PXE_DIR: z.string().default('./.data/pxe'),
+  /** Where the root-run PXE helper writes dnsmasq's files and status.json (the installer sets /var/lib/crapplet-dcim-pxe). */
+  CDCIM_PXE_OUT_DIR: z.string().default('./.data/pxe-out'),
+  /** The iPXE binaries shipped with NexoraDC (built with the NexoraDC boot script, see deploy/pxe/README.md). */
+  CDCIM_IPXE_DIR: z.string().default('../../deploy/pxe/ipxe'),
 });
 
 export type AppConfig = Omit<z.infer<typeof envSchema>, 'COOKIE_SECURE' | 'ENABLE_SWAGGER' | 'ALLOW_INSECURE_HTTP'> & {

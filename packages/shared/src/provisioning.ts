@@ -3,9 +3,9 @@ import { dateRangeFields, paginationSchema } from './schemas';
 
 /* ------------------------------------------------------------------ jobs */
 
-export const JOB_KINDS = ['power_action', 'os_install', 'image_verify', 'guest_action'] as const;
+export const JOB_KINDS = ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
-export const JOB_KIND_LABELS: Record<JobKind, string> = { power_action: 'Power action', os_install: 'OS installation', image_verify: 'Image checksum', guest_action: 'VM action' };
+export const JOB_KIND_LABELS: Record<JobKind, string> = { power_action: 'Power action', os_install: 'OS installation', image_verify: 'Image checksum', guest_action: 'VM action', image_process: 'ISO preparation' };
 
 /**
  * queued → running → (waiting ⇄ running) → verifying → completed
@@ -87,11 +87,12 @@ export type ControlCredentialInput = z.infer<typeof controlCredentialSchema>;
 /* ------------------------------------------------------------------ images */
 
 export const OS_FAMILIES = ['rhel', 'debian', 'ubuntu', 'proxmox', 'esxi', 'windows', 'other'] as const;
-export const TEMPLATE_KINDS = ['kickstart', 'preseed', 'autoinstall', 'none'] as const;
+export const TEMPLATE_KINDS = ['kickstart', 'preseed', 'autoinstall', 'esxi', 'none'] as const;
 export const TEMPLATE_KIND_LABELS: Record<(typeof TEMPLATE_KINDS)[number], string> = {
   kickstart: 'Kickstart (RHEL, Alma, Rocky)',
   preseed: 'Preseed (Debian)',
   autoinstall: 'Autoinstall / cloud-init (Ubuntu)',
+  esxi: 'ESXi kickstart (ks.cfg)',
   none: 'None (the image is fully unattended on its own)',
 };
 export const IMAGE_VERIFY_STATUSES = ['unverified', 'verifying', 'verified', 'mismatch', 'error'] as const;
@@ -140,6 +141,149 @@ export type OsImageInput = z.infer<typeof osImageSchema>;
 
 /* ------------------------------------------------------------------ installs */
 
+/* ------------------------------------------------------------------ uploaded ISOs */
+
+/** How an uploaded ISO boots, found by looking inside it. */
+export const BOOT_KINDS = ['ubuntu', 'debian', 'rhel', 'proxmox', 'esxi', 'windows', 'unknown'] as const;
+export type BootKind = (typeof BOOT_KINDS)[number];
+export const BOOT_KIND_LABELS: Record<BootKind, string> = {
+  ubuntu: 'Ubuntu (live server)',
+  debian: 'Debian',
+  rhel: 'RHEL family (Rocky, Alma, CentOS, RHEL, Fedora, Oracle)',
+  proxmox: 'Proxmox VE',
+  esxi: 'VMware ESXi',
+  windows: 'Windows',
+  unknown: 'Not recognised',
+};
+export const UPLOAD_STATUSES = ['uploading', 'processing', 'ready', 'failed'] as const;
+export type UploadStatus = (typeof UPLOAD_STATUSES)[number];
+export const INSTALL_MODES = ['automatic', 'interactive'] as const;
+export type InstallMode = (typeof INSTALL_MODES)[number];
+export const INSTALL_MODE_LABELS: Record<InstallMode, string> = { automatic: 'Automatic (unattended)', interactive: 'Interactive (finish in the console)' };
+
+/** What NexoraDC found inside an uploaded ISO and can do with it. */
+export interface DetectedIso {
+  bootKind: BootKind;
+  /** e.g. "Ubuntu 24.04.1 LTS", from the ISO's own label. */
+  label: string | null;
+  version: string | null;
+  codename: string | null;
+  arch: string | null;
+  /** Install methods that work with this ISO. */
+  methods: ('pxe' | 'redfish_virtual_media')[];
+  /** Modes per method. */
+  modes: { pxe: InstallMode[]; redfish_virtual_media: InstallMode[] };
+  /** Network boot needs UEFI (ESXi). */
+  uefiOnly: boolean;
+  notes: string[];
+}
+
+/** Largest ISO accepted (64 GiB). */
+export const MAX_ISO_BYTES = 64 * 1024 ** 3;
+/** Upload chunk size the web client uses; the server accepts up to twice this per request. */
+export const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+
+export const isoUploadStartSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  fileName: z
+    .string()
+    .trim()
+    .min(5)
+    .max(255)
+    .regex(/^[^/\\\0]+\.iso$/i, 'An .iso file'),
+  size: z
+    .number()
+    .int()
+    .min(1024 * 1024)
+    .max(MAX_ISO_BYTES),
+  /** Optional: the SHA-256 published by the vendor; the upload is rejected if it differs. */
+  expectedSha256: sha256.nullable().optional(),
+  notes: z.string().trim().max(2000).nullable().optional(),
+});
+export type IsoUploadStart = z.infer<typeof isoUploadStartSchema>;
+
+/** Template and install settings of an uploaded image (its files come from the upload). */
+export const uploadedImageSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  templateKind: z.enum(TEMPLATE_KINDS),
+  template: z.string().max(100_000).nullable().optional(),
+  /** Extra kernel arguments appended to the built-in ones. */
+  bootArgs: z.string().trim().max(2000).nullable().optional(),
+  enabled: z.boolean().default(true),
+  notes: z.string().trim().max(2000).nullable().optional(),
+});
+
+/* ------------------------------------------------------------------ PXE service */
+
+const cidr = z
+  .string()
+  .trim()
+  .refine((v) => {
+    const [a, l, ...rest] = v.split('/');
+    if (rest.length || !a || l === undefined || !/^\d{1,3}$/.test(l)) return false;
+    const four = /^(\d{1,3}\.){3}\d{1,3}$/.test(a) && a.split('.').every((o) => Number(o) <= 255);
+    const six = !four && /^[0-9a-f:]+$/i.test(a) && a.includes(':');
+    return (four && Number(l) <= 32) || (six && Number(l) <= 128);
+  }, 'A network like 10.20.0.0/24');
+const ipv4 = z
+  .string()
+  .trim()
+  .regex(/^(\d{1,3}\.){3}\d{1,3}$/, 'An IPv4 address')
+  .refine((a) => a.split('.').every((o) => Number(o) <= 255), 'An IPv4 address');
+
+export const PXE_MODES = ['proxy', 'dhcp', 'external'] as const;
+export type PxeMode = (typeof PXE_MODES)[number];
+export const PXE_MODE_LABELS: Record<PxeMode, string> = {
+  proxy: 'Your DHCP gives addresses; NexoraDC adds the boot details (same network)',
+  dhcp: 'NexoraDC gives addresses to servers being installed (same network or DHCP relay)',
+  external: 'Your DHCP server points to NexoraDC (TFTP only)',
+};
+
+export const pxeRangeSchema = z.object({
+  /** The network the servers boot on, e.g. 163.52.252.0/24. */
+  network: cidr,
+  start: ipv4,
+  end: ipv4,
+  gateway: ipv4.nullable().optional(),
+  dns: z.array(ipv4).max(3).default([]),
+});
+
+export const pxeSettingsSchema = z
+  .object({
+    enabled: z.boolean(),
+    mode: z.enum(PXE_MODES),
+    /** Network interface the PXE service listens on (empty: all). */
+    interface: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_.:@-]{1,32}$/, 'An interface name like eth0 or ens18')
+      .nullable()
+      .optional(),
+    /** This server's address as the booting servers reach it (TFTP "next server"). */
+    serverAddress: ipv4,
+    /** Proxy mode: the network(s) where your DHCP server hands out addresses. */
+    proxyNetworks: z.array(cidr).max(16).default([]),
+    /** NexoraDC DHCP mode: address ranges for servers being installed. */
+    ranges: z.array(pxeRangeSchema).max(16).default([]),
+    /** URL the installer uses to reach NexoraDC over HTTP, e.g. http://163.52.252.10 (default: http://<server address>). */
+    bootBaseUrl: z
+      .string()
+      .trim()
+      .url()
+      .max(200)
+      .refine((u) => /^http:\/\/[^/@]+\/?$/.test(u), 'http:// and the host only, e.g. http://10.0.0.5 (network boot cannot use https)')
+      .transform((u) => u.replace(/\/$/, ''))
+      .nullable()
+      .optional(),
+    /** Networks allowed to fetch boot scripts, install files and configs (added to the built-in list). */
+    allowNetworks: z.array(cidr).max(32).default([]),
+  })
+  .superRefine((v, ctx) => {
+    if (v.mode === 'proxy' && !v.proxyNetworks.length) ctx.addIssue({ code: 'custom', path: ['proxyNetworks'], message: 'Add the network the servers boot on' });
+    if (v.mode === 'dhcp' && !v.ranges.length) ctx.addIssue({ code: 'custom', path: ['ranges'], message: 'Add at least one address range' });
+  });
+export type PxeSettingsInput = z.infer<typeof pxeSettingsSchema>;
+
 export const INSTALL_METHODS = ['redfish_virtual_media', 'pxe'] as const;
 export type InstallMethod = (typeof INSTALL_METHODS)[number];
 export const INSTALL_METHOD_LABELS: Record<InstallMethod, string> = { redfish_virtual_media: 'Redfish virtual media (ISO)', pxe: 'PXE / iPXE (network boot)' };
@@ -154,6 +298,8 @@ export const installSchema = z
       .trim()
       .toLowerCase()
       .regex(/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/, 'A valid host name'),
+    /** Automatic (template-driven) or interactive (the installer is started; finish it in the console). */
+    mode: z.enum(INSTALL_MODES).default('automatic'),
     /** NIC that network-boots (PXE) and that the address is configured on. */
     macAddress: z
       .string()
@@ -175,7 +321,15 @@ export const installSchema = z
     /** Write-only; stored encrypted, rendered into templates only as a SHA-512 crypt hash. */
     rootPassword: z.string().min(12, 'At least 12 characters').max(200).nullable().optional(),
     /** The comment is limited to plain characters because keys are written raw into kickstart/preseed/YAML. */
-    sshKeys: z.array(z.string().trim().regex(/^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+( [\w.@+=:-]{1,200})?$/, 'An OpenSSH public key (comment: letters, digits and . @ + = : - _ only)')).max(10).default([]),
+    sshKeys: z
+      .array(
+        z
+          .string()
+          .trim()
+          .regex(/^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+( [\w.@+=:-]{1,200})?$/, 'An OpenSSH public key (comment: letters, digits and . @ + = : - _ only)'),
+      )
+      .max(10)
+      .default([]),
     /** How success is verified: the installer reports back (template), or the new system answers on a TCP port. */
     verify: z.discriminatedUnion('by', [z.object({ by: z.literal('callback') }), z.object({ by: z.literal('tcp'), port: z.number().int().min(1).max(65535).default(22) })]).default({ by: 'callback' }),
     /** Minutes to wait for the installer before failing. */
@@ -208,10 +362,18 @@ export const virtIntegrationSchema = z.discriminatedUnion('kind', [
     url: fileUrl,
     verifyTls: z.boolean().default(true),
     /** Read token, e.g. dcim@pve!sync (role PVEAuditor). */
-    tokenId: z.string().trim().regex(/^[^\s!@]+@[^\s!@]+![A-Za-z0-9_-]+$/, 'Like dcim@pve!sync'),
+    tokenId: z
+      .string()
+      .trim()
+      .regex(/^[^\s!@]+@[^\s!@]+![A-Za-z0-9_-]+$/, 'Like dcim@pve!sync'),
     tokenSecret: z.string().trim().min(8).max(200),
     /** Optional second token allowed to start/stop VMs (a separate, narrower role). Without it, VM actions are off. */
-    actionTokenId: z.string().trim().regex(/^[^\s!@]+@[^\s!@]+![A-Za-z0-9_-]+$/, 'Like dcim@pve!actions').nullable().optional(),
+    actionTokenId: z
+      .string()
+      .trim()
+      .regex(/^[^\s!@]+@[^\s!@]+![A-Za-z0-9_-]+$/, 'Like dcim@pve!actions')
+      .nullable()
+      .optional(),
     actionTokenSecret: z.string().trim().min(8).max(200).nullable().optional(),
     syncMinutes: z.number().int().min(1).max(1440).default(5),
     enabled: z.boolean().default(true),

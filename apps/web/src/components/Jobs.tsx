@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -78,6 +79,7 @@ export function JobModal({ id, onClose }: { id: string | null; onClose: () => vo
     void qc.invalidateQueries({ queryKey: ['provisioning'] });
   };
   const cancel = useMutation({ mutationFn: () => api.post(`/provisioning/jobs/${id}/cancel`), onSuccess: refresh });
+  const finish = useMutation({ mutationFn: () => api.post(`/provisioning/jobs/${id}/finish`), onSuccess: refresh });
   const decide = useMutation({ mutationFn: (decision: 'retry' | 'skip' | 'fail') => api.post(`/provisioning/jobs/${id}/recovery`, { decision, note: note.trim() || undefined }), onSuccess: () => (setNote(''), refresh()) });
   const j = q.data;
   const target = j?.deviceName ?? j?.guestName ?? j?.imageName ?? '';
@@ -92,7 +94,9 @@ export function JobModal({ id, onClose }: { id: string | null; onClose: () => vo
             {typeof j.params.action === 'string' && <span>Action: {String(j.params.action).replace(/_/g, ' ')}</span>}
             {typeof j.params.method === 'string' && <span>· {j.params.method === 'pxe' ? 'PXE / iPXE' : 'Redfish virtual media'}</span>}
             {typeof j.params.hostname === 'string' && <span>· as {String(j.params.hostname)}</span>}
-            <span>· requested by {j.createdBy} {relativeTime(j.createdAt)}</span>
+            <span>
+              · requested by {j.createdBy} {relativeTime(j.createdAt)}
+            </span>
             {j.deadlineAt && isActive(j.status) && <span>· times out {formatDateTime(j.deadlineAt)}</span>}
           </div>
           {j.status === 'completed' &&
@@ -104,11 +108,39 @@ export function JobModal({ id, onClose }: { id: string | null; onClose: () => vo
               <p className="rounded-md bg-ok-soft px-3 py-2 text-[13px] text-ok">Completed and verified{j.finishedAt ? ` ${formatDateTime(j.finishedAt)}` : ''}.</p>
             ))}
           {j.error && <p className="rounded-md bg-crit-soft px-3 py-2 text-[13px] text-crit">{j.error}</p>}
+          {j.kind === 'os_install' && j.params.mode === 'interactive' && ['running', 'waiting'].includes(j.status) && (
+            <div className="rounded-lg border border-accent/40 bg-accent-soft p-3 text-[13px]">
+              <p className="font-semibold">Interactive install</p>
+              <p className="mt-1 text-ink-2">
+                Once the server has booted the installer, finish it in the server’s console
+                {j.deviceId ? (
+                  <>
+                    {' '}
+                    (
+                    <Link className="text-accent underline" to={`/hardware/${j.deviceId}`}>
+                      server page → Console
+                    </Link>
+                    )
+                  </>
+                ) : null}
+                . Then press <strong>Mark finished</strong>: NexoraDC removes the virtual media or boot override and completes the job. It cannot check the result itself, so the job is recorded as not verified.
+              </p>
+              {canExecute && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="primary" busy={finish.isPending} disabled={!!(j.signals as { operatorFinished?: unknown } | null)?.operatorFinished} onClick={() => finish.mutate()}>
+                    {(j.signals as { operatorFinished?: unknown } | null)?.operatorFinished ? 'Marked finished' : 'Mark finished'}
+                  </Button>
+                  <ErrorNote error={finish.error} />
+                </div>
+              )}
+            </div>
+          )}
           {j.status === 'recovery' && (
             <div className="rounded-lg border border-warn/40 bg-warn-soft p-3 text-[13px]">
               <p className="font-semibold text-warn">The job stopped inside a step that is not safe to repeat.</p>
               <p className="mt-1 text-ink-2">
-                Check the equipment (for example, the BMC’s power state and log) before choosing. <strong>Retry</strong> runs the step again, <strong>Skip</strong> treats it as done because you confirmed it happened, <strong>Fail</strong> stops the job and runs its cleanup.
+                Check the equipment (for example, the BMC’s power state and log) before choosing. <strong>Retry</strong> runs the step again, <strong>Skip</strong> treats it as done because you confirmed it happened, <strong>Fail</strong>{' '}
+                stops the job and runs its cleanup.
               </p>
               {canExecute && (
                 <>
