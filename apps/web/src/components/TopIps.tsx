@@ -83,23 +83,33 @@ function GeoAttribution({ geo }: { geo?: GeoStatusT }) {
   );
 }
 
-/** "Top remote" cell: the remote address with the most traffic, its ASN and location. */
+/** "Top remote" cell: the remote address with the most traffic and its ASN. */
 function PeerCell({ peer }: { peer?: PeerT | null }) {
   if (!peer) return <span className="text-[12px] text-ink-3">—</span>;
   const g = peer.geo;
+  const asn = g.private ? 'Private / reserved range' : g.asn ? `AS${g.asn}${g.asName ? ` ${g.asName}` : ''}` : 'Unknown ASN';
   return (
-    <span className="block max-w-[34ch] text-[12.5px] leading-snug">
+    <span className="block max-w-[32ch] text-[12.5px] leading-snug">
       <span className="font-mono">{peer.ip}</span>
-      <span className="block truncate text-ink-3" title={`${g.asn ? `AS${g.asn} ${g.asName ?? ''} · ` : ''}${place(g)}`}>
-        {g.private ? (
-          'Private / reserved range'
-        ) : (
-          <>
-            {g.asn ? `AS${g.asn}${g.asName ? ` ${g.asName}` : ''}` : 'Unknown ASN'}
-            {' · '}
-            {flag(g.country)} {g.city ?? g.countryName ?? g.country ?? 'Unknown location'}
-          </>
-        )}
+      <span className="block truncate text-ink-3" title={asn}>
+        {asn}
+      </span>
+    </span>
+  );
+}
+
+/** Location of the top remote address: city on the first line, country below. */
+function LocationCell({ peer }: { peer?: PeerT | null }) {
+  if (!peer) return <span className="text-[12px] text-ink-3">—</span>;
+  const g = peer.geo;
+  if (g.private) return <span className="text-[12.5px] text-ink-3">—</span>;
+  const country = g.countryName ?? g.country;
+  if (!g.city && !country) return <span className="text-[12.5px] text-ink-3">Unknown</span>;
+  return (
+    <span className="block max-w-[26ch] text-[12.5px] leading-snug" title={place(g)}>
+      <span className="block truncate">{g.city ?? <span className="text-ink-3">City unknown</span>}</span>
+      <span className="block truncate text-ink-3">
+        {flag(g.country)} {country ?? 'Country unknown'}
       </span>
     </span>
   );
@@ -129,7 +139,8 @@ function RemotePeers({ ip, range, live }: { ip: string; range: PeriodValue<FlowR
               <tr>
                 <th>Remote address</th>
                 <th>ASN</th>
-                <th>Location</th>
+                <th>City</th>
+                <th>Country</th>
                 <th className="text-right">Download{live ? ' now' : ''}</th>
                 <th className="text-right">Upload{live ? ' now' : ''}</th>
               </tr>
@@ -141,9 +152,8 @@ function RemotePeers({ ip, range, live }: { ip: string; range: PeriodValue<FlowR
                   <td className="max-w-[30ch] truncate text-[13px]">
                     <AsnText g={x.geo} />
                   </td>
-                  <td className="text-[13px]">
-                    {flag(x.geo.country)} {place(x.geo)}
-                  </td>
+                  <td className="text-[13px]">{x.geo.private ? <span className="text-ink-3">Private / reserved</span> : (x.geo.city ?? <span className="text-ink-3">Unknown</span>)}</td>
+                  <td className="text-[13px]">{x.geo.private ? <span className="text-ink-3">—</span> : x.geo.country ? `${flag(x.geo.country)} ${x.geo.countryName ?? x.geo.country}` : <span className="text-ink-3">Unknown</span>}</td>
                   <td className="w-36 text-right tabular-nums">
                     {live ? bps(x.inBps ?? 0) : volume(x.inBytes ?? 0)}
                     <Bar value={live ? (x.inBps ?? 0) : (x.inBytes ?? 0)} max={maxRow} tone="rx" />
@@ -280,12 +290,7 @@ type LiveSampleT = { t: number; inBps: number; outBps: number };
 
 function IpHistory({ ip, range, samples, realtime, onClose }: { ip: IpRowT; range: PeriodValue<FlowRange>; samples?: LiveSampleT[]; realtime?: boolean; onClose: () => void }) {
   const rq = rangeQuery(range);
-  const h = useQuery({
-    queryKey: ['flows', 'history', ip.ip, rq],
-    queryFn: () => api.get<HistoryT>(`/monitoring/flows/ips/${encodeURIComponent(ip.ip)}/history${qs(rq)}`),
-    refetchInterval: 30_000,
-    placeholderData: keepPreviousData,
-  });
+  const h = useQuery({ queryKey: ['flows', 'history', ip.ip, rq], queryFn: () => api.get<HistoryT>(`/monitoring/flows/ips/${encodeURIComponent(ip.ip)}/history${qs(rq)}`), refetchInterval: 30_000, placeholderData: keepPreviousData });
   const d = h.data;
   const live = samples && samples.length ? samples[samples.length - 1]! : null;
   const now = Date.now();
@@ -829,7 +834,8 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
                 <th className="w-10">#</th>
                 <th>Address</th>
                 <th>{staff ? 'Customer · device' : 'Device'}</th>
-                <th>Top remote address · ASN · location</th>
+                <th>Top remote address · ASN</th>
+                <th>City · country</th>
                 <th className="text-right">Download{isLive ? ' now' : ''}</th>
                 <th className="text-right">Upload{isLive ? ' now' : ''}</th>
                 <th className="text-right">Total</th>
@@ -852,6 +858,9 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
                   </td>
                   <td>
                     <PeerCell peer={x.topPeer} />
+                  </td>
+                  <td>
+                    <LocationCell peer={x.topPeer} />
                   </td>
                   <td className="w-44 text-right">
                     <span className={cx('tabular-nums', sort === 'download' && 'font-semibold')}>{bps(x.inBps)}</span>
