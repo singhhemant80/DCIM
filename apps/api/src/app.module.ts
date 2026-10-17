@@ -45,6 +45,7 @@ import { DiscoveryService } from './network/discovery/discovery.service';
 import { DiscoveryQueue } from './network/discovery/queue';
 import { AlertsController, FlowsController, MonitoringController } from './monitoring/monitoring.controllers';
 import { FlowsService } from './monitoring/flows.service';
+import { GeoIp } from './common/geoip';
 import { MonitoringService } from './monitoring/monitoring.service';
 import { AlertsService } from './monitoring/alerts.service';
 import { MonitoringStream } from './monitoring/stream.service';
@@ -149,6 +150,7 @@ export class AppModule {
         { provide: REDIS, useFactory: () => createRedis(config.REDIS_URL) },
         { provide: THROTTLE_REDIS, useValue: throttleRedis },
         { provide: SecretBox, useFactory: () => new SecretBox(config.CDCIM_ENCRYPTION_KEYS) },
+        { provide: GeoIp, useFactory: () => new GeoIp(config.CDCIM_GEOIP_DIR) },
         ResourceCloser,
         AuditService,
         PasswordService,

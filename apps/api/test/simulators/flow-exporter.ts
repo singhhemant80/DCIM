@@ -14,7 +14,8 @@ const sock = createSocket('udp4');
 const boot = Date.now() - 3_600_000;
 let seq = 0;
 let n = 0;
-const remote = ['142.250.183.14', '104.16.132.229', '151.101.1.69', '13.107.42.14', '2.18.66.3'];
+// The first addresses are in MaxMind's test databases (test/fixtures/geoip), so ASN and location show in development.
+const remote = ['81.2.69.142', '1.128.0.1', '89.160.20.112', '216.160.83.56', '2.125.160.216', '142.250.183.14', '104.16.132.229'];
 
 function tick() {
   const now = Date.now();

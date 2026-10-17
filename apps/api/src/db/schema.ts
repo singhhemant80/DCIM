@@ -1369,6 +1369,24 @@ export const ipTraffic1h = pgTable(
 );
 
 /**
+ * The remote addresses each of your addresses exchanged most traffic with, per
+ * hour (the busiest 20 per address; counts are close approximations when an
+ * address talks to very many peers). in = from the peer (download), out = to it.
+ */
+export const ipPeerTraffic1h = pgTable(
+  'ip_peer_traffic_1h',
+  {
+    orgId: orgRef(),
+    bucket: ts('bucket').notNull(),
+    address: inet('address').notNull(),
+    peer: inet('peer').notNull(),
+    inBytes: bigint('in_bytes', { mode: 'number' }).notNull().default(0),
+    outBytes: bigint('out_bytes', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.bucket, t.address, t.peer] }), index('ip_peer_traffic_1h_addr_idx').on(t.orgId, t.address, t.bucket)],
+);
+
+/**
  * The interface dashboard on Network Monitoring: interfaces staff pinned to watch
  * side by side (shared by the organization, like a NOC wall board).
  */

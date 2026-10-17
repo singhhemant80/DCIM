@@ -31,6 +31,8 @@ export interface RealtimeSnapshot {
   routers: { id: string; name: string; interface: string; ok: boolean; error: string | null; lastAt: string | null }[];
   totals: { inBps: number; outBps: number; addresses: number };
   ips: { ip: string; inBps: number; outBps: number }[];
+  /** For the busiest addresses: their busiest remote addresses this second. */
+  peers?: Record<string, { ip: string; inBps: number; outBps: number }[]>;
 }
 
 const num = (v: unknown) => {
@@ -48,7 +50,7 @@ const has = (list: BlockList, ip: string) => {
  * for your address in the pair) and tx traffic leaving (upload). On an
  * interface facing your customers it is the other way round.
  */
-export function torchRates(rows: Row[], own: BlockList, direction: 'uplink' | 'downlink') {
+export function torchRates(rows: Row[], own: BlockList, direction: 'uplink' | 'downlink', peers?: Map<string, Map<string, [number, number]>>) {
   const out = new Map<string, [number, number]>();
   for (const r of rows) {
     const src = String(r['src-address'] ?? '').replace(/\/(32|128)$/, '');
@@ -63,6 +65,16 @@ export function torchRates(rows: Row[], own: BlockList, direction: 'uplink' | 'd
       c[0] += down;
       c[1] += up;
       out.set(ip, c);
+      // The other side of the pair is the remote address.
+      const peer = ip === src ? dst : src;
+      if (peers && peer && peer !== ip) {
+        let m = peers.get(ip);
+        if (!m) peers.set(ip, (m = new Map()));
+        const pc = m.get(peer) ?? [0, 0];
+        pc[0] += down;
+        pc[1] += up;
+        m.set(peer, pc);
+      }
     }
   }
   return out;
@@ -81,6 +93,7 @@ interface Session {
   client: RouterOsApiClient | null;
   stop: (() => void) | null;
   latest: Map<string, [number, number]>;
+  latestPeers: Map<string, Map<string, [number, number]>>;
   lastAt: number;
   error: string | null;
   starting: boolean;
@@ -152,7 +165,7 @@ export function createTorchLoop(deps: TorchDeps) {
   }
 
   async function start(router: Router) {
-    const s: Session = sessions.get(router.id) ?? { router, client: null, stop: null, latest: new Map(), lastAt: 0, error: null, starting: false, retryAt: 0 };
+    const s: Session = sessions.get(router.id) ?? { router, client: null, stop: null, latest: new Map(), latestPeers: new Map(), lastAt: 0, error: null, starting: false, retryAt: 0 };
     sessions.set(router.id, s);
     if (s.starting || Date.now() < s.retryAt) return;
     s.starting = true;
@@ -164,7 +177,9 @@ export function createTorchLoop(deps: TorchDeps) {
         args,
         (rows) => {
           const list = own.get(router.orgId) ?? new BlockList();
-          s.latest = torchRates(rows, list, router.direction);
+          const peers = new Map<string, Map<string, [number, number]>>();
+          s.latest = torchRates(rows, list, router.direction, peers);
+          s.latestPeers = peers;
           s.lastAt = Date.now();
           s.error = null;
         },
@@ -217,13 +232,31 @@ export function createTorchLoop(deps: TorchDeps) {
         if (!s || now - s.lastAt > 3000) continue;
         for (const [ip, c] of s.latest) {
           const t = sum.get(ip);
-          if (t) (t[0] += c[0]), (t[1] += c[1]);
+          if (t) ((t[0] += c[0]), (t[1] += c[1]));
           else sum.set(ip, [c[0], c[1]]);
         }
       }
       let inB = 0;
       let outB = 0;
       const ips = [...sum.entries()].map(([ip, c]) => ((inB += c[0]), (outB += c[1]), { ip, inBps: c[0], outBps: c[1] })).sort((a, b) => b.inBps + b.outBps - (a.inBps + a.outBps));
+      const peers: Record<string, { ip: string; inBps: number; outBps: number }[]> = {};
+      for (const x of ips.slice(0, 300)) {
+        const m = new Map<string, [number, number]>();
+        for (const r of list) {
+          const s = sessions.get(r.id);
+          if (!s || now - s.lastAt > 3000) continue;
+          for (const [peer, c] of s.latestPeers.get(x.ip) ?? []) {
+            const t = m.get(peer);
+            if (t) ((t[0] += c[0]), (t[1] += c[1]));
+            else m.set(peer, [c[0], c[1]]);
+          }
+        }
+        if (m.size)
+          peers[x.ip] = [...m.entries()]
+            .sort((a, b) => b[1][0] + b[1][1] - (a[1][0] + a[1][1]))
+            .slice(0, 5)
+            .map(([ip, c]) => ({ ip, inBps: c[0], outBps: c[1] }));
+      }
       const snap: RealtimeSnapshot = {
         at: new Date(now).toISOString(),
         windowSeconds: 1,
@@ -233,6 +266,7 @@ export function createTorchLoop(deps: TorchDeps) {
         }),
         totals: { inBps: inB, outBps: outB, addresses: ips.length },
         ips: ips.slice(0, 1000),
+        peers,
       };
       await deps.redis.set(flowRealtimeKey(orgId), JSON.stringify(snap), 'EX', 5);
     }

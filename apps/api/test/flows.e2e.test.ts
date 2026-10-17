@@ -15,6 +15,9 @@ import { SecretBox } from '../src/common/secret-box';
 import { createTorchLoop, torchRates } from '../src/worker/flows/torch';
 import { startRouterOsApi } from './simulators/routeros-api';
 import { BlockList } from 'node:net';
+import { copyFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let ctx: TestContext;
 let admin: Client;
@@ -44,8 +47,13 @@ async function send(...packets: Buffer[]) {
   await new Promise((r) => setTimeout(r, 150));
 }
 
+// MaxMind's published test databases (test/fixtures/geoip), under the GeoLite2 file names.
+const GEO_DIR = mkdtempSync(join(tmpdir(), 'cdcim-geo-'));
+copyFileSync(join(__dirname, 'fixtures/geoip/GeoIP2-City-Test.mmdb'), join(GEO_DIR, 'GeoLite2-City.mmdb'));
+copyFileSync(join(__dirname, 'fixtures/geoip/GeoLite2-ASN-Test.mmdb'), join(GEO_DIR, 'GeoLite2-ASN.mmdb'));
+
 beforeAll(async () => {
-  ctx = await setupTestApp();
+  ctx = await setupTestApp({ CDCIM_GEOIP_DIR: GEO_DIR });
   admin = await Client.login(ctx.server, ctx.emails.superAdmin);
   noc = await Client.login(ctx.server, ctx.emails.noc);
   acme = await Client.login(ctx.server, ctx.emails.acmeAdmin);
@@ -148,6 +156,42 @@ describe('ranking from NetFlow v5, v9 and IPFIX', () => {
     expect((await ok(admin.get(`${F}/ips/103.150.120.10/history?range=7d`))).totals.inBytes).toBe(6_000_000);
   });
 
+  it('remote addresses per address, with ASN and location', async () => {
+    const now = Date.now();
+    await send(
+      encodeV5(
+        [
+          { src: '81.2.69.142', dst: '103.150.120.10', bytes: 10_000_000, packets: 7000, start: now - 5000, end: now - 1000 },
+          { src: '103.150.120.10', dst: '81.2.69.142', bytes: 250_000, packets: 200, start: now - 5000, end: now - 1000 },
+          { src: '1.128.0.1', dst: '103.150.120.10', bytes: 40_000, packets: 30, start: now - 5000, end: now - 1000 },
+          { src: '192.168.7.7', dst: '103.150.120.10', bytes: 1_000, packets: 1, start: now - 5000, end: now - 1000 },
+        ],
+        { sysUptimeMs: 1e6, nowMs: now },
+      ),
+    );
+    await collector.flush(true);
+
+    const top = await ok(admin.get(`${F}/top?range=15m`));
+    expect(top.geo).toMatchObject({ source: 'MaxMind GeoLite2', city: { file: 'GeoLite2-City.mmdb' }, asn: { file: 'GeoLite2-ASN.mmdb' } });
+    const web = top.items.find((x: { ip: string }) => x.ip === '103.150.120.10');
+    expect(web.topPeer).toMatchObject({ ip: '81.2.69.142', inBytes: 10_000_000, outBytes: 250_000, geo: { country: 'GB', countryName: 'United Kingdom', city: 'London' } });
+    // Its partner in the earlier test, 1.1.1.1, is the top remote of .17.
+    expect(top.items.find((x: { ip: string }) => x.ip === '103.150.120.17').topPeer).toMatchObject({ ip: '1.1.1.1', outBytes: 9_000_000 });
+
+    const p = await ok(admin.get(`${F}/ips/103.150.120.10/peers?range=1h`));
+    expect(p.items.map((x: { ip: string }) => x.ip)).toEqual(['81.2.69.142', '8.8.8.8', '1.128.0.1', '192.168.7.7']);
+    expect(p.items[1]).toMatchObject({ inBytes: 6_000_000, outBytes: 500_000 });
+    expect(p.items[2].geo).toMatchObject({ asn: 1221, asName: 'Telstra Pty Ltd' });
+    expect(p.items[3].geo).toMatchObject({ private: true, asn: null, country: null });
+    expect(p.items[0].inBps).toBeGreaterThan(0);
+    expect((await ok(admin.get(`${F}/ips/103.150.120.10/peers?range=1h&limit=1`))).items).toHaveLength(1);
+
+    // Tenancy: own addresses only.
+    expect((await ok(acme.get(`${F}/ips/103.150.120.10/peers?range=1h`))).items[0].ip).toBe('81.2.69.142');
+    expect((await acme.get(`${F}/ips/103.150.120.17/peers?range=1h`)).status).toBe(404);
+    expect((await admin.get(`${F}/ips/nope/peers`)).status).toBe(400);
+  });
+
   it('live: rates over the last minute, published by the collector; customers see their own', async () => {
     const redis = ctx.app.get<Redis>(REDIS);
     if (redis.status === 'wait') await redis.connect();
@@ -165,6 +209,12 @@ describe('ranking from NetFlow v5, v9 and IPFIX', () => {
     expect(all.items[0]).toMatchObject({ customerName: 'Globex' });
     expect(all.items[0].outBps).toBeGreaterThan(0);
     expect((await ok(admin.get(`${F}/live?sort=download`))).items[0]).toMatchObject({ ip: '103.150.120.10', dnsName: 'web.acme.example' });
+    // Remote addresses in the live snapshot.
+    expect(all.items[1].topPeer).toMatchObject({ ip: '8.8.8.8', geo: { asn: null, country: null } });
+    expect(all.items[1].topPeer.inBps).toBeGreaterThan(0);
+    const lp = await ok(admin.get(`${F}/ips/103.150.120.10/peers?range=live`));
+    expect(lp).toMatchObject({ range: 'live', source: 'flows' });
+    expect(lp.items.map((x: { ip: string }) => x.ip)).toEqual(['8.8.8.8']);
     const mine = await ok(acme.get(`${F}/live`));
     expect(mine.items.map((x: { ip: string }) => x.ip)).toEqual(['103.150.120.10']);
     expect(mine.items[0].customerName).toBeNull();
@@ -188,8 +238,10 @@ describe('ranking from NetFlow v5, v9 and IPFIX', () => {
 
   it('retention removes old per-minute data; deleting an exporter is audited', async () => {
     await ctx.db.execute(`insert into ip_traffic_1m (org_id, bucket, address, in_bytes) select org_id, now() - interval '9 days', address, 1 from ip_traffic_1m limit 1` as never);
+    await ctx.db.execute(`insert into ip_peer_traffic_1h (org_id, bucket, address, peer, in_bytes, out_bytes) select org_id, date_trunc('hour', now() - interval '15 days'), address, peer, 1, 1 from ip_peer_traffic_1h limit 1` as never);
     const r = await applyFlowRetention(ctx.db);
     expect(r.minute).toBe(1);
+    expect(r.peers).toBe(1);
     expect((await admin.delete(`${F}/exporters/${ids.exp}`)).status).toBe(204);
     const audit = await ok(admin.get('/api/v1/audit?action=flow_exporter.delete'));
     expect(audit.items.length).toBe(1);

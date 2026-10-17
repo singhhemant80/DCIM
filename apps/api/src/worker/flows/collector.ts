@@ -9,15 +9,25 @@ import { FlowDecodeError, TemplateCache, decodeFlowPacket, type FlowRecord } fro
  * UDP collector for flow records (NetFlow v5/v9, IPFIX) from registered
  * exporters, e.g. MikroTik "Traffic Flow". For every record it adds the bytes
  * to the destination address as download and to the source address as upload,
- * but only for addresses inside your IPAM prefixes (internet addresses are not
- * stored). Totals are kept per minute and per hour. Read-only: nothing is sent
- * back to the router.
+ * but only for addresses inside your IPAM prefixes. Totals are kept per minute
+ * and per hour. For each of your addresses the busiest remote addresses (the
+ * other side of its flows) are also kept, per hour and in the live view, so you
+ * can see who it exchanges traffic with. Read-only: nothing is sent back to the
+ * router.
  */
 
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const MAX_KEYS = 500_000;
 const FLUSH_MS = 10_000;
+/** Remote addresses kept per address and hour (the busiest), and in total in memory. */
+export const PEERS_PER_ADDRESS = 100;
+const PEER_KEYS = 300_000;
+/** Written per address and hour. */
+export const PEERS_STORED = 20;
+/** Shown live per address (for the busiest 300 addresses). */
+const LIVE_PEERS = 5;
+const LIVE_PEER_ADDRESSES = 300;
 
 interface Exporter {
   id: string;
@@ -80,10 +90,66 @@ export interface LiveSnapshot {
   totals: { inBps: number; outBps: number; addresses: number };
   /** Busiest first (download + upload), at most 1000 addresses. */
   ips: { ip: string; inBps: number; outBps: number }[];
+  /** For the busiest addresses: their busiest remote addresses over the same window. */
+  peers?: Record<string, { ip: string; inBps: number; outBps: number }[]>;
+}
+
+/**
+ * Remote addresses per address with a bounded memory: at most `perAddress`
+ * per address and `total` overall. When full, the least busy one is replaced
+ * by the newcomer, which inherits its count (the "Space-Saving" method): the
+ * busiest remote addresses are kept with near-exact counts, the tail is
+ * approximate.
+ */
+export class PeerCounter {
+  map = new Map<string, Map<string, [number, number]>>();
+  entries = 0;
+  constructor(
+    private readonly perAddress = PEERS_PER_ADDRESS,
+    private readonly total = PEER_KEYS,
+  ) {}
+
+  add(address: string, peer: string, dir: 0 | 1, bytes: number) {
+    let peers = this.map.get(address);
+    if (!peers) {
+      if (this.entries >= this.total) return;
+      this.map.set(address, (peers = new Map()));
+    }
+    const c = peers.get(peer);
+    if (c) {
+      c[dir] += bytes;
+      return;
+    }
+    if (peers.size < this.perAddress && this.entries < this.total) {
+      const n: [number, number] = [0, 0];
+      n[dir] = bytes;
+      peers.set(peer, n);
+      this.entries++;
+      return;
+    }
+    if (!peers.size) return;
+    let minKey = '';
+    let min = Infinity;
+    for (const [k, v] of peers) {
+      const t = v[0] + v[1];
+      if (t < min) ((min = t), (minKey = k));
+    }
+    const old = peers.get(minKey)!;
+    peers.delete(minKey);
+    const n: [number, number] = [old[0], old[1]];
+    n[dir] += bytes;
+    peers.set(peer, n);
+  }
+
+  top(address: string, n: number): [string, [number, number]][] {
+    return [...(this.map.get(address) ?? new Map<string, [number, number]>()).entries()].sort((a, b) => b[1][0] + b[1][1] - (a[1][0] + a[1][1])).slice(0, n);
+  }
 }
 
 export class LiveWindow {
   private slots = new Map<string, Map<string, [number, number]>[]>();
+  /** Remote addresses per organization and slot. */
+  private peerSlots = new Map<string, PeerCounter[]>();
   private slotIndex = 0;
   /** When flows started arriving for each organization (reset after a quiet minute). */
   private since = new Map<string, number>();
@@ -101,6 +167,12 @@ export class LiveWindow {
     c[dir] += bytes;
   }
 
+  addPeer(orgId: string, ip: string, peer: string, dir: 0 | 1, bytes: number) {
+    let ring = this.peerSlots.get(orgId);
+    if (!ring) this.peerSlots.set(orgId, (ring = Array.from({ length: LIVE_SLOTS }, () => new PeerCounter(20, 50_000))));
+    ring[this.slotIndex]!.add(ip, peer, dir, bytes);
+  }
+
   /** Rates over the window per organization; then a new slot starts. */
   rotate(now = Date.now()): Map<string, LiveSnapshot> {
     const out = new Map<string, LiveSnapshot>();
@@ -109,11 +181,12 @@ export class LiveWindow {
       // full minute of arrivals exists, average over the time since flows started arriving.
       const seconds = Math.min(LIVE_SLOTS * (LIVE_SLOT_MS / 1000), Math.max(LIVE_SLOT_MS / 1000, (now - (this.since.get(orgId) ?? now)) / 1000));
       const sum = new Map<string, [number, number]>();
-      for (const slot of ring) for (const [ip, c] of slot) {
-        const t = sum.get(ip);
-        if (t) (t[0] += c[0]), (t[1] += c[1]);
-        else sum.set(ip, [c[0], c[1]]);
-      }
+      for (const slot of ring)
+        for (const [ip, c] of slot) {
+          const t = sum.get(ip);
+          if (t) ((t[0] += c[0]), (t[1] += c[1]));
+          else sum.set(ip, [c[0], c[1]]);
+        }
       let inB = 0;
       let outB = 0;
       const ips = [...sum.entries()].map(([ip, c]) => {
@@ -123,10 +196,28 @@ export class LiveWindow {
       });
       ips.sort((a, b) => b.inBps + b.outBps - (a.inBps + a.outBps));
       if (!ips.length) this.since.delete(orgId);
-      out.set(orgId, { at: new Date(now).toISOString(), windowSeconds: seconds, totals: { inBps: (inB * 8) / seconds, outBps: (outB * 8) / seconds, addresses: ips.length }, ips: ips.slice(0, 1000) });
+      // Remote addresses of the busiest addresses, summed over the window.
+      const peers: Record<string, { ip: string; inBps: number; outBps: number }[]> = {};
+      const pring = this.peerSlots.get(orgId) ?? [];
+      for (const x of ips.slice(0, LIVE_PEER_ADDRESSES)) {
+        const sumP = new Map<string, [number, number]>();
+        for (const pc of pring)
+          for (const [peer, c] of pc.map.get(x.ip) ?? []) {
+            const t = sumP.get(peer);
+            if (t) ((t[0] += c[0]), (t[1] += c[1]));
+            else sumP.set(peer, [c[0], c[1]]);
+          }
+        if (sumP.size)
+          peers[x.ip] = [...sumP.entries()]
+            .sort((a, b) => b[1][0] + b[1][1] - (a[1][0] + a[1][1]))
+            .slice(0, LIVE_PEERS)
+            .map(([ip, c]) => ({ ip, inBps: (c[0] * 8) / seconds, outBps: (c[1] * 8) / seconds }));
+      }
+      out.set(orgId, { at: new Date(now).toISOString(), windowSeconds: seconds, totals: { inBps: (inB * 8) / seconds, outBps: (outB * 8) / seconds, addresses: ips.length }, ips: ips.slice(0, 1000), peers });
     }
     this.slotIndex = (this.slotIndex + 1) % LIVE_SLOTS;
     for (const ring of this.slots.values()) ring[this.slotIndex] = new Map();
+    for (const ring of this.peerSlots.values()) ring[this.slotIndex] = new PeerCounter(20, 50_000);
     return out;
   }
 }
@@ -138,6 +229,8 @@ export class FlowAggregator {
   pending = new Map<string, Map<number, Map<string, Counts>>>();
   keys = 0;
   droppedKeys = 0;
+  /** org → hour → remote addresses per address (kept for the whole hour, written as it goes). */
+  peers = new Map<string, Map<number, PeerCounter>>();
 
   /** Adds one record; returns false when neither address is one of yours. */
   add(orgId: string, own: BlockList, r: FlowRecord, multiplier: number, now: number): boolean {
@@ -149,7 +242,16 @@ export class FlowAggregator {
     if (this.live) {
       if (dstOwn) this.live.add(orgId, r.dst, 0, bytes, now);
       if (srcOwn) this.live.add(orgId, r.src, 1, bytes, now);
+      if (dstOwn) this.live.addPeer(orgId, r.dst, r.src, 0, bytes);
+      if (srcOwn) this.live.addPeer(orgId, r.src, r.dst, 1, bytes);
     }
+    const hour = Math.floor(now / HOUR) * HOUR;
+    let byHour = this.peers.get(orgId);
+    if (!byHour) this.peers.set(orgId, (byHour = new Map()));
+    let pc = byHour.get(hour);
+    if (!pc) byHour.set(hour, (pc = new PeerCounter()));
+    if (dstOwn) pc.add(r.dst, r.src, 0, bytes);
+    if (srcOwn) pc.add(r.src, r.dst, 1, bytes);
     for (const [bucket, share] of spread(r.start, r.end, now)) {
       if (dstOwn) this.bump(orgId, bucket, r.dst, 0, bytes * share, packets * share);
       if (srcOwn) this.bump(orgId, bucket, r.src, 1, bytes * share, packets * share);
@@ -227,6 +329,38 @@ export async function flushTraffic(db: Db, pending: Map<string, Map<number, Map<
   return rows;
 }
 
+/**
+ * Writes the busiest remote addresses per address for each hour in memory.
+ * Counts only grow within an hour, so rows are set to the larger of the stored
+ * and the current value (a restart mid-hour never lowers a stored count).
+ * Hours before the current one are written a last time and dropped.
+ */
+export async function flushPeers(db: Db, peers: Map<string, Map<number, PeerCounter>>, now = Date.now()) {
+  const current = Math.floor(now / HOUR) * HOUR;
+  let rows = 0;
+  for (const [orgId, byHour] of peers) {
+    for (const [hour, pc] of byHour) {
+      const list: { address: string; peer: string; c: [number, number] }[] = [];
+      for (const address of pc.map.keys()) for (const [peer, c] of pc.top(address, PEERS_STORED)) list.push({ address, peer, c });
+      for (let i = 0; i < list.length; i += 1000) {
+        const chunk = list.slice(i, i + 1000);
+        const values = sql.join(
+          chunk.map((r) => sql`(${orgId}::uuid, ${new Date(hour).toISOString()}::timestamptz, ${r.address}::inet, ${r.peer}::inet, ${Math.round(r.c[0])}, ${Math.round(r.c[1])})`),
+          sql`, `,
+        );
+        await db.execute(sql`
+          insert into ip_peer_traffic_1h (org_id, bucket, address, peer, in_bytes, out_bytes) values ${values}
+          on conflict (org_id, bucket, address, peer) do update set
+            in_bytes = greatest(ip_peer_traffic_1h.in_bytes, excluded.in_bytes), out_bytes = greatest(ip_peer_traffic_1h.out_bytes, excluded.out_bytes)`);
+      }
+      rows += list.length;
+      if (hour < current) byHour.delete(hour);
+    }
+    if (!byHour.size) peers.delete(orgId);
+  }
+  return rows;
+}
+
 /** Your IPAM prefixes per organization, as fast lookup lists. */
 export async function loadOwnPrefixes(db: Db) {
   const r = await db.execute<{ org_id: string; prefix: string }>(sql`select org_id, prefix::text as prefix from prefixes where masklen(prefix) > 0`);
@@ -296,9 +430,15 @@ export async function startFlowCollector(deps: { db: Db; logger: Logger; onLive?
     }
   };
 
-  const flush = async () => {
+  let peersAt = 0;
+  const flush = async (force = false) => {
     const pending = agg.take();
     const n = await flushTraffic(db, pending);
+    // Remote addresses: every minute (they are re-written, not added).
+    if (force || Date.now() - peersAt >= 60_000) {
+      peersAt = Date.now();
+      await flushPeers(db, agg.peers);
+    }
     for (const [id, st] of stats) {
       if (!st.packets) continue;
       await db.execute(sql`
@@ -368,15 +508,16 @@ export async function startFlowCollector(deps: { db: Db; logger: Logger; onLive?
     reload,
     close: async () => {
       timers.forEach(clearInterval);
-      await flush().catch(() => undefined);
+      await flush(true).catch(() => undefined);
       await new Promise<void>((r) => (socket ? socket.close(() => r()) : r()));
     },
   };
 }
 
 /** Removes per-minute data after `minuteDays` and hourly data after `hourDays`. */
-export async function applyFlowRetention(db: Db, minuteDays = 7, hourDays = 400) {
+export async function applyFlowRetention(db: Db, minuteDays = 7, hourDays = 400, peerDays = 14) {
   const a = await db.execute(sql`delete from ip_traffic_1m where bucket < now() - make_interval(days => ${minuteDays})`);
   const b = await db.execute(sql`delete from ip_traffic_1h where bucket < now() - make_interval(days => ${hourDays})`);
-  return { minute: a.rowCount ?? 0, hourly: b.rowCount ?? 0 };
+  const c = await db.execute(sql`delete from ip_peer_traffic_1h where bucket < now() - make_interval(days => ${peerDays})`);
+  return { minute: a.rowCount ?? 0, hourly: b.rowCount ?? 0, peers: c.rowCount ?? 0 };
 }

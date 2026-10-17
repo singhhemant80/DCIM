@@ -244,6 +244,20 @@ export const topIpQuerySchema = z.object({
 
 export const ipHistoryQuerySchema = z.object({ range: z.enum([...FLOW_RANGES, 'custom']).default('24h'), ...dateRangeFields });
 
+/** Remote addresses an address exchanged traffic with: live (last minute / second) or over a period (hourly data). */
+export const ipPeersQuerySchema = z.object({ range: z.enum(['live', ...FLOW_RANGES, 'custom']).default('live'), ...dateRangeFields, limit: z.coerce.number().int().min(1).max(100).default(50) });
+
+/** ASN and location of a remote address (from the offline DB-IP / GeoLite2 databases). */
+export interface PeerGeoT {
+  private?: boolean;
+  asn: number | null;
+  asName: string | null;
+  country: string | null;
+  countryName: string | null;
+  region: string | null;
+  city: string | null;
+}
+
 /** Live ranking: rates over the last minute of flow records. */
 export const liveIpQuerySchema = z.object({
   sort: z.enum(['download', 'upload', 'total']).default('download'),

@@ -26,6 +26,7 @@ import { FLOW_COLLECTOR_STATUS_KEY, WORKER_HEARTBEAT_KEY, flowLiveKey } from '..
 import { applyFlowRetention, startFlowCollector } from './flows/collector';
 import { createTorchLoop } from './flows/torch';
 import { createPxeLoop } from './pxe/desired';
+import { updateGeoIp } from './geoip/update';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
 import { createJobLoop } from './provisioning/engine';
@@ -149,8 +150,10 @@ async function main() {
     every('flow-realtime', 1_000, createTorchLoop({ db, secrets, redis: pub, logger })),
     every('flow-retention', 3_600_000, async () => {
       const r = await applyFlowRetention(db);
-      if (r.minute + r.hourly) logger.info(r, 'old per-IP traffic removed');
+      if (r.minute + r.hourly + r.peers) logger.info(r, 'old per-IP traffic removed');
     }),
+    // ASN / location databases for flow peers: checked at start and every 6 hours, downloaded monthly.
+    ...(config.CDCIM_GEOIP_DOWNLOAD === 'true' ? [every('geoip', 6 * 3_600_000, () => updateGeoIp({ dir: config.CDCIM_GEOIP_DIR, logger, redis: pub }).then(() => undefined))] : []),
     every('pxe', 10_000, createPxeLoop({ db, logger, pxeDir: config.CDCIM_PXE_DIR, outDir: config.CDCIM_PXE_OUT_DIR, publicUrl: config.CDCIM_PUBLIC_URL })),
     every('schedules', 60_000, async () => {
       const ids = await runDueSchedules(db, async (runId) => {

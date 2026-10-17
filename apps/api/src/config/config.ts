@@ -86,6 +86,10 @@ const envSchema = z.object({
   CDCIM_PXE_DIR: z.string().default('./.data/pxe'),
   /** Where the root-run PXE helper writes dnsmasq's files and status.json (the installer sets /var/lib/crapplet-dcim-pxe). */
   CDCIM_PXE_OUT_DIR: z.string().default('./.data/pxe-out'),
+  /** ASN / location databases for flow peers (DB-IP Lite, or MaxMind GeoLite2 files placed here). The installer sets /var/lib/crapplet-dcim/geoip. */
+  CDCIM_GEOIP_DIR: z.string().default('./.data/geoip'),
+  /** Download DB-IP Lite (CC BY 4.0) monthly from download.db-ip.com. Set false to manage the files yourself. */
+  CDCIM_GEOIP_DOWNLOAD: z.enum(['true', 'false']).default('true'),
   /** The iPXE binaries shipped with NexoraDC (built with the NexoraDC boot script, see deploy/pxe/README.md). */
   CDCIM_IPXE_DIR: z.string().default('../../deploy/pxe/ipxe'),
 });

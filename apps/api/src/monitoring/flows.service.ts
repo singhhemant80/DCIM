@@ -3,7 +3,8 @@ import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { isIP } from 'node:net';
 import type Redis from 'ioredis';
 import type { z } from 'zod';
-import type { FlowExporterInput, FlowRange, ipHistoryQuerySchema, liveIpQuerySchema, topIpQuerySchema } from '@crapplet/shared';
+import type { FlowExporterInput, FlowRange, ipHistoryQuerySchema, ipPeersQuerySchema, liveIpQuerySchema, topIpQuerySchema } from '@crapplet/shared';
+import { GeoIp, type GeoInfo } from '../common/geoip';
 import { DB, type Db } from '../db/db';
 import { flowExporters } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
@@ -29,7 +30,34 @@ export class FlowsService {
     @Inject(DB) private readonly db: Db,
     private readonly audit: AuditService,
     @Inject(REDIS) private readonly redis: Redis,
+    private readonly geo: GeoIp,
   ) {}
+
+  /** Which ASN / location databases are loaded (for the attribution and a hint when missing). */
+  private async geoStatus() {
+    const s = await this.geo.status();
+    return { city: s.city, asn: s.asn, source: s.city?.file.startsWith('dbip') || s.asn?.file.startsWith('dbip') ? 'DB-IP' : s.city || s.asn ? 'MaxMind GeoLite2' : null };
+  }
+
+  private async withGeo<T extends { ip: string }>(peer: T): Promise<T & { geo: GeoInfo }> {
+    return { ...peer, geo: await this.geo.lookup(peer.ip) };
+  }
+
+  /** The busiest remote address per address over hourly data (whole hours covering the window). */
+  private async topPeers(p: Principal, addresses: string[], since: Date, until: Date) {
+    if (!addresses.length) return new Map<string, { ip: string; inBytes: number; outBytes: number }>();
+    const from = new Date(Math.floor(since.getTime() / 3600_000) * 3600_000);
+    const r = await this.db.execute<{ ip: string; peer: string; in_b: number; out_b: number }>(sql`
+      select ip, peer, in_b, out_b from (
+        select host(address) as ip, host(peer) as peer, sum(in_bytes)::float8 as in_b, sum(out_bytes)::float8 as out_b,
+               row_number() over (partition by address order by sum(in_bytes) + sum(out_bytes) desc, peer) as rn
+          from ip_peer_traffic_1h
+         where org_id = ${p.orgId} and address = any(${`{${addresses.join(',')}}`}::inet[])
+           and bucket >= ${from.toISOString()}::timestamptz and bucket < ${until.toISOString()}::timestamptz
+         group by address, peer) z
+       where rn = 1`);
+    return new Map(r.rows.map((x) => [x.ip, { ip: x.peer, inBytes: Number(x.in_b), outBytes: Number(x.out_b) }]));
+  }
 
   /* ------------------------------------------------------------ exporters */
 
@@ -179,7 +207,15 @@ export class FlowsService {
     const seconds = Math.max(w.step, (w.until.getTime() - coveredFrom) / 1000);
     const first = r.rows[0];
     const latest = await this.db.execute<{ at: string | null }>(sql`select max(bucket) as at from ip_traffic_1m where org_id = ${p.orgId}`);
+    const peerOf = await this.topPeers(
+      p,
+      r.rows.map((x) => x.ip as string),
+      w.since,
+      w.until,
+    );
+    const peerGeo = await this.geo.lookupMany([...peerOf.values()].map((x) => x.ip));
     return {
+      geo: await this.geoStatus(),
       range: { name: q.range, from: w.since.toISOString(), to: w.until.toISOString(), stepSeconds: w.step, coveredFrom: new Date(coveredFrom).toISOString(), averagedSeconds: seconds },
       totals: { addresses: Number(first?.n ?? 0), inBytes: Number(first?.all_in ?? 0), outBytes: Number(first?.all_out ?? 0), inBps: (Number(first?.all_in ?? 0) * 8) / seconds, outBps: (Number(first?.all_out ?? 0) * 8) / seconds },
       latestDataAt: latest.rows[0]?.at ?? null,
@@ -202,6 +238,8 @@ export class FlowsService {
         deviceName: (x.device_name as string | null) ?? null,
         customerId: p.userType === 'staff' ? ((x.customer_id as string | null) ?? null) : null,
         customerName: p.userType === 'staff' ? ((x.customer_name as string | null) ?? null) : null,
+        /** The remote address it exchanged most traffic with (hourly data for the period). */
+        topPeer: peerOf.has(x.ip as string) ? { ...peerOf.get(x.ip as string)!, geo: peerGeo.get(peerOf.get(x.ip as string)!.ip)! } : null,
       })),
     };
   }
@@ -222,7 +260,8 @@ export class FlowsService {
   }
 
   async live(p: Principal, q: z.infer<typeof liveIpQuerySchema>) {
-    let snap: { at: string; windowSeconds: number; ips: { ip: string; inBps: number; outBps: number }[] } | null = null;
+    type Peer = { ip: string; inBps: number; outBps: number };
+    let snap: { at: string; windowSeconds: number; ips: Peer[]; peers?: Record<string, Peer[]> } | null = null;
     let realtime: RealtimeSnapshot | null = null;
     try {
       if (this.redis.status === 'wait') await this.redis.connect();
@@ -237,7 +276,8 @@ export class FlowsService {
     const routers = p.userType === 'staff' ? (realtime?.routers ?? []) : [];
     if (rtOk) snap = realtime;
     const source = rtOk ? ('realtime' as const) : ('flows' as const);
-    const empty = { source, routers, at: snap?.at ?? null, windowSeconds: snap?.windowSeconds ?? 60, totals: { addresses: 0, inBps: 0, outBps: 0 }, items: [] as unknown[] };
+    const geo = await this.geoStatus();
+    const empty = { source, routers, geo, at: snap?.at ?? null, windowSeconds: snap?.windowSeconds ?? 60, totals: { addresses: 0, inBps: 0, outBps: 0 }, items: [] as unknown[] };
     if (!snap || !snap.ips.length) return empty;
     const rates = new Map(snap.ips.map((x) => [x.ip, x]));
     const inner = sql`select v.address from (values ${sql.join(
@@ -269,13 +309,65 @@ export class FlowsService {
     });
     const key = { download: (x: { inBps: number }) => x.inBps, upload: (x: { outBps: number }) => x.outBps, total: (x: { inBps: number; outBps: number }) => x.inBps + x.outBps }[q.sort];
     rows.sort((a, b) => key(b) - key(a) || a.ip.localeCompare(b.ip));
+    const shown = rows.slice(0, q.limit);
+    const items = await Promise.all(
+      shown.map(async (x) => {
+        const top = snap!.peers?.[x.ip]?.[0];
+        return { ...x, topPeer: top ? await this.withGeo(top) : null };
+      }),
+    );
+    return { source, routers, geo, at: snap.at, windowSeconds: snap.windowSeconds, totals: { addresses: rows.length, inBps: rows.reduce((a, x) => a + x.inBps, 0), outBps: rows.reduce((a, x) => a + x.outBps, 0) }, items };
+  }
+
+  /** The address must be one of yours (customers: assigned to them), as for its history. */
+  private async ownAddress(p: Principal, ip: string) {
+    if (!isIP(ip)) throw new BadRequestException({ error: 'invalid_address', message: 'Not an IP address' });
+    const own = await this.db.execute<Record<string, unknown>>(sql`
+      select x.* from (${this.owned(p, sql`select ${ip}::inet as address`)}) x where ${this.scope(p, undefined)}`);
+    const o = own.rows[0];
+    if (!o || (!o.prefix_id && p.userType !== 'staff')) throw notFound('Address');
+  }
+
+  /**
+   * Remote addresses this address exchanged traffic with, busiest first, with
+   * ASN and location. Live: the last minute of flow records (or this second's
+   * Torch rates), top 5. Period: hourly data, whole hours covering the range.
+   */
+  async peers(p: Principal, ip: string, q: z.infer<typeof ipPeersQuerySchema>) {
+    await this.ownAddress(p, ip);
+    const geo = await this.geoStatus();
+    if (q.range === 'live') {
+      type Peer = { ip: string; inBps: number; outBps: number };
+      let list: Peer[] = [];
+      let source: 'realtime' | 'flows' = 'flows';
+      try {
+        if (this.redis.status === 'wait') await this.redis.connect();
+        const [raw, rt] = await Promise.all([this.redis.get(flowLiveKey(p.orgId)), this.redis.get(flowRealtimeKey(p.orgId))]);
+        const realtime = rt ? (JSON.parse(rt) as RealtimeSnapshot) : null;
+        const rtOk = !!realtime && realtime.routers.some((r) => r.ok) && Date.now() - new Date(realtime.at).getTime() < 4000;
+        const snap = (rtOk ? realtime : raw ? JSON.parse(raw) : null) as { peers?: Record<string, Peer[]> } | null;
+        source = rtOk ? 'realtime' : 'flows';
+        list = snap?.peers?.[ip] ?? [];
+      } catch {
+        list = [];
+      }
+      return { ip, range: 'live', source, geo, items: await Promise.all(list.map((x) => this.withGeo(x))) };
+    }
+    const w = await this.window(p, q.range, q);
+    const from = new Date(Math.floor(w.since.getTime() / 3600_000) * 3600_000);
+    const r = await this.db.execute<{ peer: string; in_b: number; out_b: number }>(sql`
+      select host(peer) as peer, sum(in_bytes)::float8 as in_b, sum(out_bytes)::float8 as out_b
+        from ip_peer_traffic_1h
+       where org_id = ${p.orgId} and address = ${ip}::inet and bucket >= ${from.toISOString()}::timestamptz and bucket < ${w.until.toISOString()}::timestamptz
+       group by peer order by sum(in_bytes) + sum(out_bytes) desc, peer limit ${q.limit}`);
+    const seconds = Math.max(3600, (w.until.getTime() - from.getTime()) / 1000);
     return {
-      source,
-      routers,
-      at: snap.at,
-      windowSeconds: snap.windowSeconds,
-      totals: { addresses: rows.length, inBps: rows.reduce((a, x) => a + x.inBps, 0), outBps: rows.reduce((a, x) => a + x.outBps, 0) },
-      items: rows.slice(0, q.limit),
+      ip,
+      range: q.range,
+      from: from.toISOString(),
+      to: w.until.toISOString(),
+      geo,
+      items: await Promise.all(r.rows.map((x) => this.withGeo({ ip: x.peer, inBytes: Number(x.in_b), outBytes: Number(x.out_b), inBps: (Number(x.in_b) * 8) / seconds, outBps: (Number(x.out_b) * 8) / seconds }))),
     };
   }
 

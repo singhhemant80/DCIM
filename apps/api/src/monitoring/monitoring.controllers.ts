@@ -12,6 +12,7 @@ import {
   dashboardOrderSchema,
   flowExporterSchema,
   ipHistoryQuerySchema,
+  ipPeersQuerySchema,
   liveIpQuerySchema,
   topIpQuerySchema,
   deviceMonitoringSchema,
@@ -420,6 +421,14 @@ export class FlowsController {
   @ApiOperation({ summary: 'Heartbeat while a live view is open: keeps the real-time (Torch) streams of the routers running.' })
   watch(@CurrentPrincipal() p: Principal) {
     return this.svc.watch(p);
+  }
+
+  @Get('ips/:ip/peers')
+  @RequirePermissions('monitoring.read')
+  @ApiZodQuery(ipPeersQuerySchema)
+  @ApiOperation({ summary: 'Remote addresses this address exchanged most traffic with (download = from them, upload = to them), with ASN and location.' })
+  peers(@CurrentPrincipal() p: Principal, @Param('ip') ip: string, @Query(new ZodPipe(ipPeersQuerySchema)) q: Infer<typeof ipPeersQuerySchema>) {
+    return this.svc.peers(p, ip, q);
   }
 
   @Get('ips/:ip/history')

@@ -12,6 +12,164 @@ import { PeriodPicker, periodReady, type PeriodValue } from './DateRange';
 import { RateChart } from './RateChart';
 import { Button, Chip, EmptyState, ErrorNote, Field, Input, Loading, Modal, Panel, Select, Stat, Table, cx } from './ui';
 
+/** ASN and approximate location of a remote address, looked up locally (DB-IP Lite / GeoLite2). */
+interface GeoT {
+  private?: boolean;
+  asn: number | null;
+  asName: string | null;
+  country: string | null;
+  countryName: string | null;
+  region: string | null;
+  city: string | null;
+}
+interface GeoStatusT {
+  city: { file: string; updatedAt: string } | null;
+  asn: { file: string; updatedAt: string } | null;
+  source: string | null;
+}
+interface PeerT {
+  ip: string;
+  inBps?: number;
+  outBps?: number;
+  inBytes?: number;
+  outBytes?: number;
+  geo: GeoT;
+}
+interface PeersT {
+  ip: string;
+  range: string;
+  source?: 'realtime' | 'flows';
+  from?: string;
+  to?: string;
+  geo: GeoStatusT;
+  items: PeerT[];
+}
+
+function flag(cc: string | null) {
+  if (!cc || !/^[A-Z]{2}$/.test(cc)) return '';
+  return String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+}
+
+function place(g: GeoT) {
+  if (g.private) return 'Private / reserved range';
+  const parts = [g.city, g.region && g.region !== g.city ? g.region : null, g.countryName ?? g.country].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'Unknown';
+}
+
+function AsnText({ g }: { g: GeoT }) {
+  if (g.private) return <span className="text-ink-3">—</span>;
+  if (!g.asn) return <span className="text-ink-3">Unknown</span>;
+  return (
+    <>
+      <span className="font-mono">AS{g.asn}</span>
+      {g.asName && <span className="ml-1 text-ink-2">{g.asName}</span>}
+    </>
+  );
+}
+
+function GeoAttribution({ geo }: { geo?: GeoStatusT }) {
+  if (!geo) return null;
+  if (!geo.city && !geo.asn) return <>ASN and location appear once the IP database has been downloaded (the worker fetches DB-IP Lite automatically; it needs HTTPS access to download.db-ip.com). </>;
+  return geo.source === 'DB-IP' ? (
+    <>
+      ASN and approximate location:{' '}
+      <a href="https://db-ip.com" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+        IP Geolocation by DB-IP
+      </a>
+      , looked up on this server. City is often approximate.{' '}
+    </>
+  ) : (
+    <>ASN and approximate location from {geo.source}, looked up on this server. </>
+  );
+}
+
+/** "Top remote" cell: the remote address with the most traffic, its ASN and location. */
+function PeerCell({ peer }: { peer?: PeerT | null }) {
+  if (!peer) return <span className="text-[12px] text-ink-3">—</span>;
+  const g = peer.geo;
+  return (
+    <span className="block max-w-[34ch] text-[12.5px] leading-snug">
+      <span className="font-mono">{peer.ip}</span>
+      <span className="block truncate text-ink-3" title={`${g.asn ? `AS${g.asn} ${g.asName ?? ''} · ` : ''}${place(g)}`}>
+        {g.private ? (
+          'Private / reserved range'
+        ) : (
+          <>
+            {g.asn ? `AS${g.asn}${g.asName ? ` ${g.asName}` : ''}` : 'Unknown ASN'}
+            {' · '}
+            {flag(g.country)} {g.city ?? g.countryName ?? g.country ?? 'Unknown location'}
+          </>
+        )}
+      </span>
+    </span>
+  );
+}
+
+function RemotePeers({ ip, range, live }: { ip: string; range: PeriodValue<FlowRange>; live: boolean }) {
+  const rq = live ? { range: 'live' } : rangeQuery(range);
+  const r = useQuery({
+    queryKey: ['flows', 'peers', ip, rq],
+    queryFn: () => api.get<PeersT>(`/monitoring/flows/ips/${encodeURIComponent(ip)}/peers${qs({ ...rq, limit: 25 })}`),
+    refetchInterval: live ? 5_000 : 60_000,
+    placeholderData: keepPreviousData,
+  });
+  const d = r.data;
+  const rows = d?.items ?? [];
+  const maxRow = Math.max(1, ...rows.map((x) => (live ? Math.max(x.inBps ?? 0, x.outBps ?? 0) : Math.max(x.inBytes ?? 0, x.outBytes ?? 0))));
+  return (
+    <div className="mt-6">
+      <div className="mb-1 text-[13px] font-medium">{live ? 'Remote addresses now' : `Remote addresses, ${FLOW_RANGE_LABELS[range.period as FlowRange]?.toLowerCase() ?? 'chosen days'}`}</div>
+      <ErrorNote error={r.error} />
+      {r.isLoading && <Loading />}
+      {d && !rows.length && <p className="text-[13px] text-ink-3">{live ? 'No remote addresses in the last minute.' : 'No remote addresses recorded for this period (kept for 14 days, hourly).'}</p>}
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <Table label={`Remote addresses of ${ip}`}>
+            <thead>
+              <tr>
+                <th>Remote address</th>
+                <th>ASN</th>
+                <th>Location</th>
+                <th className="text-right">Download{live ? ' now' : ''}</th>
+                <th className="text-right">Upload{live ? ' now' : ''}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((x) => (
+                <tr key={x.ip}>
+                  <td className="font-mono text-[13px]">{x.ip}</td>
+                  <td className="max-w-[30ch] truncate text-[13px]">
+                    <AsnText g={x.geo} />
+                  </td>
+                  <td className="text-[13px]">
+                    {flag(x.geo.country)} {place(x.geo)}
+                  </td>
+                  <td className="w-36 text-right tabular-nums">
+                    {live ? bps(x.inBps ?? 0) : volume(x.inBytes ?? 0)}
+                    <Bar value={live ? (x.inBps ?? 0) : (x.inBytes ?? 0)} max={maxRow} tone="rx" />
+                  </td>
+                  <td className="w-36 text-right tabular-nums">
+                    {live ? bps(x.outBps ?? 0) : volume(x.outBytes ?? 0)}
+                    <Bar value={live ? (x.outBps ?? 0) : (x.outBytes ?? 0)} max={maxRow} tone="tx" />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </div>
+      )}
+      <p className="mt-2 text-[12.5px] text-ink-3">
+        {live
+          ? d?.source === 'realtime'
+            ? 'The busiest remote addresses this second, from the router (Torch). '
+            : 'The busiest remote addresses in the last minute of flow records (top 5). '
+          : 'The remote addresses with most traffic, from hourly totals (whole hours covering the period; the busiest 20 per hour are kept). '}
+        Download = from the remote address to {ip}; upload = from {ip} to it. <GeoAttribution geo={d?.geo} />
+      </p>
+    </div>
+  );
+}
+
 interface TopIpT {
   ip: string;
   inBytes: number;
@@ -27,8 +185,10 @@ interface TopIpT {
   deviceName: string | null;
   customerId: string | null;
   customerName: string | null;
+  topPeer?: PeerT | null;
 }
 interface TopT {
+  geo?: GeoStatusT;
   range: { name: string; from: string; to: string; stepSeconds: number; coveredFrom: string; averagedSeconds: number };
   totals: { addresses: number; inBytes: number; outBytes: number; inBps: number; outBps: number };
   latestDataAt: string | null;
@@ -104,8 +264,10 @@ interface IpRowT {
   deviceName: string | null;
   customerId: string | null;
   customerName: string | null;
+  topPeer?: PeerT | null;
 }
 interface LiveT {
+  geo?: GeoStatusT;
   /** 'realtime': per-second rates from the routers (Torch); 'flows': the last minute of flow records. */
   source: 'realtime' | 'flows';
   routers: { id: string; name: string; interface: string; ok: boolean; error: string | null; lastAt: string | null }[];
@@ -214,6 +376,7 @@ function IpHistory({ ip, range, samples, realtime, onClose }: { ip: IpRowT; rang
         </>
       )}
       {d && !d.points.length && <p className="text-[13px] text-ink-3">No flows in this period.</p>}
+      <RemotePeers ip={ip.ip} range={range} live={!!samples} />
     </Panel>
   );
 }
@@ -338,7 +501,7 @@ function FlowSources() {
         ) : (
           <Chip tone="warn">Collector status unknown (worker not reporting)</Chip>
         )}
-        <span className="text-ink-3">NetFlow v5, v9 and IPFIX. Only your IPAM addresses are recorded; internet addresses are not stored.</span>
+        <span className="text-ink-3">NetFlow v5, v9 and IPFIX. Totals are kept for your IPAM addresses; the remote addresses they talk to are kept as hourly top 20 for 14 days. Traffic between two internet addresses is not stored.</span>
       </div>
       <ErrorNote error={q.error ?? remove.error} className="m-4" />
       {q.isLoading && <Loading />}
@@ -666,6 +829,7 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
                 <th className="w-10">#</th>
                 <th>Address</th>
                 <th>{staff ? 'Customer · device' : 'Device'}</th>
+                <th>Top remote address · ASN · location</th>
                 <th className="text-right">Download{isLive ? ' now' : ''}</th>
                 <th className="text-right">Upload{isLive ? ' now' : ''}</th>
                 <th className="text-right">Total</th>
@@ -685,6 +849,9 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
                     {staff && (x.customerName ?? <span className="text-ink-3">No customer</span>)}
                     {x.deviceName && <span className={cx('block', staff && 'text-[12px] text-ink-3')}>{x.deviceName}</span>}
                     {!staff && !x.deviceName && <span className="text-ink-3">—</span>}
+                  </td>
+                  <td>
+                    <PeerCell peer={x.topPeer} />
                   </td>
                   <td className="w-44 text-right">
                     <span className={cx('tabular-nums', sort === 'download' && 'font-semibold')}>{bps(x.inBps)}</span>
@@ -712,7 +879,8 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
                 ? "Real time: each address's rate this second, read from the router (MikroTik Torch) while this page is open. "
                 : `Live: each address's rate over the last minute of flow records, refreshed every 5 seconds (updated ${at ? relativeTime(at) : '—'}). Routers report traffic about once a minute, so a change shows within a minute. `
               : `${top.data && top.data.range.coveredFrom > top.data.range.from ? `Flow data in this period starts ${relativeTime(top.data.range.coveredFrom)}; averages cover only that part. ` : ''}Averages over the period. `}
-            Measured from the routers' flow records (NetFlow/IPFIX). Download is traffic to the address, upload traffic from it. Click an address for its chart.
+            Measured from the routers' flow records (NetFlow/IPFIX). Download is traffic to the address, upload traffic from it. Top remote address: the one it exchanged most traffic with
+            {isLive ? ' (live)' : ' (hourly totals)'}. Click an address for its chart and all remote addresses. <GeoAttribution geo={isLive ? live.data?.geo : top.data?.geo} />
           </p>
         )}
       </Panel>

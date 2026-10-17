@@ -179,7 +179,7 @@ ok "PostgreSQL $(runuser -u postgres -- psql -qtAX -c 'show server_version' | cu
 step "Preparing user and directories"
 id "$RUN_USER" >/dev/null 2>&1 || useradd --system --home-dir "$PREFIX" --shell /usr/sbin/nologin "$RUN_USER"
 install -d -o root -g root -m 0755 "$PREFIX" "$RELEASES" "$PREFIX/bin"
-install -d -o "$RUN_USER" -g "$RUN_USER" -m 0750 "$STATE_DIR" "$LOG_DIR" "$PREFIX/.npm" "$PREFIX/build" "$STATE_DIR/images" "$STATE_DIR/pxe"
+install -d -o "$RUN_USER" -g "$RUN_USER" -m 0750 "$STATE_DIR" "$LOG_DIR" "$PREFIX/.npm" "$PREFIX/build" "$STATE_DIR/images" "$STATE_DIR/pxe" "$STATE_DIR/geoip"
 # Written only by the root PXE helper; dnsmasq reads it.
 install -d -o root -g root -m 0755 "$PXE_OUT_DIR"
 install -d -o root -g "$RUN_USER" -m 0750 "$ENV_DIR"
@@ -356,6 +356,7 @@ LOG_LEVEL=info
 CDCIM_IMAGE_DIR=$STATE_DIR/images
 CDCIM_PXE_DIR=$STATE_DIR/pxe
 CDCIM_PXE_OUT_DIR=$PXE_OUT_DIR
+CDCIM_GEOIP_DIR=$STATE_DIR/geoip
 $INSECURE
 EOF
   umask 022
@@ -369,6 +370,7 @@ else
   grep -q '^CDCIM_IMAGE_DIR=' "$ENV_FILE" || echo "CDCIM_IMAGE_DIR=$STATE_DIR/images" >>"$ENV_FILE"
   grep -q '^CDCIM_PXE_DIR=' "$ENV_FILE" || echo "CDCIM_PXE_DIR=$STATE_DIR/pxe" >>"$ENV_FILE"
   grep -q '^CDCIM_PXE_OUT_DIR=' "$ENV_FILE" || echo "CDCIM_PXE_OUT_DIR=$PXE_OUT_DIR" >>"$ENV_FILE"
+  grep -q '^CDCIM_GEOIP_DIR=' "$ENV_FILE" || echo "CDCIM_GEOIP_DIR=$STATE_DIR/geoip" >>"$ENV_FILE"
   if [ -n "$DOMAIN" ]; then
     # Moving an existing install behind nginx with TLS: loopback only, secure cookies, one proxy hop.
     sed -i -e "s#^HOST=.*#HOST=127.0.0.1#" -e "s#^WEB_ORIGIN=.*#WEB_ORIGIN=https://$DOMAIN#" -e "s#^TRUST_PROXY_HOPS=.*#TRUST_PROXY_HOPS=1#" \
