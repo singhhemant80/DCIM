@@ -1,4 +1,4 @@
-import { createVirtAccessLoop, createVirtLiveLoop } from '../src/worker/provisioning/virt-live';
+import { createGuestLiveLoop, createVirtAccessLoop, createVirtLiveLoop } from '../src/worker/provisioning/virt-live';
 import { REDIS } from '../src/redis/redis';
 import type Redis from 'ioredis';
 /**
@@ -966,6 +966,22 @@ describe('hypervisors', () => {
     // Near or over the plan limit (an unlimited plan never is).
     expect((await ok(admin.get(`${base}&bandwidth=over80`))).items.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net']);
     expect((await ok(admin.get(`${base}&bandwidth=over100`))).items).toEqual([]);
+
+    // Manage page: one VM with live use (every 5 s while open) and what can be done from here.
+    const vm12 = (await ok(admin.get(`${base}&q=vps12`))).items[0];
+    const d0 = await ok(admin.get(`${V}/guests/${vm12.id}`));
+    expect(d0).toMatchObject({ name: 'vps12.example.net', live: null, can: { power: true, reinstall: true, console: true } });
+    const guestLoop = createGuestLiveLoop({ provisioning: deps(), redis });
+    await ok(admin.post(`${V}/guests/${vm12.id}/live/watch`));
+    await guestLoop();
+    const d1 = await ok(admin.get(`${V}/guests/${vm12.id}`));
+    expect(d1.live).toMatchObject({ status: 'running', cpuPct: 12.5, memUsed: 1024 * 1024 ** 2, memTotal: 2048 * 1024 ** 2, diskUsed: 8.5 * 1024 ** 3, diskTotal: 40 * 1024 ** 3 });
+    expect((await acme.get(`${V}/guests/${vm12.id}`)).status).toBe(404);
+    expect((await acme.post(`${V}/guests/${vm12.id}/live/watch`)).status).toBe(404);
+    // Its job history.
+    const jobsOf = await ok(admin.get(`${P}/jobs?guestId=${vm12.id}`));
+    expect(jobsOf.items.length).toBeGreaterThanOrEqual(2);
+    expect(jobsOf.items.every((x: { guestId: string }) => x.guestId === vm12.id)).toBe(true);
 
     // A customer's own list ignores the customer filter.
     expect((await ok(acme.get(`${V}/guests?kind=virtualizor&customerId=${ctx.customers.globex}`))).items.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net']);

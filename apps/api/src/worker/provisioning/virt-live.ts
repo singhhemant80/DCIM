@@ -3,7 +3,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type Redis from 'ioredis';
 import type { Logger } from 'pino';
 import { virtGuests, virtHosts, virtIntegrations } from '../../db/schema';
-import { VIRT_WATCH_KEY, virtAccessKey, virtLiveKey } from '../../health/worker-heartbeat';
+import { VIRT_GUEST_WATCH_KEY, VIRT_WATCH_KEY, virtAccessKey, virtGuestLiveKey, virtLiveKey } from '../../health/worker-heartbeat';
 import type { ProvisioningDeps } from './kinds';
 import { virtClientFor } from './kinds';
 
@@ -130,6 +130,42 @@ export function createVirtAccessLoop(deps: { db: ProvisioningDeps['db']; redis: 
           await deps.redis.set(virtAccessKey(orgId), JSON.stringify(snap), 'EX', 30);
         } finally {
           running.delete(orgId);
+        }
+      }),
+    );
+  };
+}
+
+/**
+ * One VM's CPU, memory, disk and bandwidth, read every 5 s while someone has
+ * its manage page open (at most 50 VMs at once). Read-only; Redis for 30 s.
+ */
+export function createGuestLiveLoop(deps: { provisioning: ProvisioningDeps; redis: Redis }) {
+  const running = new Set<string>();
+  return async () => {
+    if (deps.redis.status !== 'ready') return;
+    await deps.redis.zremrangebyscore(VIRT_GUEST_WATCH_KEY, '-inf', String(Date.now()));
+    const ids = (await deps.redis.zrange(VIRT_GUEST_WATCH_KEY, '0', '49')).filter((x) => !running.has(x));
+    const db = deps.provisioning.db;
+    await Promise.all(
+      ids.map(async (id) => {
+        running.add(id);
+        try {
+          const [g] = await db.select().from(virtGuests).where(eq(virtGuests.id, id));
+          if (!g || g.missingSince) return;
+          const [i] = await db.select().from(virtIntegrations).where(eq(virtIntegrations.id, g.integrationId));
+          if (!i?.enabled) return;
+          const client = virtClientFor(deps.provisioning, i);
+          if (!client.guestUsage) return;
+          const [h] = g.hostId ? await db.select().from(virtHosts).where(eq(virtHosts.id, g.hostId)) : [];
+          try {
+            const u = await client.guestUsage({ externalId: g.externalId, hostExternalId: h?.externalId ?? null, virtType: g.virtType });
+            await deps.redis.set(virtGuestLiveKey(id), JSON.stringify({ at: new Date().toISOString(), ...u }), 'EX', 30);
+          } catch (e) {
+            await deps.redis.set(virtGuestLiveKey(id), JSON.stringify({ at: new Date().toISOString(), error: ((e as { cause?: Error })?.cause?.message || (e as Error).message || 'Read failed').slice(0, 300) }), 'EX', 30);
+          }
+        } finally {
+          running.delete(id);
         }
       }),
     );

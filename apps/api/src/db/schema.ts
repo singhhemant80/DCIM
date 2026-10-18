@@ -1924,9 +1924,9 @@ export const consoleSessions = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     orgId: orgRef(),
-    deviceId: uuid('device_id')
-      .notNull()
-      .references(() => devices.id, { onDelete: 'cascade' }),
+    /** A server's BMC console, or (guestId) a VM's console through its hypervisor. Exactly one is set. */
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'cascade' }),
+    guestId: uuid('guest_id').references((): AnyPgColumn => virtGuests.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(),
     userId: uuid('user_id'),
     userLabel: text('user_label').notNull(),
@@ -1951,6 +1951,11 @@ export const consoleSessions = pgTable(
     uniqueIndex('console_sessions_live_uq')
       .on(t.deviceId, t.kind)
       .where(sql`${t.status} in ('pending', 'connecting', 'active')`),
+    // One live console per VM.
+    uniqueIndex('console_sessions_guest_live_uq')
+      .on(t.guestId, t.kind)
+      .where(sql`${t.status} in ('pending', 'connecting', 'active')`),
+    check('console_sessions_target_ck', sql`(${t.deviceId} is null) <> (${t.guestId} is null)`),
   ],
 );
 

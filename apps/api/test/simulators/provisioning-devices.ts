@@ -376,10 +376,10 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
     if (q.act === 'vs' && q.vs_status && mock.failStatus) return send({ error: { vs_status: 'Could not connect to the slave server' } });
     if (q.act === 'vs' && q.vs_status) {
       // Power state per VPS: 0 off, 1 on, 2 suspended (Virtualizor's VPS Status call).
-      const st: Record<string, { status: number; virt: string; used_bandwidth: number; bandwidth: number }> = {};
+      const st: Record<string, Record<string, number | string>> = {};
       for (const id of q.vs_status.split(',')) {
         const v = vps.get(id);
-        if (v) st[id] = { status: v.suspended ? 2 : v.status, virt: v.virt, used_bandwidth: v.bwUsed ?? 0, bandwidth: v.bwLimit ?? 0 };
+        if (v) st[id] = { status: v.suspended ? 2 : v.status, virt: v.virt, used_bandwidth: v.bwUsed ?? 0, bandwidth: v.bwLimit ?? 0, used_cpu: v.status ? 12.5 : 0, used_ram: v.status ? 1024 : 0, ram: 2048, used_disk: 8.5, disk: 40 };
       }
       return send({ status: st });
     }

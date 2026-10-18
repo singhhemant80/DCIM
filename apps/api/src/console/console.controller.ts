@@ -61,6 +61,13 @@ export class ConsoleController {
     return this.svc.start(p, id, b.kind, m);
   }
 
+  @Post('guests/:id/sessions')
+  @RequirePermissions('hardware.console')
+  @ApiOperation({ summary: "Open a VM's graphical console (Virtualizor): a one-time ticket for the WebSocket, valid for one minute." })
+  startGuest(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    return this.svc.startGuest(p, id, m);
+  }
+
   @Post('sessions/:sid/end')
   @RequirePermissions('hardware.console')
   end(@CurrentPrincipal() p: Principal, @Param('sid', UUID) sid: string, @ReqMeta() m: RequestMeta) {

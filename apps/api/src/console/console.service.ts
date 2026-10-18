@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { ConsoleCredentialInput, ConsoleKind } from '@crapplet/shared';
 import { DB, type Db } from '../db/db';
-import { consoleCredentials, consoleSessions, controlCredentials, deviceCredentials, devices, type Device } from '../db/schema';
+import { consoleCredentials, consoleSessions, controlCredentials, deviceCredentials, devices, virtGuests, virtIntegrations, type Device } from '../db/schema';
 import { SecretBox } from '../common/secret-box';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import type { Principal, RequestMeta } from '../auth/principal';
@@ -126,33 +126,51 @@ export class ConsoleService {
     if (d.lifecycleState === 'retired') throw new BadRequestException({ error: 'retired', message: 'This device is retired' });
     const [cred] = await this.db.select({ kind: consoleCredentials.kind }).from(consoleCredentials).where(and(eq(consoleCredentials.deviceId, d.id), eq(consoleCredentials.kind, kind)));
     if (!cred) throw new BadRequestException({ error: 'not_configured', message: kind === 'vnc' ? 'The graphical console is not set up for this server' : 'The serial console is not set up for this server' });
+    return this.openSession(p, { deviceId: d.id }, kind, meta);
+  }
+
+  /**
+   * A VM's graphical console, through its hypervisor (Virtualizor VNC Info):
+   * staff, or the customer the VM is assigned to. Needs VM actions enabled for
+   * the hypervisor; the worker asks for the VNC address and password when the
+   * browser connects, so neither ever reaches the API or the browser.
+   */
+  async startGuest(p: Principal, guestId: string, meta: RequestMeta) {
+    const [g] = await this.db
+      .select()
+      .from(virtGuests)
+      .where(and(eq(virtGuests.id, guestId), eq(virtGuests.orgId, p.orgId)));
+    if (!g || (p.userType !== 'staff' && (!p.customerId || g.customerId !== p.customerId))) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
+    if (g.missingSince) throw new ConflictException({ error: 'vm_missing', message: 'The hypervisor no longer reports this VM' });
+    const [i] = await this.db.select().from(virtIntegrations).where(eq(virtIntegrations.id, g.integrationId));
+    if (i?.kind !== 'virtualizor') throw new BadRequestException({ error: 'not_supported', message: 'The VM console is offered for Virtualizor VMs' });
+    if (!i.enabled || !i.actionsEnabled) throw new ForbiddenException({ error: 'actions_disabled', message: 'VM actions (including the console) are not enabled for this hypervisor' });
+    return this.openSession(p, { guestId: g.id }, 'vnc', meta);
+  }
+
+  private async openSession(p: Principal, target: { deviceId: string } | { guestId: string }, kind: ConsoleKind, meta: RequestMeta) {
+    const on = 'deviceId' in target ? eq(consoleSessions.deviceId, target.deviceId) : eq(consoleSessions.guestId, target.guestId);
+    const auditTarget = 'deviceId' in target ? { type: 'device', id: target.deviceId } : { type: 'virt_guest', id: target.guestId };
     // Tickets never used, and connections that never came up, free their slot.
     await this.db
       .update(consoleSessions)
       .set({ status: 'failed', endReason: 'Not opened in time', endedAt: new Date(), ticketHash: null, relayHash: null })
-      .where(and(eq(consoleSessions.deviceId, d.id), sql`(${consoleSessions.status} = 'pending' and ${consoleSessions.ticketExpiresAt} < now()) or (${consoleSessions.status} = 'connecting' and ${consoleSessions.createdAt} < now() - interval '2 minutes')`));
+      .where(and(on, sql`(${consoleSessions.status} = 'pending' and ${consoleSessions.ticketExpiresAt} < now()) or (${consoleSessions.status} = 'connecting' and ${consoleSessions.createdAt} < now() - interval '2 minutes')`));
     const ticket = randomBytes(32).toString('base64url');
     try {
       const [row] = await this.db
         .insert(consoleSessions)
-        .values({
-          orgId: p.orgId,
-          deviceId: d.id,
-          kind,
-          userId: p.userId,
-          userLabel: p.email,
-          userType: p.userType,
-          clientIp: meta.ip ?? null,
-          ticketHash: sha256(ticket),
-          ticketExpiresAt: new Date(Date.now() + TICKET_SECONDS * 1000),
-        })
+        .values({ orgId: p.orgId, ...target, kind, userId: p.userId, userLabel: p.email, userType: p.userType, clientIp: meta.ip ?? null, ticketHash: sha256(ticket), ticketExpiresAt: new Date(Date.now() + TICKET_SECONDS * 1000) })
         .returning();
-      await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'console.start', target: { type: 'device', id: d.id }, outcome: 'success', meta, metadata: { kind, sessionId: row!.id } });
+      await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'console.start', target: auditTarget, outcome: 'success', meta, metadata: { kind, sessionId: row!.id } });
       return { sessionId: row!.id, ticket, path: '/api/v1/console/ws' };
     } catch (e) {
       const code = (e as { code?: string }).code ?? (e as { cause?: { code?: string } }).cause?.code;
       if (code !== '23505') throw e;
-      const [cur] = await this.db.select({ user: consoleSessions.userLabel, userId: consoleSessions.userId }).from(consoleSessions).where(and(eq(consoleSessions.deviceId, d.id), eq(consoleSessions.kind, kind), sql`${consoleSessions.status} in ('pending','connecting','active')`));
+      const [cur] = await this.db
+        .select({ user: consoleSessions.userLabel, userId: consoleSessions.userId })
+        .from(consoleSessions)
+        .where(and(on, eq(consoleSessions.kind, kind), sql`${consoleSessions.status} in ('pending','connecting','active')`));
       const who = cur && (p.userType === 'staff' || cur.userId === p.userId) ? cur.user : 'another user';
       throw new ConflictException({ error: 'console_in_use', message: `This console is already open by ${who}. Close it there, or ${p.userType === 'staff' ? 'end that session' : 'ask the datacenter team'}.` });
     }
@@ -164,8 +182,11 @@ export class ConsoleService {
     if (!s || (p.userType !== 'staff' && s.userId !== p.userId)) throw new NotFoundException({ error: 'not_found', message: 'Session not found' });
     if (!['pending', 'connecting', 'active'].includes(s.status)) return { ended: false };
     const by = s.userId === p.userId ? 'Closed by the user' : `Ended by ${p.email}`;
-    await this.db.update(consoleSessions).set({ status: 'ended', endedAt: new Date(), endReason: by, ticketHash: null }).where(and(eq(consoleSessions.id, sessionId), sql`${consoleSessions.status} in ('pending','connecting','active')`));
-    await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'console.end', target: { type: 'device', id: s.deviceId }, outcome: 'success', meta, metadata: { sessionId } });
+    await this.db
+      .update(consoleSessions)
+      .set({ status: 'ended', endedAt: new Date(), endReason: by, ticketHash: null })
+      .where(and(eq(consoleSessions.id, sessionId), sql`${consoleSessions.status} in ('pending','connecting','active')`));
+    await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'console.end', target: s.deviceId ? { type: 'device', id: s.deviceId } : { type: 'virt_guest', id: s.guestId }, outcome: 'success', meta, metadata: { sessionId } });
     return { ended: true };
   }
 }

@@ -21,19 +21,19 @@ interface ConsoleStatusT {
 const wsUrl = (path: string, s: { sessionId: string; ticket: string }) => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}?session=${encodeURIComponent(s.sessionId)}&ticket=${encodeURIComponent(s.ticket)}`;
 
 /** Asks the API for a one-time ticket; the browser never holds a console password. */
-function useConsoleSession(deviceId: string, kind: ConsoleKind) {
+function useConsoleSession(deviceId: string, kind: ConsoleKind, startPath?: string) {
   const [state, setState] = useState<{ sessionId: string; url: string } | { error: string } | null>(null);
   useEffect(() => {
     let gone = false;
     api
-      .post<{ sessionId: string; ticket: string; path: string }>(`/console/devices/${deviceId}/sessions`, { kind })
+      .post<{ sessionId: string; ticket: string; path: string }>(startPath ?? `/console/devices/${deviceId}/sessions`, { kind })
       // Unmounted meanwhile (dialog closed, or React's development double mount): give the slot back.
       .then((s) => (gone ? endSession(s.sessionId) : setState({ sessionId: s.sessionId, url: wsUrl(s.path, s) })))
       .catch((e: Error) => !gone && setState({ error: e.message }));
     return () => {
       gone = true;
     };
-  }, [deviceId, kind]);
+  }, [deviceId, kind, startPath]);
   return state;
 }
 
@@ -41,11 +41,11 @@ function endSession(id: string) {
   void api.post(`/console/sessions/${id}/end`).catch(() => undefined);
 }
 
-/** Graphical console: noVNC against the relay, which speaks to the BMC's VNC server. */
-function VncViewer({ deviceId, onClose }: { deviceId: string; onClose: () => void }) {
+/** Graphical console: noVNC against the relay, which speaks to the BMC's (or, for a VM, the hypervisor's) VNC server. */
+export function VncViewer({ deviceId, guestId, onClose }: { deviceId?: string; guestId?: string; onClose: () => void }) {
   const box = useRef<HTMLDivElement>(null);
   const rfb = useRef<RFB | null>(null);
-  const session = useConsoleSession(deviceId, 'vnc');
+  const session = useConsoleSession(deviceId ?? '', 'vnc', guestId ? `/console/guests/${guestId}/sessions` : undefined);
   const [status, setStatus] = useState('Connecting…');
   const [connected, setConnected] = useState(false);
   useEffect(() => {
@@ -83,7 +83,7 @@ function VncViewer({ deviceId, onClose }: { deviceId: string; onClose: () => voi
         </Button>
       </div>
       <div ref={box} className="h-[70vh] min-h-[360px] w-full overflow-hidden rounded-lg bg-[#0b0f17]" onClick={() => rfb.current?.focus()} />
-      <p className="text-[12px] text-ink-3">Keyboard and mouse go to the server while the screen has focus. The session ends after 15 minutes without input. Every session is logged.</p>
+      <p className="text-[12px] text-ink-3">Keyboard and mouse go to the {guestId ? 'VM' : 'server'} while the screen has focus. The session ends after 15 minutes without input. Every session is logged.</p>
     </div>
   );
 }
@@ -257,13 +257,7 @@ export function ConsolePanel({ deviceId }: { deviceId: string }) {
         {(['vnc', 'sol'] as const).map((k) => (
           <div key={k} className="rounded-xl border border-rule p-3">
             <p className="font-medium">{CONSOLE_LABELS[k]}</p>
-            <p className="mt-1 text-[12.5px] text-ink-3">
-              {s[k].configured
-                ? staff
-                  ? `${s[k].host ?? 'management address'}:${s[k].port}${k === 'sol' && s[k].username ? ` as ${s[k].username}` : ''}`
-                  : 'Available'
-                : 'Not set up'}
-            </p>
+            <p className="mt-1 text-[12.5px] text-ink-3">{s[k].configured ? (staff ? `${s[k].host ?? 'management address'}:${s[k].port}${k === 'sol' && s[k].username ? ` as ${s[k].username}` : ''}` : 'Available') : 'Not set up'}</p>
             <p className="mt-1 text-[12.5px] text-ink-3">{k === 'vnc' ? 'Screen, keyboard and mouse here in NexoraDC.' : 'Text console (boot loader, kernel, login) here in NexoraDC.'}</p>
             <div className="mt-2 flex gap-2">
               <Button size="sm" variant="primary" disabled={!s[k].configured || s.live.some((l) => l.kind === k)} onClick={() => setOpen(k)}>

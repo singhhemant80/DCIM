@@ -53,7 +53,7 @@ import { AuditService, actorFrom } from '../audit/audit.service';
 import { SecretBox } from '../common/secret-box';
 import type Redis from 'ioredis';
 import { REDIS } from '../redis/redis';
-import { VIRT_WATCH_KEY, virtAccessKey, virtLiveKey } from '../health/worker-heartbeat';
+import { VIRT_GUEST_WATCH_KEY, VIRT_WATCH_KEY, virtAccessKey, virtGuestLiveKey, virtLiveKey } from '../health/worker-heartbeat';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { controlContext, jobContext, newBootToken, hashToken, virtContext } from './contexts';
 import { sha512Crypt } from './crypt';
@@ -204,6 +204,7 @@ export class ProvisioningService {
     if (q.status === 'finished') conds.push(sql`j.status in ('completed','failed','cancelled')`);
     if (q.kind) conds.push(sql`j.kind = ${q.kind}`);
     if (q.deviceId) conds.push(sql`j.device_id = ${q.deviceId}`);
+    if (q.guestId) conds.push(sql`j.guest_id = ${q.guestId}`);
     conds.push(...dateFilter(sql`j.created_at`, p.orgId, q));
     const where = sql.join(conds, sql` and `);
     const [rows, total] = await Promise.all([
@@ -977,6 +978,7 @@ export class ProvisioningService {
     if (!staff) scope.push(p.customerId ? sql`g.customer_id = ${p.customerId}` : sql`false`);
     if (q.integrationId) scope.push(sql`g.integration_id = ${q.integrationId}`);
     if (q.hostId) scope.push(sql`g.host_id = ${q.hostId}`);
+    if (q.id) scope.push(sql`g.id = ${q.id}`);
     if (q.kind) scope.push(sql`exists (select 1 from virt_integrations k where k.id = g.integration_id and k.kind = ${q.kind})`);
     if (staff && q.customerId) scope.push(q.customerId === 'own' ? sql`g.customer_id is null` : sql`g.customer_id = ${q.customerId}`);
     if (q.q) scope.push(sql`(g.name ilike ${'%' + q.q + '%'} or g.external_id = ${q.q} or ${q.q} = any(g.ip_addresses) or g.os_name ilike ${'%' + q.q + '%'})`);
@@ -1138,6 +1140,58 @@ export class ProvisioningService {
     if (!ProvisioningService.confirmMatches(input.confirm, [g.name, g.externalId])) throw new BadRequestException({ error: 'confirmation_mismatch', message: `Type the VM's name (${g.name}) to confirm` });
     const r = await this.createJob(p, { kind: 'guest_action', guestId: g.id, params: { action: input.action, vm: g.name } }, idem, { op: 'guest', id, action: input.action }, meta, 'virt.guest_action', { action: input.action, vm: g.name });
     return { ...ProvisioningService.publicJob(r.job), replayed: r.replayed };
+  }
+
+  /**
+   * One VM for its manage page: what the list shows, plus its live use (read
+   * every 5 s while the page is open) and what can be done from here. Staff,
+   * or the customer the VM is assigned to.
+   */
+  async guest(p: Principal, id: string, q: { trafficRange?: '24h' | '7d' | '30d' } = {}) {
+    const list = await this.guests(p, guestListQuerySchema.parse({ id, pageSize: 1, trafficRange: q.trafficRange ?? '30d' }));
+    const g = list.items[0];
+    if (!g) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
+    let live: Record<string, unknown> | null = null;
+    try {
+      if (this.redis.status === 'wait') await this.redis.connect();
+      const raw = await this.redis.get(virtGuestLiveKey(id));
+      const v = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+      if (v && Date.now() - new Date(String(v.at)).getTime() < 20_000) live = v;
+    } catch {
+      live = null;
+    }
+    const [i] = await this.db
+      .select({ kind: virtIntegrations.kind, enabled: virtIntegrations.enabled, actionsEnabled: virtIntegrations.actionsEnabled })
+      .from(virtIntegrations)
+      .where(eq(virtIntegrations.id, (await this.db.select({ i: virtGuests.integrationId }).from(virtGuests).where(eq(virtGuests.id, id)))[0]!.i));
+    const actions = !!i?.enabled && !!i.actionsEnabled && !g.missingSince;
+    return {
+      ...g,
+      live,
+      can: {
+        power: actions && p.permissions.has('hardware.control'),
+        reinstall: actions && p.userType === 'staff' && i?.kind === 'virtualizor' && p.permissions.has('hardware.control'),
+        console: actions && i?.kind === 'virtualizor' && p.permissions.has('hardware.console'),
+      },
+    };
+  }
+
+  /** Keeps the VM's live use coming every 5 s while its page is open (heartbeat every ~10 s). */
+  async watchGuest(p: Principal, id: string) {
+    const [g] = await this.db
+      .select({ id: virtGuests.id, customerId: virtGuests.customerId })
+      .from(virtGuests)
+      .where(and(eq(virtGuests.id, id), eq(virtGuests.orgId, p.orgId)));
+    if (!g || (p.userType !== 'staff' && g.customerId !== p.customerId)) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
+    try {
+      if (this.redis.status === 'wait') await this.redis.connect();
+      await this.redis.zadd(VIRT_GUEST_WATCH_KEY, Date.now() + 20_000, id);
+      // Staff also keep the RDP/SSH checks running while they look at a VM.
+      if (p.userType === 'staff') await this.redis.zadd(VIRT_WATCH_KEY, Date.now() + 20_000, p.orgId);
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
   }
 
   /** A staff member's view of one VM plus its integration, for reinstalls. */

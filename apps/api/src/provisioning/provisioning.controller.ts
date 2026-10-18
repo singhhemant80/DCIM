@@ -320,6 +320,20 @@ export class VirtualizationController {
     return this.svc.guestAction(p, id, b, idem, meta);
   }
 
+  @Get('guests/:id')
+  @RequirePermissions('services.read')
+  @ApiOperation({ summary: 'One VM with its live use (while watched), remote-access check and what can be done from NexoraDC.' })
+  guest(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Query(new ZodPipe(z.object({ trafficRange: z.enum(['24h', '7d', '30d']).default('30d') }))) q: { trafficRange: '24h' | '7d' | '30d' }) {
+    return this.svc.guest(p, id, q);
+  }
+
+  @Post('guests/:id/live/watch')
+  @RequirePermissions('services.read')
+  @ApiOperation({ summary: "Heartbeat from an open VM page: the VM's use is then read every 5 s (read-only, not stored)." })
+  watchGuest(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.svc.watchGuest(p, id);
+  }
+
   @Get('guests/:id/templates')
   @RequirePermissions('hardware.control')
   @StaffOnly()

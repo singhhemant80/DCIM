@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import type { VirtClient } from '../src/worker/provisioning/virt';
+import { virtContext } from '../src/provisioning/contexts';
 /**
  * Remote console: BMC web link, graphical console over the BMC's VNC server,
  * and Serial-over-LAN, through the API's WebSocket and the worker's relay.
@@ -8,7 +11,7 @@ import type { AddressInfo } from 'node:net';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { auditEvents, consoleCredentials, consoleSessions } from '../src/db/schema';
+import { auditEvents, consoleCredentials, consoleSessions, virtGuests, virtIntegrations } from '../src/db/schema';
 import { SecretBox } from '../src/common/secret-box';
 import { startConsoleRelay } from '../src/worker/console/relay';
 import { Client, setupTestApp, type TestContext } from './helpers';
@@ -78,7 +81,9 @@ beforeAll(async () => {
   noc = await Client.login(ctx.server, ctx.emails.noc);
   acme = await Client.login(ctx.server, ctx.emails.acmeAdmin);
   vnc = await startVncServer('vnc-pw-1');
-  relay = await startConsoleRelay({ db: ctx.db, secrets: ctx.app.get(SecretBox), logger: silent, port: 0, ipmitool: ipmi.path, checkMs: 150 });
+  // VM consoles: a stand-in Virtualizor whose VNC Info points at the simulator.
+  const fakeVirt = () => ({ vncInfo: async () => ({ host: '127.0.0.1', port: vnc.port, password: 'vnc-pw-1' }) }) as unknown as VirtClient;
+  relay = await startConsoleRelay({ db: ctx.db, secrets: ctx.app.get(SecretBox), logger: silent, port: 0, ipmitool: ipmi.path, checkMs: 150, makeVirt: fakeVirt });
   process.env.CONSOLE_RELAY_PORT = String(relay.port);
   const m = (await ok(admin.post('/api/v1/dcim/manufacturers', { name: 'Dell C' }))).id;
   const model = (await ok(admin.post('/api/v1/dcim/models', { manufacturerId: m, name: 'R640 C', category: 'server', uHeight: 1, depthMm: 750, fullDepth: true }))).id;
@@ -151,7 +156,7 @@ describe('graphical console (VNC)', () => {
     expect(await again.failed).toMatch(/401/);
     c.ws.close();
     await c.closed;
-    expect((await open(`${C}/ws?session=${s.sessionId}&ticket=${'x'.repeat(43)}`).failed)).toMatch(/401/);
+    expect(await open(`${C}/ws?session=${s.sessionId}&ticket=${'x'.repeat(43)}`).failed).toMatch(/401/);
   });
 
   it('a wrong VNC password is reported to the browser and in the session log', async () => {
@@ -169,6 +174,46 @@ describe('graphical console (VNC)', () => {
     await c.closed;
     const [row] = await ctx.db.select().from(consoleSessions).where(eq(consoleSessions.id, s.sessionId));
     expect(row!.status).toBe('failed');
+  });
+});
+
+describe('VM console (Virtualizor VNC)', () => {
+  it('opens through the hypervisor: VM actions must be enabled; customers need the console permission', async () => {
+    const integrationId = randomUUID();
+    const url = 'https://vz.example.net:4085';
+    await ctx.db
+      .insert(virtIntegrations)
+      .values({
+        id: integrationId,
+        orgId: ctx.org.id,
+        kind: 'virtualizor',
+        name: 'VZ con',
+        url,
+        secretEnc: ctx.app.get(SecretBox).encrypt(JSON.stringify({ apiKey: 'k', apiPass: 'p' }), virtContext(ctx.org.id, integrationId, 'virtualizor', url)),
+        actionsEnabled: false,
+      });
+    const [g] = await ctx.db.insert(virtGuests).values({ orgId: ctx.org.id, integrationId, externalId: '77', name: 'vm-con.example.net', status: 'running', customerId: ctx.customers.acme }).returning();
+    expect((await admin.post(`${C}/guests/${g!.id}/sessions`)).body.error).toBe('actions_disabled');
+    await ctx.db.update(virtIntegrations).set({ actionsEnabled: true }).where(eq(virtIntegrations.id, integrationId));
+    expect((await acme.post(`${C}/guests/${g!.id}/sessions`)).status).toBe(403);
+    const s = await ok(admin.post(`${C}/guests/${g!.id}/sessions`));
+    const c = open(wsPath(s));
+    expect((await c.read(12)).toString()).toBe('RFB 003.008\n');
+    c.ws.send(Buffer.from('RFB 003.008\n'));
+    expect([...(await c.read(2))]).toEqual([1, 1]);
+    c.ws.send(Buffer.from([1]));
+    expect([...(await c.read(4))]).toEqual([0, 0, 0, 0]);
+    c.ws.send(Buffer.from([1]));
+    const init = await c.read(24);
+    expect((await c.read(init.readUInt32BE(20))).toString()).toBe('iDRAC Virtual Console');
+    // One console per VM at a time.
+    expect((await admin.post(`${C}/guests/${g!.id}/sessions`)).body.error).toBe('console_in_use');
+    await ok(admin.post(`${C}/sessions/${s.sessionId}/end`));
+    await c.closed;
+    const [row] = await ctx.db.select().from(consoleSessions).where(eq(consoleSessions.id, s.sessionId));
+    expect(row).toMatchObject({ guestId: g!.id, deviceId: null, status: 'ended' });
+    const audit = await ctx.db.select().from(auditEvents).where(eq(auditEvents.action, 'console.start'));
+    expect(audit.some((a) => (a.target as { type?: string; id?: string } | null)?.id === g!.id || JSON.stringify(a).includes(g!.id))).toBe(true);
   });
 });
 

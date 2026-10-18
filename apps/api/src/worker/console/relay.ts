@@ -4,7 +4,9 @@ import { spawn, execFile } from 'node:child_process';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 import type { Db } from '../../db/db';
-import { consoleCredentials, devices } from '../../db/schema';
+import { consoleCredentials, devices, virtGuests, virtHosts, virtIntegrations, type VirtIntegration } from '../../db/schema';
+import { virtClientFor } from '../provisioning/kinds';
+import type { VirtClient } from '../provisioning/virt';
 import type { SecretBox } from '../../common/secret-box';
 import { consoleContext, sha256 } from '../../console/console.service';
 import { vncAuthResponse } from './des';
@@ -21,6 +23,24 @@ export interface RelayDeps {
   maxMs?: number;
   /** How often the session row is checked (ended from the web page or by staff). */
   checkMs?: number;
+  /** Tests: a stand-in hypervisor client for VM consoles. */
+  makeVirt?: (i: VirtIntegration, secret: Record<string, unknown>) => VirtClient;
+}
+
+/**
+ * Where a VM's console is: asked from its hypervisor at connect time with the
+ * integration's stored credential (Virtualizor VNC Info). Requires VM actions
+ * to be enabled for the integration, as other privileged VM operations do.
+ */
+async function guestVncTarget(deps: RelayDeps, guestId: string) {
+  const [g] = await deps.db.select().from(virtGuests).where(eq(virtGuests.id, guestId));
+  if (!g || g.missingSince) throw new Error('The hypervisor no longer reports this VM');
+  const [i] = await deps.db.select().from(virtIntegrations).where(eq(virtIntegrations.id, g.integrationId));
+  if (!i?.enabled || !i.actionsEnabled) throw new Error('VM actions are not enabled for this hypervisor');
+  const [h] = g.hostId ? await deps.db.select().from(virtHosts).where(eq(virtHosts.id, g.hostId)) : [];
+  const client = virtClientFor({ secrets: deps.secrets, makeVirt: deps.makeVirt } as Parameters<typeof virtClientFor>[0], i);
+  if (!client.vncInfo) throw new Error('This hypervisor does not offer its VM consoles to NexoraDC');
+  return client.vncInfo({ externalId: g.externalId, hostExternalId: h?.externalId ?? null, virtType: g.virtType });
 }
 
 /** Reads exact byte counts from a socket, keeping whatever arrives early. */
@@ -81,7 +101,7 @@ class Reader {
 }
 
 /** RFB: connects and authenticates to the BMC's VNC server, up to the point where ClientInit is due. */
-export async function connectVnc(host: string, port: number, password: string): Promise<{ sock: net.Socket; reader: Reader }> {
+export async function connectVnc(host: string, port: number, password: string, what = 'BMC'): Promise<{ sock: net.Socket; reader: Reader }> {
   const sock = net.connect({ host, port });
   sock.setNoDelay(true);
   await new Promise<void>((ok, fail) => {
@@ -123,7 +143,7 @@ export async function connectVnc(host: string, port: number, password: string): 
           const len = (await r.read(4)).readUInt32BE(0);
           why = (await r.read(Math.min(len, 1000))).toString('utf8');
         }
-        throw new Error(`The BMC refused the VNC password${why ? `: ${why}` : ''}`);
+        throw new Error(`The ${what} refused the VNC password${why ? `: ${why}` : ''}`);
       }
     }
     return { sock, reader: r };
@@ -185,10 +205,10 @@ export async function startConsoleRelay(deps: RelayDeps): Promise<{ port: number
     const reader = new Reader(client);
     const [sid, token] = (await reader.line()).trim().split(' ');
     if (!sid || !token) return client.destroy();
-    const claimed = await db.execute<{ org_id: string; device_id: string; kind: string; user_label: string }>(sql`
+    const claimed = await db.execute<{ org_id: string; device_id: string | null; guest_id: string | null; kind: string; user_label: string }>(sql`
       update console_sessions set status = 'active', connected_at = now(), relay_hash = null
        where id = ${sid} and status = 'connecting' and relay_hash = ${sha256(token)}
-       returning org_id, device_id, kind, user_label`);
+       returning org_id, device_id, guest_id, kind, user_label`);
     const s = claimed.rows[0];
     if (!s) return client.destroy();
     const started = Date.now();
@@ -214,13 +234,30 @@ export async function startConsoleRelay(deps: RelayDeps): Promise<{ port: number
     };
     client.on('close', () => void finish('ended', 'Closed by the user'));
 
-    const [cred] = await db.select().from(consoleCredentials).where(and(eq(consoleCredentials.deviceId, s.device_id), eq(consoleCredentials.kind, s.kind)));
-    const [dev] = await db.select({ mgmtAddress: devices.mgmtAddress }).from(devices).where(eq(devices.id, s.device_id));
-    const host = cred?.host ?? dev?.mgmtAddress?.trim() ?? null;
+    let host: string | null = null;
+    let vncPort = 5901;
+    let solCred: typeof consoleCredentials.$inferSelect | null = null;
     let password = '';
+    const what = s.guest_id ? 'VM' : 'BMC';
     try {
-      if (!cred?.secretEnc || !host) throw new Error('This console is not set up');
-      password = String((JSON.parse(deps.secrets.decrypt(cred.secretEnc, consoleContext(cred.orgId, cred.deviceId, cred.kind, cred.host, cred.port))) as { password?: string }).password ?? '');
+      if (s.guest_id) {
+        if (s.kind !== 'vnc') throw new Error('Only the graphical console is offered for VMs');
+        const t = await guestVncTarget(deps, s.guest_id);
+        host = t.host;
+        vncPort = t.port;
+        password = t.password;
+      } else {
+        const [cred] = await db
+          .select()
+          .from(consoleCredentials)
+          .where(and(eq(consoleCredentials.deviceId, s.device_id!), eq(consoleCredentials.kind, s.kind)));
+        const [dev] = await db.select({ mgmtAddress: devices.mgmtAddress }).from(devices).where(eq(devices.id, s.device_id!));
+        host = cred?.host ?? dev?.mgmtAddress?.trim() ?? null;
+        if (!cred?.secretEnc || !host) throw new Error('This console is not set up');
+        vncPort = cred.port ?? 5901;
+        solCred = cred;
+        password = String((JSON.parse(deps.secrets.decrypt(cred.secretEnc, consoleContext(cred.orgId, cred.deviceId, cred.kind, cred.host, cred.port))) as { password?: string }).password ?? '');
+      }
     } catch (e) {
       if (s.kind === 'vnc') await browserHandshake(reader, client, (e as Error).message).catch(() => undefined);
       return finish('failed', (e as Error).message);
@@ -243,8 +280,8 @@ export async function startConsoleRelay(deps: RelayDeps): Promise<{ port: number
     if (s.kind === 'vnc') {
       let vnc: Awaited<ReturnType<typeof connectVnc>>;
       try {
-        await assertDeviceHost(host);
-        vnc = await connectVnc(host, cred!.port ?? 5901, password);
+        await assertDeviceHost(host!);
+        vnc = await connectVnc(host!, vncPort, password, what);
       } catch (e) {
         const msg = hide((e as Error).message);
         await browserHandshake(reader, client, msg).catch(() => undefined);
@@ -267,14 +304,15 @@ export async function startConsoleRelay(deps: RelayDeps): Promise<{ port: number
         if (!client.write(d)) device!.pause();
       });
       client.on('drain', () => device?.resume());
-      device.on('close', () => void finish('ended', 'The BMC closed the console'));
+      device.on('close', () => void finish('ended', `The ${what} closed the console`));
       device.on('error', (e) => void finish('failed', hide(e.message)));
       return;
     }
 
     // Serial-over-LAN through ipmitool; the password only in its environment.
     const bin = deps.ipmitool || process.env.IPMITOOL_PATH || 'ipmitool';
-    const base = ['-I', 'lanplus', '-H', host, '-p', String(cred!.port ?? 623), '-U', cred!.username ?? '', '-E', '-L', String(cred!.params.privilege ?? 'ADMINISTRATOR')];
+    const cred = solCred!;
+    const base = ['-I', 'lanplus', '-H', host!, '-p', String(cred.port ?? 623), '-U', cred.username ?? '', '-E', '-L', String(cred.params.privilege ?? 'ADMINISTRATOR')];
     const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', IPMI_PASSWORD: password };
     try {
       await assertDeviceHost(host);

@@ -29,6 +29,7 @@ import { AlertsPage } from './pages/Alerts';
 import { PowerPage } from './pages/Power';
 import { ImagesPage, ProvisioningPage } from './pages/Provisioning';
 import { ProxmoxPage, VirtualizorPage } from './pages/Virtualization';
+import { VirtualMachinePage } from './pages/VirtualMachine';
 import { ColocationPage } from './pages/Colocation';
 import { ServicesPage } from './pages/Services';
 import { TicketDetailPage, TicketsPage } from './pages/Tickets';
@@ -91,6 +92,8 @@ function AppRoutes() {
         {visible.has('ipam') && <Route path="/ipam/prefixes/:id" element={<PrefixDetailPage />} />}
         {visible.has('tickets') && <Route path="/tickets/:id" element={<TicketDetailPage />} />}
         {visible.has('customers') && <Route path="/customers/:id" element={<CustomerDetailPage />} />}
+        {visible.has('virtualizor') && <Route path="/integrations/virtualizor/vms/:id" element={<VirtualMachinePage kind="virtualizor" />} />}
+        {visible.has('proxmox') && <Route path="/integrations/proxmox/vms/:id" element={<VirtualMachinePage kind="proxmox" />} />}
         <Route path="/account" element={<AccountPage />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />

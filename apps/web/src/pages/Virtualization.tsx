@@ -23,11 +23,11 @@ interface Customer {
   code: string;
 }
 
-const statusTone = (s: string | null) =>
+export const statusTone = (s: string | null) =>
   s === 'running' || s === 'online' ? 'ok' : s === 'stopped' || s === 'offline' ? 'neutral' : s === 'suspended' || s === 'network_suspended' || s === 'paused' ? 'warn' : s === 'locked' ? 'crit' : 'neutral';
 /** VM states as people say them: running → Online, stopped → Offline. */
 const GUEST_STATUS_LABELS: Record<string, string> = { running: 'Online', stopped: 'Offline', suspended: 'Suspended', network_suspended: 'Network suspended', locked: 'Locked', paused: 'Paused', missing: 'Missing', unknown: 'Unknown' };
-const guestStatusLabel = (s: string | null) => (s ? (GUEST_STATUS_LABELS[s] ?? s) : 'Unknown');
+export const guestStatusLabel = (s: string | null) => (s ? (GUEST_STATUS_LABELS[s] ?? s) : 'Unknown');
 /** Status filter chips: value sent as ?status=, label; "missing" = no longer reported by the hypervisor. */
 const STATUS_FILTERS: [string, string][] = [
   ['', 'All'],
@@ -41,7 +41,7 @@ const STATUS_FILTERS: [string, string][] = [
   ['missing', 'Missing'],
 ];
 const STATUS_DOT: Record<string, string> = { running: 'bg-ok', stopped: 'bg-ink-3', suspended: 'bg-warn', network_suspended: 'bg-warn', locked: 'bg-crit', paused: 'bg-warn', unknown: 'bg-ink-3/50', missing: 'bg-warn' };
-type AccessT = { port: number; ip: string; ok: boolean; ms: number | null; error: string | null; at: string };
+export type AccessT = { port: number; ip: string; ok: boolean; ms: number | null; error: string | null; at: string };
 type GuestListT = Paginated<VirtGuestT & { bandwidth: { usedGb: number | null; limitGb: number | null } | null; traffic: { inBytes: number; outBytes: number }; access: AccessT | null }> & {
   facets: { access: { up: number; down: number }; status: Record<string, number>; virtType: { value: string; count: number }[]; osName: { value: string; count: number }[] };
 };
@@ -248,7 +248,7 @@ function Integrations({ kind, list }: { kind: Kind; list: IntegrationT[] }) {
 const usageTone = (pct: number) => (pct >= 90 ? 'bg-crit' : pct >= 75 ? 'bg-warn' : 'bg-ok');
 
 /** Used share with a bar, and the free share next to it. */
-function UsageBar({ pct, text }: { pct: number; text: string }) {
+export function UsageBar({ pct, text }: { pct: number; text: string }) {
   const p = Math.max(0, Math.min(100, pct));
   return (
     <span className="block">
@@ -405,8 +405,8 @@ function Hosts({ kind, integrations, nodeId, onNode }: { kind: Kind; integration
 
 /* ------------------------------------------------------------------ guests */
 
-function GuestActionDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; onClose: () => void; onQueued: (id: string) => void }) {
-  const [action, setAction] = useState<GuestAction>(guest.status === 'running' ? 'shutdown' : guest.status === 'suspended' && guest.integrationKind === 'proxmox' ? 'resume' : 'start');
+export function GuestActionDialog({ guest, initial, onClose, onQueued }: { guest: VirtGuestT; initial?: GuestAction; onClose: () => void; onQueued: (id: string) => void }) {
+  const [action, setAction] = useState<GuestAction>(initial ?? (guest.status === 'running' ? 'shutdown' : guest.status === 'suspended' && guest.integrationKind === 'proxmox' ? 'resume' : 'start'));
   const [confirm, setConfirm] = useState('');
   const [key] = useState(newIdempotencyKey);
   const m = useMutation({ mutationFn: () => api.post<JobT>(`/virtualization/guests/${guest.id}/actions`, { action, confirm }, { 'Idempotency-Key': `${key}:${action}` }), onSuccess: (j) => onQueued(j.id) });
@@ -446,7 +446,7 @@ function GuestActionDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; on
 }
 
 /** Last RDP / SSH check of a running VM (TCP handshake from NexoraDC). */
-function AccessBadge({ a }: { a: AccessT | null }) {
+export function AccessBadge({ a }: { a: AccessT | null }) {
   if (!a) return null;
   const proto = a.port === 3389 ? 'RDP' : a.port === 22 ? 'SSH' : `port ${a.port}`;
   return (
@@ -458,14 +458,6 @@ function AccessBadge({ a }: { a: AccessT | null }) {
       {proto} {a.ok ? `reachable${a.ms !== null ? ` · ${a.ms} ms` : ''}` : (a.error ?? 'not reachable').toLowerCase()}
     </div>
   );
-}
-
-/** The VM's page in the hypervisor's own admin panel (Virtualizor: Manage VPS; Proxmox: the VM in the tree). */
-function manageUrl(g: VirtGuestT, integrations: IntegrationT[] | null) {
-  const i = integrations?.find((x) => x.id === g.integrationId);
-  if (!i || !/^\d+$/.test(g.externalId)) return null;
-  const base = i.url.replace(/\/+$/, '');
-  return g.integrationKind === 'virtualizor' ? `${base}/index.php?act=managevps&vpsid=${g.externalId}` : `${base}/#v1:0:=${g.virtType === 'lxc' ? 'lxc' : 'qemu'}%2F${g.externalId}`;
 }
 
 /** Traffic measured from flow records over the period, and Virtualizor's monthly counter against the plan. */
@@ -512,7 +504,7 @@ function newPassword() {
   return Array.from(b, (x) => abc[x % abc.length]).join('');
 }
 
-function ReinstallDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; onClose: () => void; onQueued: (id: string) => void }) {
+export function ReinstallDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; onClose: () => void; onQueued: (id: string) => void }) {
   const t = useQuery({
     queryKey: ['virt', 'templates', guest.id],
     queryFn: () => api.get<{ supported: boolean; actionsEnabled: boolean; currentOs: string | null; synced: boolean; items: VirtTemplate[]; matchedType: boolean }>(`/virtualization/guests/${guest.id}/templates`),
@@ -883,7 +875,9 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
             {items.map((g) => (
               <tr key={g.id} className={g.missingSince ? 'opacity-60' : ''}>
                 <td className="min-w-56">
-                  <div className="font-medium">{g.name}</div>
+                  <Link to={`/integrations/${g.integrationKind}/vms/${g.id}`} className="font-medium hover:text-accent hover:underline">
+                    {g.name}
+                  </Link>
                   <div className="text-[12.5px] text-ink-3">
                     #{g.externalId}
                     {g.virtType ? ` · ${g.virtType}` : ''}
@@ -938,17 +932,9 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
                         Reinstall
                       </Button>
                     )}
-                    {staff && manageUrl(g, integrations) && (
-                      <a
-                        href={manageUrl(g, integrations)!}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="inline-flex h-8 items-center rounded-md px-2.5 text-[13px] text-ink-2 hover:bg-sunken hover:text-ink"
-                        title={`Open this ${g.integrationKind === 'virtualizor' ? 'VPS in the Virtualizor' : 'VM in the Proxmox'} admin panel (you sign in there)`}
-                      >
-                        Manage ↗
-                      </a>
-                    )}
+                    <Link to={`/integrations/${g.integrationKind}/vms/${g.id}`} className="inline-flex h-8 items-center rounded-md px-2.5 text-[13px] font-medium text-accent hover:bg-sunken">
+                      Manage
+                    </Link>
                   </div>
                 </td>
               </tr>

@@ -10,3 +10,7 @@ export const VIRT_WATCH_KEY = 'cdcim:virt:watch';
 export const virtLiveKey = (integrationId: string) => `cdcim:virt:live:${integrationId}`;
 /** Remote-access checks (TCP to RDP 3389 / SSH 22) of one organization's running VMs, refreshed every 5 s while watched. */
 export const virtAccessKey = (orgId: string) => `cdcim:virt:access:${orgId}`;
+/** VMs with their manage page open (member = guest id, score = until when, ms); their use is read every 5 s. */
+export const VIRT_GUEST_WATCH_KEY = 'cdcim:virt:guest-watch';
+/** Live use of one VM (CPU, memory, disk, bandwidth), refreshed every 5 s while its page is open. */
+export const virtGuestLiveKey = (guestId: string) => `cdcim:virt:guest:${guestId}`;

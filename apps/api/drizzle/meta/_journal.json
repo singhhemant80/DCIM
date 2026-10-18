@@ -211,6 +211,13 @@
       "when": 1792323393102,
       "tag": "0029_vm_bandwidth",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1792331079922,
+      "tag": "0030_vm_console",
+      "breakpoints": true
     }
   ]
 }

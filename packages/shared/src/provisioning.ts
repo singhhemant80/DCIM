@@ -37,6 +37,7 @@ export const jobListQuerySchema = paginationSchema.extend({
   status: z.enum(['active', 'finished', 'all']).default('all'),
   kind: z.enum(JOB_KINDS).optional(),
   deviceId: z.string().uuid().optional(),
+  guestId: z.string().uuid().optional(),
   /** Jobs created on these days. */
   ...dateRangeFields,
 });
@@ -437,6 +438,8 @@ export const guestListQuerySchema = paginationSchema.extend({
   integrationId: z.string().uuid().optional(),
   /** Only the VMs on this hypervisor node. */
   hostId: z.string().uuid().optional(),
+  /** One VM (its manage page). */
+  id: z.string().uuid().optional(),
   q: z.string().trim().max(100).optional(),
   /** A status as stored (running, stopped, suspended, network_suspended, locked…), "unknown", or "missing" (no longer reported). */
   status: z.string().trim().max(30).optional(),

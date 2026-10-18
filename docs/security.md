@@ -237,7 +237,9 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 
 * While a staff member has a Virtualizor or Proxmox page open (a heartbeat that lapses after 20 s), the worker reads node CPU and memory every 5 s with the integration's read-only credential, and checks each running VM's remote access: a TCP handshake to its first IPv4 address on 3389 (Windows, by OS or name) or 22 (others). Nothing is sent over the connection and no login is attempted; at most 128 checks run at once, 1.5 s each. Results are kept in Redis for 30 s and not stored. These checks go to customer VM addresses (not management networks) and carry no credentials, so `CDCIM_DEVICE_ALLOW` does not apply to them.
 * "Not reachable" means NexoraDC could not open the port: the VM may block NexoraDC's address, use another port, or be down. It says nothing about reachability from elsewhere.
-* "Manage ↗" only links to the VM in the hypervisor's own admin panel (Virtualizor: `index.php?act=managevps&vpsid=…`); the person signs in there. NexoraDC passes no credentials or session.
+* A VM's manage page reads its CPU, memory, disk and bandwidth every 5 s while it is open (read-only, Redis only). Staff, or the customer the VM is assigned to.
+* VM console (Virtualizor): opening it needs `hardware.console`, VM actions enabled for the hypervisor, and the VM to be the customer's own for customer users. The browser gets a one-time ticket only; when it connects, the worker asks Virtualizor for the VM's VNC address and password (VNC Info) with the stored credential and connects. The password never reaches the API, the browser or the logs. One console per VM at a time; every session is logged with who opened it and how it ended.
+* Not offered from NexoraDC: changing a VM's root password or hostname without reinstalling. Virtualizor's admin API documents no single-purpose call for these, and its edit call takes the full VM settings, so a partial request could change the plan.
 
 ## VM reinstall (Virtualizor)
 

@@ -39,6 +39,18 @@ export interface VirtGuestInfo {
   bwLimitGb?: number | null;
 }
 type GuestRef = { externalId: string; hostExternalId: string | null; virtType: string | null };
+/** A VM's current use as the hypervisor reports it. Sizes in bytes; null where not reported. */
+export interface GuestUsage {
+  status: string;
+  cpuPct: number | null;
+  memUsed: number | null;
+  memTotal: number | null;
+  diskUsed: number | null;
+  diskTotal: number | null;
+  /** This billing month, GB (Virtualizor). */
+  bwUsedGb: number | null;
+  bwLimitGb: number | null;
+}
 /** A node's current load: CPU in percent of all its cores, memory in bytes. */
 export interface HostLoad {
   cpuPct: number | null;
@@ -56,6 +68,10 @@ export interface VirtClient {
   guestAction(g: { externalId: string; hostExternalId: string | null; virtType: string | null }, action: GuestAction): Promise<void>;
   /** Reinstall from an OS template, erasing the disk (Virtualizor "Rebuild VPS"). */
   reinstall?(g: GuestRef, input: { osid: number; password: string; formatPrimaryOnly: boolean }): Promise<void>;
+  /** The VM's current CPU, memory, disk (and bandwidth) use, read live. */
+  guestUsage?(g: GuestRef): Promise<GuestUsage>;
+  /** Where the VM's VNC console listens and its password (Virtualizor VNC Info). Used only by the console relay. */
+  vncInfo?(g: GuestRef): Promise<{ host: string; port: number; password: string }>;
   /** Current CPU and memory use of the given nodes, read live (a node that can't be read is left out). */
   hostLoads?(hostIds: string[]): Promise<Map<string, HostLoad>>;
   /** The guest's installed OS and state, read together (verifies a reinstall). */
@@ -143,6 +159,22 @@ export function proxmoxClient(cfg: { url: string; verifyTls: boolean; tokenId: s
     async guestUptime(g) {
       const d = (await get(`${guestPath(g)}/status/current`)) as Row | undefined;
       return n(d?.uptime);
+    },
+    async guestUsage(g) {
+      const d = (await get(`${guestPath(g)}/status/current`)) as Row | undefined;
+      const qmp = s(d?.qmpstatus);
+      const status = qmp && qmp !== 'running' ? (qmp === 'paused' ? 'suspended' : qmp) : (s(d?.status) ?? 'unknown');
+      // Proxmox reports disk use only for containers; for QEMU guests "disk" is 0 unless the agent reports it.
+      return {
+        status,
+        cpuPct: n(d?.cpu) === null ? null : Math.round(n(d?.cpu)! * 1000) / 10,
+        memUsed: n(d?.mem),
+        memTotal: n(d?.maxmem),
+        diskUsed: g.virtType === 'lxc' ? n(d?.disk) : null,
+        diskTotal: n(d?.maxdisk),
+        bwUsedGb: null,
+        bwLimitGb: null,
+      };
     },
     async guestAction(g, action) {
       if (!cfg.actionTokenId || !cfg.actionTokenSecret) throw new PermanentError('VM actions are off for this Proxmox integration (no action token configured)');
@@ -355,6 +387,42 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       };
     },
     hostLoads,
+    /**
+     * VPS Status (act=vs&vs_status=<id>): status, used_cpu (%), used_ram / ram
+     * (MB), used_disk / disk (GB), used_bandwidth / bandwidth (GB this month).
+     * Units as Virtualizor's panel shows them; not stated in its API docs.
+     */
+    async guestUsage(g) {
+      if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
+      const vs = ((await call({ act: 'vs', vpsid: g.externalId })).vs as Record<string, Row> | undefined) ?? {};
+      const v = vs[g.externalId];
+      if (!v) return { status: 'missing', cpuPct: null, memUsed: null, memTotal: null, diskUsed: null, diskTotal: null, bwUsedGb: null, bwLimitGb: null };
+      const r = await call({ act: 'vs', vs_status: g.externalId });
+      const m = (r.status && typeof r.status === 'object' ? r.status : r) as Record<string, unknown>;
+      const e = (m[g.externalId] && typeof m[g.externalId] === 'object' ? m[g.externalId] : {}) as Row;
+      const mb = (x: unknown) => (n(x) === null ? null : n(x)! * 1024 * 1024);
+      const gb = (x: unknown) => (n(x) === null ? null : n(x)! * 1024 ** 3);
+      return {
+        status: status(v, n(e.status) ?? undefined),
+        cpuPct: n(e.used_cpu),
+        memUsed: mb(e.used_ram),
+        memTotal: mb(e.ram) ?? mb(v.ram),
+        diskUsed: gb(e.used_disk),
+        diskTotal: gb(e.disk) ?? gb(v.space),
+        bwUsedGb: n(e.used_bandwidth),
+        bwLimitGb: n(e.bandwidth) ?? n(v.bandwidth),
+      };
+    },
+    /** VNC Info (act=vnc, POST novnc=<vpsid>): info.ip, info.port, info.password. */
+    async vncInfo(g) {
+      if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
+      const r = await call({ act: 'vnc', novnc: g.externalId }, { novnc: g.externalId });
+      const info = (r.info && typeof r.info === 'object' ? r.info : r) as Row;
+      const host = s(info.ip);
+      const port = n(info.port);
+      if (!host || !port || port < 1 || port > 65535) throw new PermanentError('Virtualizor gave no VNC address for this VPS (is VNC enabled for it?)');
+      return { host, port, password: typeof info.password === 'string' ? info.password : String(info.password ?? '') };
+    },
     async guestStatus(g) {
       if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
       const vs = ((await call({ act: 'vs', vpsid: g.externalId })).vs as Record<string, Row> | undefined) ?? {};
