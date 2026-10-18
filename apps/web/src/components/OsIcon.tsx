@@ -31,7 +31,8 @@ import { cx } from './ui';
  * The operating system of a VM as a small icon, recognised from the name the
  * hypervisor reports (e.g. "ubuntu-20.04-x86_64", "AlmaLinux 9", "win2022").
  * Distribution icons come from Simple Icons (CC0; trademarks belong to their
- * owners). There is no Windows icon there, so Windows gets a plain badge.
+ * owners). Simple Icons has no Windows icon; the Windows image
+ * (public/os/windows.png) was supplied by the operator.
  */
 const RULES: [RegExp, SimpleIcon | 'windows', string][] = [
   [/win(dows)?[\s_-]*(server|srv|\d)|^win|windows/i, 'windows', 'Windows'],
@@ -83,10 +84,8 @@ export function OsIcon({ osName, size = 20, className }: { osName: string | null
     );
   if (os.icon === 'windows')
     return (
-      <span className={cx(base, className)} style={{ ...style, background: '#0b63c4' }} title={osName ?? 'Windows'} aria-label="Windows" role="img">
-        <span className="font-semibold text-white" style={{ fontSize: Math.max(8, size * 0.42), letterSpacing: '-0.02em' }}>
-          Win
-        </span>
+      <span className={box} style={style} title={osName ?? 'Windows'} aria-label="Windows" role="img">
+        <img src="/os/windows.png" width={size * 0.85} height={size * 0.85} alt="" draggable={false} />
       </span>
     );
   return (
