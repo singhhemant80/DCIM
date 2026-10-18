@@ -1,3 +1,6 @@
+import { createVirtLiveLoop } from '../src/worker/provisioning/virt-live';
+import { REDIS } from '../src/redis/redis';
+import type Redis from 'ioredis';
 /**
  * Phase 6: provisioning end to end — the API, the worker's job kinds and the
  * public boot endpoints against simulated BMCs (Redfish with power, boot
@@ -893,6 +896,25 @@ describe('hypervisors', () => {
     const byName = (await ok(admin.get(`${base}&sort=name&dir=desc`))).items.map((g: { name: string }) => g.name);
     expect(byName.indexOf('vps12.example.net')).toBeLessThan(byName.indexOf('vps11.example.net'));
     expect((await admin.get(`${base}&sort=bogus`)).status).toBe(400);
+    // Node load: stored at sync (Manage Server), then live every 5 s while a page is open.
+    const h0 = (await ok(admin.get(`${V}/hosts?integrationId=${vzi.id}`)))[0];
+    expect(h0).toMatchObject({ memUsed: 196608 * 1024 * 1024, memTotal: 262144 * 1024 * 1024, liveAt: null });
+    expect(h0.cpuPct).toBeGreaterThanOrEqual(20);
+    const redis = ctx.app.get<Redis>(REDIS);
+    if (redis.status === 'wait') await redis.connect();
+    const liveLoop = createVirtLiveLoop({ provisioning: deps(), redis, logger: silent });
+    await liveLoop(); // nobody watching: nothing read
+    const reads = vz.loadReads;
+    await liveLoop();
+    expect(vz.loadReads).toBe(reads);
+    expect((await acme.post(`${V}/hosts/live/watch`)).status).toBe(403);
+    expect((await ok(admin.post(`${V}/hosts/live/watch`))).ok).toBe(true);
+    await liveLoop();
+    expect(vz.loadReads).toBe(reads + 1);
+    const h1 = (await ok(admin.get(`${V}/hosts?integrationId=${vzi.id}`)))[0];
+    expect(h1.liveAt).toBeTruthy();
+    expect(h1).toMatchObject({ memUsed: 196608 * 1024 * 1024, memTotal: 262144 * 1024 * 1024, liveError: null });
+
     // Bandwidth: Virtualizor's monthly counter (with the plan limit) and traffic measured from flow records.
     vz.vps.get('11')!.bwUsed = 950;
     vz.vps.get('11')!.bwLimit = 1000;

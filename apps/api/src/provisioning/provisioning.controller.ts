@@ -274,6 +274,14 @@ export class VirtualizationController {
     return this.svc.syncNow(p, id, meta);
   }
 
+  @Post('hosts/live/watch')
+  @RequirePermissions('services.read')
+  @StaffOnly()
+  @ApiOperation({ summary: 'Heartbeat from an open hypervisor page: node CPU / memory are then read every 5 s (read-only, not stored).' })
+  watchHosts(@CurrentPrincipal() p: Principal) {
+    return this.svc.watchHosts(p);
+  }
+
   @Get('hosts')
   @RequirePermissions('services.read')
   @StaffOnly()

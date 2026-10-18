@@ -39,6 +39,12 @@ export interface VirtGuestInfo {
   bwLimitGb?: number | null;
 }
 type GuestRef = { externalId: string; hostExternalId: string | null; virtType: string | null };
+/** A node's current load: CPU in percent of all its cores, memory in bytes. */
+export interface HostLoad {
+  cpuPct: number | null;
+  memUsed: number | null;
+  memTotal: number | null;
+}
 export interface VirtClient {
   test(): Promise<string>;
   /** `warning`: the sync worked but part of the data could not be read (shown on the integration). */
@@ -50,6 +56,8 @@ export interface VirtClient {
   guestAction(g: { externalId: string; hostExternalId: string | null; virtType: string | null }, action: GuestAction): Promise<void>;
   /** Reinstall from an OS template, erasing the disk (Virtualizor "Rebuild VPS"). */
   reinstall?(g: GuestRef, input: { osid: number; password: string; formatPrimaryOnly: boolean }): Promise<void>;
+  /** Current CPU and memory use of the given nodes, read live (a node that can't be read is left out). */
+  hostLoads?(hostIds: string[]): Promise<Map<string, HostLoad>>;
   /** The guest's installed OS and state, read together (verifies a reinstall). */
   guestOs?(g: GuestRef): Promise<{ osId: string | null; osName: string | null; status: string }>;
 }
@@ -120,6 +128,10 @@ export function proxmoxClient(cfg: { url: string; verifyTls: boolean; tokenId: s
             ipAddresses: [],
           })),
       };
+    },
+    async hostLoads() {
+      const nodes = ((await get('/nodes')) as Row[] | undefined) ?? [];
+      return new Map(nodes.map((x) => [String(x.node), { cpuPct: n(x.cpu) === null ? null : Math.round(n(x.cpu)! * 1000) / 10, memUsed: n(x.mem), memTotal: n(x.maxmem) }]));
     },
     async guestStatus(g) {
       const d = (await get(`${guestPath(g)}/status/current`)) as Row | undefined;
@@ -253,6 +265,33 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
     if (isSet(v.locked)) return 'locked';
     return power === 1 ? 'running' : power === 0 ? 'stopped' : 'unknown';
   };
+  /**
+   * A node's load from Virtualizor's Manage Server call (act=manageserver,
+   * changeserid=<node>): usage.ram {used, limit} in MB and usage.cpu.percent.
+   * Nodes are read a few at a time; one that doesn't answer is left out.
+   */
+  const hostLoads = async (ids: string[]) => {
+    const out = new Map<string, HostLoad>();
+    const queue = ids.filter((id) => /^\d+$/.test(id));
+    const worker = async () => {
+      for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+        try {
+          const r = await call({ act: 'manageserver', changeserid: id });
+          const usage = (r.usage ?? {}) as Row;
+          const ram = (usage.ram ?? {}) as Row;
+          const cpu = usage.cpu as unknown;
+          const cpuPct = n(cpu && typeof cpu === 'object' ? (cpu as Row).percent : cpu);
+          const used = n(ram.used);
+          const limit = n(ram.limit);
+          out.set(id, { cpuPct: cpuPct === null ? null : Math.round(cpuPct * 10) / 10, memUsed: used === null ? null : used * 1024 * 1024, memTotal: limit === null ? null : limit * 1024 * 1024 });
+        } catch {
+          /* this node stays without a live reading */
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+    return out;
+  };
   return {
     async test() {
       const r = await call({ act: 'servers' });
@@ -283,15 +322,16 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       } catch {
         templates = undefined;
       }
+      const loads = await hostLoads(Object.values(servers).map((x) => String(x.serid)));
       return {
         hosts: Object.values(servers).map((x) => ({
           externalId: String(x.serid),
           name: s(x.server_name) ?? `server-${String(x.serid)}`,
           status: n(x.status) === 1 ? 'online' : n(x.status) === 0 ? 'offline' : s(x.status),
-          cpuPct: null,
+          cpuPct: loads.get(String(x.serid))?.cpuPct ?? null,
           cpus: n(x.total_cores),
-          memUsed: null,
-          memTotal: n(x.total_ram) === null ? null : n(x.total_ram)! * 1024 * 1024,
+          memUsed: loads.get(String(x.serid))?.memUsed ?? null,
+          memTotal: loads.get(String(x.serid))?.memTotal ?? (n(x.total_ram) === null ? null : n(x.total_ram)! * 1024 * 1024),
           uptimeSeconds: null,
         })),
         guests: Object.values(vs).map((x) => ({
@@ -314,6 +354,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         templates,
       };
     },
+    hostLoads,
     async guestStatus(g) {
       if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
       const vs = ((await call({ act: 'vs', vpsid: g.externalId })).vs as Record<string, Row> | undefined) ?? {};

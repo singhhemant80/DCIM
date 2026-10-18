@@ -51,6 +51,9 @@ import {
 } from '../db/schema';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { SecretBox } from '../common/secret-box';
+import type Redis from 'ioredis';
+import { REDIS } from '../redis/redis';
+import { VIRT_WATCH_KEY, virtLiveKey } from '../health/worker-heartbeat';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { controlContext, jobContext, newBootToken, hashToken, virtContext } from './contexts';
 import { sha512Crypt } from './crypt';
@@ -79,7 +82,19 @@ export class ProvisioningService {
     private readonly audit: AuditService,
     private readonly secrets: SecretBox,
     @Inject(APP_CONFIG) private readonly cfg: AppConfig,
+    @Inject(REDIS) private readonly redis: Redis,
   ) {}
+
+  /** Keeps live node loads (CPU, memory) coming every 5 s while a hypervisor page is open (heartbeat every ~10 s). */
+  async watchHosts(p: Principal) {
+    try {
+      if (this.redis.status === 'wait') await this.redis.connect();
+      await this.redis.zadd(VIRT_WATCH_KEY, Date.now() + 20_000, p.orgId);
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  }
 
   private record(p: Principal, meta: RequestMeta, action: string, target: { type: string; id: string | null }, metadata?: Record<string, unknown>, tx?: DbOrTx) {
     return this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: p.customerId, action, target, outcome: 'success', meta, metadata }, tx);
@@ -901,25 +916,46 @@ export class ProvisioningService {
         from virt_hosts h join virt_integrations i on i.id = h.integration_id left join devices d on d.id = h.device_id
        where h.org_id = ${p.orgId} ${integrationId ? sql`and h.integration_id = ${integrationId}` : sql``}
        order by i.name, h.name`);
-    return (r.rows as Record<string, unknown>[]).map((h) => ({
-      id: h.id,
-      integrationId: h.integration_id,
-      integrationName: h.integration_name,
-      integrationKind: h.integration_kind,
-      externalId: h.external_id,
-      name: h.name,
-      status: h.status,
-      cpuPct: h.cpu_pct,
-      cpus: h.cpus,
-      memUsed: h.mem_used === null ? null : Number(h.mem_used),
-      memTotal: h.mem_total === null ? null : Number(h.mem_total),
-      uptimeSeconds: h.uptime_seconds === null ? null : Number(h.uptime_seconds),
-      deviceId: h.device_id ?? null,
-      deviceName: h.device_name ?? null,
-      guests: h.guests,
-      lastSeenAt: h.last_seen_at,
-      missingSince: h.missing_since,
-    }));
+    // Live readings (every 5 s while watched) replace the ones stored at the last sync when they are fresh.
+    const integrationIds = [...new Set((r.rows as Record<string, unknown>[]).map((h) => String(h.integration_id)))];
+    const live = new Map<string, { at: string; hosts: Record<string, { cpuPct: number | null; memUsed: number | null; memTotal: number | null }>; error?: string }>();
+    try {
+      if (integrationIds.length) {
+        if (this.redis.status === 'wait') await this.redis.connect();
+        const vals = await this.redis.mget(...integrationIds.map(virtLiveKey));
+        vals.forEach((v, k) => v && live.set(integrationIds[k]!, JSON.parse(v)));
+      }
+    } catch {
+      /* stored values only */
+    }
+    return (r.rows as Record<string, unknown>[]).map((h) => {
+      const snap = live.get(String(h.integration_id));
+      const fresh = snap && Date.now() - new Date(snap.at).getTime() < 20_000 ? snap : null;
+      const now = fresh?.hosts[String(h.external_id)];
+      return {
+        id: h.id,
+        integrationId: h.integration_id,
+        integrationName: h.integration_name,
+        integrationKind: h.integration_kind,
+        externalId: h.external_id,
+        name: h.name,
+        status: h.status,
+        cpuPct: h.cpu_pct,
+        cpus: h.cpus,
+        memUsed: h.mem_used === null ? null : Number(h.mem_used),
+        memTotal: h.mem_total === null ? null : Number(h.mem_total),
+        uptimeSeconds: h.uptime_seconds === null ? null : Number(h.uptime_seconds),
+        deviceId: h.device_id ?? null,
+        deviceName: h.device_name ?? null,
+        guests: h.guests,
+        lastSeenAt: h.last_seen_at,
+        missingSince: h.missing_since,
+        /** When the CPU / memory below were read live (null: values from the last sync). */
+        liveAt: now ? fresh!.at : null,
+        liveError: fresh?.error ?? null,
+        ...(now ? { cpuPct: now.cpuPct ?? (h.cpu_pct as number | null), memUsed: now.memUsed ?? (h.mem_used === null ? null : Number(h.mem_used)), memTotal: now.memTotal ?? (h.mem_total === null ? null : Number(h.mem_total)) } : {}),
+      };
+    });
   }
 
   async mapHost(p: Principal, id: string, deviceId: string | null, meta: RequestMeta) {

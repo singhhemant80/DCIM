@@ -292,6 +292,8 @@ export interface MockVirtualizor {
   rebuilds: { query: Record<string, string>; body: Record<string, string> }[];
   /** How long a rebuild takes before the VPS reports the new OS and runs (ms). */
   rebuildMs: number;
+  /** Manage Server (node load) reads so far. */
+  loadReads: number;
   requests: { act: string | null; params: Record<string, string> }[];
   /** Make the VPS Status call fail (to test that statuses stay unknown and the reason is shown). */
   failStatus: boolean;
@@ -306,7 +308,7 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
   const requests: MockVirtualizor['requests'] = [];
   // eslint-disable-next-line prefer-const
   let server: http.Server;
-  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, close: () => closer(server)() };
+  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, loadReads: 0, close: () => closer(server)() };
   // Installed templates ("ostemplates"), as Virtualizor lists them; one for another virtualization type.
   const templates: Record<string, Record<string, string>> = {
     '270': { osid: '270', type: 'kvm', name: 'ubuntu-22.04-x86_64', filename: 'ubuntu-22.04-x86_64.img', distro: 'ubuntu' },
@@ -349,6 +351,13 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
     if (apikey !== apiKey || apipass !== apiPass || !signedOk) {
       res.writeHead(302, { Location: '/index.php?act=login' });
       return res.end();
+    }
+    // Node load (Manage Server): RAM in MB and CPU percent; changes on every read like a live node.
+    if (q.act === 'manageserver') {
+      if (q.changeserid !== '0') return send({ error: { serid: 'Server not found' } });
+      mock.loadReads++;
+      const cpu = 20 + (mock.loadReads % 5) * 3;
+      return send({ title: 'Manage Server', usage: { cpu: { percent: cpu, percent_free: 100 - cpu }, ram: { used: 196608, limit: 262144, free: 65536, percent: 75, percent_free: 25 } } });
     }
     if (q.act === 'ostemplates') return send({ title: 'OS Templates', ostemplates: templates });
     if (q.act === 'rebuild') {

@@ -138,6 +138,9 @@ export interface VirtHostT {
   guests: number;
   lastSeenAt: string | null;
   missingSince: string | null;
+  /** When CPU / memory were read live (every 5 s while the page is open); null = values from the last sync. */
+  liveAt: string | null;
+  liveError: string | null;
 }
 
 export interface VirtGuestT {

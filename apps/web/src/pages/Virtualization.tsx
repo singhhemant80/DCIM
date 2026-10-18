@@ -244,18 +244,96 @@ function Integrations({ kind, list }: { kind: Kind; list: IntegrationT[] }) {
   );
 }
 
+const usageTone = (pct: number) => (pct >= 90 ? 'bg-crit' : pct >= 75 ? 'bg-warn' : 'bg-ok');
+
+/** Used share with a bar, and the free share next to it. */
+function UsageBar({ pct, text }: { pct: number; text: string }) {
+  const p = Math.max(0, Math.min(100, pct));
+  return (
+    <span className="block">
+      <span className="flex items-baseline justify-between gap-2 tabular-nums">
+        <span>{text}</span>
+        <span className="text-[12px] text-ink-3">{(100 - p).toFixed(0)}% free</span>
+      </span>
+      <span className="mt-1 block h-1.5 overflow-hidden rounded-full bg-sunken" role="meter" aria-valuenow={Math.round(p)} aria-valuemin={0} aria-valuemax={100}>
+        <span className={cx('block h-full rounded-full transition-[width] duration-700', usageTone(p))} style={{ width: `${Math.max(1, p)}%` }} />
+      </span>
+    </span>
+  );
+}
+
+function UsageSummary({ label, pct, detail }: { label: string; pct: number | null; detail: string }) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[12.5px] text-ink-3">{label}</span>
+        {pct !== null && <span className="text-[12.5px] text-ink-3 tabular-nums">{(100 - Math.max(0, Math.min(100, pct))).toFixed(1)}% free</span>}
+      </div>
+      <div className="mt-0.5 text-[22px] font-semibold tabular-nums">{pct === null ? '—' : `${pct.toFixed(1)}% used`}</div>
+      {pct !== null && (
+        <span className="mt-1.5 block h-2 overflow-hidden rounded-full bg-sunken" role="meter" aria-label={label} aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+          <span className={cx('block h-full rounded-full transition-[width] duration-700', usageTone(pct))} style={{ width: `${Math.max(1, Math.min(100, pct))}%` }} />
+        </span>
+      )}
+      <div className="mt-1 text-[12.5px] text-ink-3">{detail}</div>
+    </div>
+  );
+}
+
 function Hosts({ kind, integrations, nodeId, onNode }: { kind: Kind; integrations: IntegrationT[]; nodeId: string; onNode: (id: string) => void }) {
   const { can } = useAuth();
   const canExecute = can('provisioning.execute');
   const qc = useQueryClient();
   const ids = new Set(integrations.map((i) => i.id));
-  const q = useQuery({ queryKey: ['virt', 'hosts'], queryFn: () => api.get<VirtHostT[]>('/virtualization/hosts') });
+  // CPU and memory every 5 s while this page is open (the worker reads the nodes only while someone watches).
+  const q = useQuery({ queryKey: ['virt', 'hosts'], queryFn: () => api.get<VirtHostT[]>('/virtualization/hosts'), refetchInterval: 5_000, refetchIntervalInBackground: false });
+  useEffect(() => {
+    if (!integrations.length) return;
+    const beat = () => void api.post('/virtualization/hosts/live/watch').catch(() => undefined);
+    beat();
+    const h = setInterval(beat, 10_000);
+    return () => clearInterval(h);
+  }, [integrations.length]);
   const servers = useQuery({ queryKey: ['dcim', 'devices', 'servers-all'], queryFn: () => api.get<Paginated<DeviceT>>('/dcim/devices?category=server&pageSize=200'), enabled: canExecute });
   const map = useMutation({ mutationFn: (v: { id: string; deviceId: string | null }) => api.put(`/virtualization/hosts/${v.id}/device`, { deviceId: v.deviceId }), onSuccess: () => qc.invalidateQueries({ queryKey: ['virt', 'hosts'] }) });
   const hosts = (q.data ?? []).filter((h) => ids.has(h.integrationId));
   if (!integrations.length) return null;
+  const present = hosts.filter((h) => !h.missingSince);
+  // CPU across all nodes, weighted by each node's cores (a plain average where cores are unknown).
+  const cpuRows = present.filter((h) => h.cpuPct !== null);
+  const cores = cpuRows.reduce((a, h) => a + (h.cpus ?? 0), 0);
+  const cpuAll = cpuRows.length ? (cores && cpuRows.every((h) => h.cpus) ? cpuRows.reduce((a, h) => a + h.cpuPct! * h.cpus!, 0) / cores : cpuRows.reduce((a, h) => a + h.cpuPct!, 0) / cpuRows.length) : null;
+  const memRows = present.filter((h) => h.memUsed !== null && h.memTotal);
+  const memUsed = memRows.reduce((a, h) => a + h.memUsed!, 0);
+  const memTotal = memRows.reduce((a, h) => a + h.memTotal!, 0);
+  const liveAt =
+    present
+      .map((h) => h.liveAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) ?? null;
+  const liveError = present.find((h) => h.liveError)?.liveError ?? null;
   return (
-    <Panel flush title={kind === 'proxmox' ? 'Nodes' : 'Servers'}>
+    <Panel
+      flush
+      title={kind === 'proxmox' ? 'Nodes' : 'Servers'}
+      actions={
+        <span className="flex items-center gap-1.5 text-[12.5px] text-ink-3" title={liveError ?? undefined}>
+          <span className={cx('size-1.5 rounded-full', liveAt ? 'animate-pulse bg-ok' : 'bg-ink-3')} aria-hidden />
+          {liveAt ? `Live · every 5 s · ${relativeTime(liveAt)}` : liveError ? 'Live reading failed; values from the last sync' : 'Values from the last sync'}
+        </span>
+      }
+    >
+      {present.length > 0 && (
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-4 border-b border-rule px-4 py-4 sm:grid-cols-2">
+          <UsageSummary label={`CPU, all ${kind === 'proxmox' ? 'nodes' : 'servers'}`} pct={cpuAll} detail={cpuAll === null ? 'Not reported' : `${cores ? `${cores} cores · ` : ''}${cpuRows.length} of ${present.length} reporting`} />
+          <UsageSummary
+            label={`Memory, all ${kind === 'proxmox' ? 'nodes' : 'servers'}`}
+            pct={memTotal ? (memUsed / memTotal) * 100 : null}
+            detail={memTotal ? `${bytes(memUsed)} used of ${bytes(memTotal)} · ${bytes(memTotal - memUsed)} free` : 'Not reported'}
+          />
+        </div>
+      )}
       {q.isLoading ? (
         <Loading />
       ) : !hosts.length ? (
@@ -283,11 +361,12 @@ function Hosts({ kind, integrations, nodeId, onNode }: { kind: Kind; integration
                   </div>
                 </td>
                 <td>{h.missingSince ? <Chip tone="warn">Missing since {relativeTime(h.missingSince)}</Chip> : <Chip tone={statusTone(h.status)}>{h.status ?? 'unknown'}</Chip>}</td>
-                <td className="text-[13px]">
-                  {h.cpuPct !== null ? `${h.cpuPct}%` : '—'}
-                  {h.cpus ? ` of ${h.cpus}` : ''}
+                <td className="w-56 text-[13px]">
+                  {h.cpuPct !== null ? <UsageBar pct={h.cpuPct} text={`${h.cpuPct.toFixed(1)}%${h.cpus ? ` · ${h.cpus} cores` : ''}`} /> : <span className="text-ink-3">—{h.cpus ? ` (${h.cpus} cores)` : ''}</span>}
                 </td>
-                <td className="text-[13px]">{h.memTotal ? `${h.memUsed !== null ? `${bytes(h.memUsed)} / ` : ''}${bytes(h.memTotal)}` : '—'}</td>
+                <td className="w-56 text-[13px]">
+                  {h.memTotal && h.memUsed !== null ? <UsageBar pct={(h.memUsed / h.memTotal) * 100} text={`${bytes(h.memUsed)} of ${bytes(h.memTotal)}`} /> : h.memTotal ? <span className="text-ink-3">{bytes(h.memTotal)} total</span> : '—'}
+                </td>
                 <td>
                   <button type="button" className="text-accent hover:underline" title={`Show only the VMs on ${h.name}`} onClick={() => onNode(nodeId === h.id ? '' : h.id)}>
                     {h.guests} {nodeId === h.id ? '· showing' : '· show'}
