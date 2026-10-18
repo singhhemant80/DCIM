@@ -449,5 +449,7 @@ export const guestListQuerySchema = paginationSchema.extend({
   trafficRange: z.enum(GUEST_TRAFFIC_RANGES).default('30d'),
   /** Virtualizor bandwidth use against the plan limit: at least 80 %, or at/over the limit. */
   bandwidth: z.enum(['over80', 'over100']).optional(),
+  /** Staff: remote access (RDP 3389 for Windows, SSH 22 otherwise) as last checked: answering or not. */
+  access: z.enum(['up', 'down']).optional(),
   dir: z.enum(['asc', 'desc']).default('asc'),
 });

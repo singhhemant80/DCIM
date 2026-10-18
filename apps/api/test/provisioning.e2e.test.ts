@@ -1,4 +1,4 @@
-import { createVirtLiveLoop } from '../src/worker/provisioning/virt-live';
+import { createVirtAccessLoop, createVirtLiveLoop } from '../src/worker/provisioning/virt-live';
 import { REDIS } from '../src/redis/redis';
 import type Redis from 'ioredis';
 /**
@@ -914,6 +914,38 @@ describe('hypervisors', () => {
     const h1 = (await ok(admin.get(`${V}/hosts?integrationId=${vzi.id}`)))[0];
     expect(h1.liveAt).toBeTruthy();
     expect(h1).toMatchObject({ memUsed: 196608 * 1024 * 1024, memTotal: 262144 * 1024 * 1024, liveError: null });
+
+    // Remote access: RDP for Windows, SSH otherwise; running VMs only; while a page is open.
+    await ctx.db
+      .update(virtGuests)
+      .set({ status: 'running' })
+      .where(and(eq(virtGuests.integrationId, vzi.id), eq(virtGuests.externalId, '11')));
+    await ctx.db
+      .update(virtGuests)
+      .set({ osName: 'win2022-x86_64' })
+      .where(and(eq(virtGuests.integrationId, vzi.id), eq(virtGuests.externalId, '12')));
+    const probed: string[] = [];
+    const accessLoop = createVirtAccessLoop({ db: ctx.db, redis, probe: async (ip, port) => (probed.push(`${ip}:${port}`), ip.endsWith('.12') ? { ok: true, ms: 12, error: null } : { ok: false, ms: null, error: 'Refused' }) });
+    await ok(admin.post(`${V}/hosts/live/watch`));
+    await accessLoop();
+    expect(probed.sort()).toEqual(expect.arrayContaining(['203.0.113.11:22', '203.0.113.12:3389']));
+    const acc = await ok(admin.get(`${base}&status=running`));
+    const byVm = Object.fromEntries(acc.items.map((g: { name: string; access: unknown }) => [g.name, g.access]));
+    expect(byVm['vps11.example.net']).toMatchObject({ port: 22, ok: false, error: 'Refused' });
+    expect(byVm['vps12.example.net']).toMatchObject({ port: 3389, ok: true, ms: 12 });
+    expect(acc.facets.access).toEqual({ up: 1, down: 1 });
+    expect((await ok(admin.get(`${base}&access=down`))).items.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net']);
+    expect((await ok(admin.get(`${base}&access=up`))).facets.access).toEqual({ up: 1, down: 1 });
+    // Customers don't get the checks.
+    expect((await ok(acme.get(`${V}/guests?kind=virtualizor`))).items.every((g: { access: unknown }) => g.access === null)).toBe(true);
+    await ctx.db
+      .update(virtGuests)
+      .set({ osName: 'ubuntu-22.04-x86_64', status: 'stopped' })
+      .where(and(eq(virtGuests.integrationId, vzi.id), eq(virtGuests.externalId, '11')));
+    await ctx.db
+      .update(virtGuests)
+      .set({ osName: 'ubuntu-22.04-x86_64' })
+      .where(and(eq(virtGuests.integrationId, vzi.id), eq(virtGuests.externalId, '12')));
 
     // Bandwidth: Virtualizor's monthly counter (with the plan limit) and traffic measured from flow records.
     vz.vps.get('11')!.bwUsed = 950;

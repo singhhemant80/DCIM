@@ -53,7 +53,7 @@ import { AuditService, actorFrom } from '../audit/audit.service';
 import { SecretBox } from '../common/secret-box';
 import type Redis from 'ioredis';
 import { REDIS } from '../redis/redis';
-import { VIRT_WATCH_KEY, virtLiveKey } from '../health/worker-heartbeat';
+import { VIRT_WATCH_KEY, virtAccessKey, virtLiveKey } from '../health/worker-heartbeat';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { controlContext, jobContext, newBootToken, hashToken, virtContext } from './contexts';
 import { sha512Crypt } from './crypt';
@@ -987,6 +987,27 @@ export class ProvisioningService {
         : q.status === 'unknown'
           ? sql`g.missing_since is null and (g.status is null or g.status = 'unknown')`
           : sql`g.missing_since is null and g.status = ${q.status}`;
+    // Remote access as the worker last checked it (every 5 s while a staff page is open; Redis only).
+    let access: Record<string, { port: number; ip: string; ok: boolean; ms: number | null; error: string | null; at: string }> = {};
+    if (staff) {
+      try {
+        if (this.redis.status === 'wait') await this.redis.connect();
+        const raw = await this.redis.get(virtAccessKey(p.orgId));
+        const snap = raw ? (JSON.parse(raw) as { at: string; results: typeof access }) : null;
+        if (snap && Date.now() - new Date(snap.at).getTime() < 30_000) access = snap.results;
+      } catch {
+        access = {};
+      }
+    }
+    const upIds = Object.entries(access)
+      .filter(([, r]) => r.ok)
+      .map(([id]) => id);
+    const downIds = Object.entries(access)
+      .filter(([, r]) => !r.ok)
+      .map(([id]) => id);
+    const idsIn = (ids: string[]) => (ids.length ? sql`g.id = any(${`{${ids.join(',')}}`}::uuid[])` : sql`false`);
+    const accessCond = staff && q.access ? idsIn(q.access === 'up' ? upIds : downIds) : null;
+    if (accessCond) scope.push(accessCond);
     const typeCond = q.virtType ? sql`g.virt_type = ${q.virtType}` : null;
     const osCond = q.osName ? (q.osName === 'none' ? sql`g.os_name is null` : sql`g.os_name = ${q.osName}`) : null;
     // Virtualizor's monthly bandwidth against the plan limit (0 = unlimited, never "over").
@@ -1014,12 +1035,17 @@ export class ProvisioningService {
     }[q.sort];
     // VMs no longer reported always come last, whatever the sort.
     // Counts for the filter controls: each facet counted with the other filters applied, not its own.
-    const [statusFacet, typeFacet, osFacet] = await Promise.all([
+    // The access counts ignore the access filter itself (so both chips keep their numbers).
+    const accessScope = sql.join([...scope.filter((c) => c !== accessCond), ...[statusCond, typeCond, osCond].filter((x): x is SQL => !!x)], sql` and `);
+    const [statusFacet, typeFacet, osFacet, accessFacet] = await Promise.all([
       this.db.execute<{ k: string; n: number }>(
         sql`select case when g.missing_since is not null then 'missing' else coalesce(nullif(g.status, ''), 'unknown') end as k, count(*)::int as n from virt_guests g where ${all(typeCond, osCond)} group by 1`,
       ),
       this.db.execute<{ k: string; n: number }>(sql`select g.virt_type as k, count(*)::int as n from virt_guests g where ${all(statusCond, osCond)} and g.virt_type is not null group by 1 order by 1`),
       this.db.execute<{ k: string | null; n: number }>(sql`select g.os_name as k, count(*)::int as n from virt_guests g where ${all(statusCond, typeCond)} group by 1 order by 1 nulls last limit 300`),
+      staff && (upIds.length || downIds.length)
+        ? this.db.execute<{ up: number; down: number }>(sql`select count(*) filter (where ${idsIn(upIds)})::int as up, count(*) filter (where ${idsIn(downIds)})::int as down from virt_guests g where ${accessScope}`)
+        : Promise.resolve({ rows: [{ up: 0, down: 0 }] }),
     ]);
     const where = sql.join(conds, sql` and `);
     const [rows, total] = await Promise.all([
@@ -1047,6 +1073,8 @@ export class ProvisioningService {
         uptimeSeconds: g.uptime_seconds === null ? null : Number(g.uptime_seconds),
         ipAddresses: g.ip_addresses,
         osName: g.os_name ?? null,
+        /** RDP (Windows) or SSH as last checked, staff only; null when not checked (not running, no address, or no page open). */
+        access: staff ? (access[String(g.id)] ?? null) : null,
         /** As the hypervisor counts it, this billing month (GB). */
         bandwidth: g.bw_used_gb === null && g.bw_limit_gb === null ? null : { usedGb: g.bw_used_gb === null ? null : Number(g.bw_used_gb), limitGb: g.bw_limit_gb === null ? null : Number(g.bw_limit_gb) },
         /** Measured from flow records for the VM's addresses over trafficRange. */
@@ -1064,7 +1092,13 @@ export class ProvisioningService {
       pageSize: q.pageSize,
       total: total.rows[0]?.n ?? 0,
       trafficRange: q.trafficRange,
-      facets: { status: Object.fromEntries(statusFacet.rows.map((x) => [x.k, x.n])), virtType: typeFacet.rows.map((x) => ({ value: x.k, count: x.n })), osName: osFacet.rows.map((x) => ({ value: x.k ?? 'none', count: x.n })) },
+      accessCheckedAt: staff && Object.keys(access).length ? new Date().toISOString() : null,
+      facets: {
+        access: accessFacet.rows[0] ?? { up: 0, down: 0 },
+        status: Object.fromEntries(statusFacet.rows.map((x) => [x.k, x.n])),
+        virtType: typeFacet.rows.map((x) => ({ value: x.k, count: x.n })),
+        osName: osFacet.rows.map((x) => ({ value: x.k ?? 'none', count: x.n })),
+      },
     };
   }
 

@@ -41,8 +41,9 @@ const STATUS_FILTERS: [string, string][] = [
   ['missing', 'Missing'],
 ];
 const STATUS_DOT: Record<string, string> = { running: 'bg-ok', stopped: 'bg-ink-3', suspended: 'bg-warn', network_suspended: 'bg-warn', locked: 'bg-crit', paused: 'bg-warn', unknown: 'bg-ink-3/50', missing: 'bg-warn' };
-type GuestListT = Paginated<VirtGuestT & { bandwidth: { usedGb: number | null; limitGb: number | null } | null; traffic: { inBytes: number; outBytes: number } }> & {
-  facets: { status: Record<string, number>; virtType: { value: string; count: number }[]; osName: { value: string; count: number }[] };
+type AccessT = { port: number; ip: string; ok: boolean; ms: number | null; error: string | null; at: string };
+type GuestListT = Paginated<VirtGuestT & { bandwidth: { usedGb: number | null; limitGb: number | null } | null; traffic: { inBytes: number; outBytes: number }; access: AccessT | null }> & {
+  facets: { access: { up: number; down: number }; status: Record<string, number>; virtType: { value: string; count: number }[]; osName: { value: string; count: number }[] };
 };
 
 /* ------------------------------------------------------------------ integration form */
@@ -444,6 +445,29 @@ function GuestActionDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; on
   );
 }
 
+/** Last RDP / SSH check of a running VM (TCP handshake from NexoraDC). */
+function AccessBadge({ a }: { a: AccessT | null }) {
+  if (!a) return null;
+  const proto = a.port === 3389 ? 'RDP' : a.port === 22 ? 'SSH' : `port ${a.port}`;
+  return (
+    <div
+      className={cx('mt-1 flex items-center gap-1 text-[12px] whitespace-nowrap', a.ok ? 'text-ok' : 'text-crit')}
+      title={`${proto} (${a.ip}:${a.port}) from NexoraDC, checked ${relativeTime(a.at)}${a.ok ? '' : `: ${a.error ?? 'no answer'}. A firewall or a changed port also shows as not reachable.`}`}
+    >
+      <span className={cx('size-1.5 rounded-full', a.ok ? 'bg-ok' : 'bg-crit')} aria-hidden />
+      {proto} {a.ok ? `reachable${a.ms !== null ? ` · ${a.ms} ms` : ''}` : (a.error ?? 'not reachable').toLowerCase()}
+    </div>
+  );
+}
+
+/** The VM's page in the hypervisor's own admin panel (Virtualizor: Manage VPS; Proxmox: the VM in the tree). */
+function manageUrl(g: VirtGuestT, integrations: IntegrationT[] | null) {
+  const i = integrations?.find((x) => x.id === g.integrationId);
+  if (!i || !/^\d+$/.test(g.externalId)) return null;
+  const base = i.url.replace(/\/+$/, '');
+  return g.integrationKind === 'virtualizor' ? `${base}/index.php?act=managevps&vpsid=${g.externalId}` : `${base}/#v1:0:=${g.virtType === 'lxc' ? 'lxc' : 'qemu'}%2F${g.externalId}`;
+}
+
 /** Traffic measured from flow records over the period, and Virtualizor's monthly counter against the plan. */
 function BandwidthCell({ g, range }: { g: GuestListT['items'][number]; range: TrafficRange }) {
   const t = g.traffic;
@@ -597,8 +621,10 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
   const [dir, setDir] = useState<'asc' | 'desc'>('asc');
   const [trafficRange, setTrafficRange] = useState<TrafficRange>('30d');
   const [bwFilter, setBwFilter] = useState<'' | 'over80' | 'over100'>('');
-  const filtered = !!(status || customerFilter || virtType || osName || bwFilter || search.trim() || nodeId);
+  const [accessFilter, setAccessFilter] = useState<'' | 'up' | 'down'>('');
+  const filtered = !!(status || customerFilter || virtType || osName || bwFilter || accessFilter || search.trim() || nodeId);
   const clearAll = () => {
+    setAccessFilter('');
     setBwFilter('');
     setStatus('');
     setCustomerFilter('');
@@ -633,13 +659,15 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
   useEffect(() => setPage(1), [nodeId]);
   const [job, setJob] = useState<string | null>(null);
   const q = useQuery({
-    queryKey: ['virt', 'guests', kind, integrationId, nodeId, search, status, customerFilter, virtType, osName, bwFilter, trafficRange, sort, dir, page],
+    queryKey: ['virt', 'guests', kind, integrationId, nodeId, search, status, customerFilter, virtType, osName, bwFilter, accessFilter, trafficRange, sort, dir, page],
     queryFn: () =>
       api.get<GuestListT>(
-        `/virtualization/guests${qs({ kind, integrationId: integrationId || undefined, hostId: nodeId || undefined, q: search.trim() || undefined, status: status || undefined, customerId: customerFilter || undefined, virtType: virtType || undefined, osName: osName || undefined, bandwidth: bwFilter || undefined, trafficRange, sort, dir, page, pageSize: 50 })}`,
+        `/virtualization/guests${qs({ kind, integrationId: integrationId || undefined, hostId: nodeId || undefined, q: search.trim() || undefined, status: status || undefined, customerId: customerFilter || undefined, virtType: virtType || undefined, osName: osName || undefined, bandwidth: bwFilter || undefined, access: accessFilter || undefined, trafficRange, sort, dir, page, pageSize: 50 })}`,
       ),
     placeholderData: keepPreviousData,
-    refetchInterval: (query) => (query.state.data?.items.some((g) => g.activeJob) ? 4000 : 60_000),
+    // Every 5 s for staff (live RDP/SSH checks); otherwise faster only while an action runs.
+    refetchInterval: (query) => (staff ? 5_000 : query.state.data?.items.some((g) => g.activeJob) ? 4000 : 60_000),
+    refetchIntervalInBackground: false,
   });
   const customers = useQuery({ queryKey: ['customers', 'options'], queryFn: () => api.get<Paginated<Customer>>('/customers?pageSize=200'), enabled: canAssign });
   const assign = useMutation({ mutationFn: (v: { id: string; customerId: string | null }) => api.put(`/virtualization/guests/${v.id}/customer`, { customerId: v.customerId }), onSuccess: () => qc.invalidateQueries({ queryKey: ['virt', 'guests'] }) });
@@ -695,6 +723,35 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
               </button>
             );
           })}
+          {staff && ((facets?.access.up ?? 0) > 0 || (facets?.access.down ?? 0) > 0 || accessFilter) && (
+            <>
+              <span className="mx-1 self-center text-ink-3" aria-hidden>
+                |
+              </span>
+              {(
+                [
+                  ['up', 'RDP / SSH reachable', 'bg-ok', facets?.access.up ?? 0],
+                  ['down', 'Not reachable', 'bg-crit', facets?.access.down ?? 0],
+                ] as const
+              ).map(([k, label, dot, n]) => (
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={accessFilter === k}
+                  title="TCP check of the VM's address on 3389 (Windows) or 22 (others), every 5 s while this page is open"
+                  onClick={() => (setAccessFilter(accessFilter === k ? '' : k), setPage(1))}
+                  className={cx(
+                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12.5px]',
+                    accessFilter === k ? 'border-accent bg-accent-soft font-medium text-ink' : 'border-rule bg-panel text-ink-2 hover:border-accent/50',
+                  )}
+                >
+                  <span className={cx('size-1.5 rounded-full', dot)} aria-hidden />
+                  {label}
+                  <span className="text-ink-3 tabular-nums">{n}</span>
+                </button>
+              ))}
+            </>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {staff && (
@@ -778,7 +835,7 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
               <SortTh k="name">VM</SortTh>
               <SortTh k="status">Status</SortTh>
               <th>
-                Resources{' '}
+                <span className="block">Resources</span>
                 <span className="font-normal text-ink-3">
                   (sort:{' '}
                   {(
@@ -843,6 +900,7 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
                     <Chip tone={statusTone(g.status)}>{guestStatusLabel(g.status)}</Chip>
                   )}
                   {g.activeJob && <div className="mt-1 text-[12px] text-accent">Action in progress</div>}
+                  <AccessBadge a={(g as GuestListT['items'][number]).access} />
                 </td>
                 <td className="text-[13px]">
                   {g.cpus ?? '—'} vCPU · {bytes(g.memBytes)}
@@ -855,7 +913,7 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
                 {staff && (
                   <td>
                     {canAssign ? (
-                      <Select className="w-44" aria-label={`Customer for ${g.name}`} value={g.customerId ?? ''} onChange={(e) => assign.mutate({ id: g.id, customerId: e.target.value || null })}>
+                      <Select className="w-40" aria-label={`Customer for ${g.name}`} value={g.customerId ?? ''} onChange={(e) => assign.mutate({ id: g.id, customerId: e.target.value || null })}>
                         <option value="">{me?.organization.name ?? 'Own'} (own)</option>
                         {customers.data?.items.map((c) => (
                           <option key={c.id} value={c.id}>
@@ -869,16 +927,29 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
                   </td>
                 )}
                 <td className="text-right whitespace-nowrap">
-                  {canControl && g.actionsEnabled && !g.missingSince && (
-                    <Button size="sm" variant="ghost" disabled={!!g.activeJob} onClick={() => setAct(g)}>
-                      Actions
-                    </Button>
-                  )}
-                  {staff && canControl && g.actionsEnabled && !g.missingSince && g.integrationKind === 'virtualizor' && (
-                    <Button size="sm" variant="ghost" disabled={!!g.activeJob} onClick={() => setReinstall(g)}>
-                      Reinstall
-                    </Button>
-                  )}
+                  <div className="flex flex-col items-end gap-0.5">
+                    {canControl && g.actionsEnabled && !g.missingSince && (
+                      <Button size="sm" variant="ghost" disabled={!!g.activeJob} onClick={() => setAct(g)}>
+                        Actions
+                      </Button>
+                    )}
+                    {staff && canControl && g.actionsEnabled && !g.missingSince && g.integrationKind === 'virtualizor' && (
+                      <Button size="sm" variant="ghost" disabled={!!g.activeJob} onClick={() => setReinstall(g)}>
+                        Reinstall
+                      </Button>
+                    )}
+                    {staff && manageUrl(g, integrations) && (
+                      <a
+                        href={manageUrl(g, integrations)!}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="inline-flex h-8 items-center rounded-md px-2.5 text-[13px] text-ink-2 hover:bg-sunken hover:text-ink"
+                        title={`Open this ${g.integrationKind === 'virtualizor' ? 'VPS in the Virtualizor' : 'VM in the Proxmox'} admin panel (you sign in there)`}
+                      >
+                        Manage ↗
+                      </a>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

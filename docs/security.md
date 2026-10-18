@@ -233,6 +233,12 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 * Customers see only addresses assigned to them, directly or through a prefix assigned to them, and never the exporter configuration.
 * Real time per IP (optional, per router): while someone has the live view open (a heartbeat that lapses after 20 s), the worker streams MikroTik Torch on the configured interface over the device's stored RouterOS API credential. Torch is a read-only monitor; the API client can only send `/login`, `…/print`, `/tool/torch` and `/cancel`, and the interface name cannot contain API separators. Torch costs router CPU while it runs, so it stops as soon as nobody watches. The rates are kept in Redis for 5 seconds and never stored.
 
+## Hypervisor live readings and VM remote-access checks
+
+* While a staff member has a Virtualizor or Proxmox page open (a heartbeat that lapses after 20 s), the worker reads node CPU and memory every 5 s with the integration's read-only credential, and checks each running VM's remote access: a TCP handshake to its first IPv4 address on 3389 (Windows, by OS or name) or 22 (others). Nothing is sent over the connection and no login is attempted; at most 128 checks run at once, 1.5 s each. Results are kept in Redis for 30 s and not stored. These checks go to customer VM addresses (not management networks) and carry no credentials, so `CDCIM_DEVICE_ALLOW` does not apply to them.
+* "Not reachable" means NexoraDC could not open the port: the VM may block NexoraDC's address, use another port, or be down. It says nothing about reachability from elsewhere.
+* "Manage ↗" only links to the VM in the hypervisor's own admin panel (Virtualizor: `index.php?act=managevps&vpsid=…`); the person signs in there. NexoraDC passes no credentials or session.
+
 ## VM reinstall (Virtualizor)
 
 * Reinstall erases the VM's disk. It is staff only (`hardware.control`), needs the integration's VM-actions opt-in, the template must be one the panel reported at the last sync, and the VM's name must be typed.

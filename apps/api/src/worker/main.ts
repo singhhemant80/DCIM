@@ -26,7 +26,7 @@ import { FLOW_COLLECTOR_STATUS_KEY, WORKER_HEARTBEAT_KEY, flowLiveKey } from '..
 import { applyFlowRetention, startFlowCollector } from './flows/collector';
 import { createTorchLoop } from './flows/torch';
 import { createPxeLoop } from './pxe/desired';
-import { createVirtLiveLoop } from './provisioning/virt-live';
+import { createVirtAccessLoop, createVirtLiveLoop } from './provisioning/virt-live';
 import { updateGeoIp } from './geoip/update';
 import { createPowerPollLoop } from './power/poller';
 import { applyPowerRetention, rollupPower } from './power/rollup';
@@ -186,6 +186,8 @@ async function main() {
     every('virt-sync', 30_000, () => syncDueIntegrations(provisioning)),
     // Node CPU / memory every 5 s while someone has a hypervisor page open (nothing stored).
     every('virt-live', 5_000, createVirtLiveLoop({ provisioning, redis: pub, logger })),
+    // RDP / SSH reachability of running VMs (TCP handshake only) every 5 s while a hypervisor page is open.
+    every('virt-access', 5_000, createVirtAccessLoop({ db, redis: pub })),
     every('notify', 10_000, () => deliverDue({ db, secrets, logger, allowPrivate: process.env.CDCIM_NOTIFY_ALLOW_PRIVATE === 'true' })),
     // Live view: once a second for devices someone is watching (nothing stored).
     every('live', 1_000, createLiveLoop({ db, secrets, logger, redis: pub, publish: (orgId, ev) => publish(orgId, ev) })),

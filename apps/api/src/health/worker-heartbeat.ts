@@ -8,3 +8,5 @@ export const flowLiveKey = (orgId: string) => `cdcim:flows:live:${orgId}`;
 export const VIRT_WATCH_KEY = 'cdcim:virt:watch';
 /** Live node loads of one hypervisor integration (CPU %, memory), refreshed every 5 s while watched. */
 export const virtLiveKey = (integrationId: string) => `cdcim:virt:live:${integrationId}`;
+/** Remote-access checks (TCP to RDP 3389 / SSH 22) of one organization's running VMs, refreshed every 5 s while watched. */
+export const virtAccessKey = (orgId: string) => `cdcim:virt:access:${orgId}`;
