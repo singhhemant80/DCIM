@@ -59,7 +59,7 @@ A PDU's own total is stored (source `snmp`) and shown beside the rack's equipmen
 | PXE / iPXE | — | Your DHCP server chainloads iPXE and points it at `http(s)://<CDCIM_PUBLIC_URL>/api/v1/boot/ipxe?mac=${net0/mac}` (an unknown MAC gets `exit`) | DCIM does not run DHCP or TFTP |
 | Redfish virtual media + template | — | The ISO must fetch `…/api/v1/boot/config?mac=<mac>` (for example via a remastered `inst.ks=` or `ds=nocloud-net;s=` argument) | DCIM does not remaster ISOs |
 | Proxmox VE | API token (`PVEAuditor`) + optional action token (`PVEVMUser` or `VM.PowerMgmt`) | Nodes, VMs and containers, status; start, stop, shutdown, reboot, suspend, resume | Templates are skipped. Reboots verified by uptime |
-| Virtualizor | Admin API key and password (sent as `adminapikey` / `adminapipass`; connect to the master, which lists all its slave servers and VPSes) | Servers and VPSes; start, stop (graceful), power off, restart when enabled | Admin keys can't be limited, so actions are off until enabled; suspend/unsuspend (billing) not offered. Mapping from the API docs, not yet run against a live panel |
+| Virtualizor | Admin API key and password (sent as `adminapikey` / `adminapipass` plus a signed `apikey` = 8 random characters + md5(pass + them), as in Virtualizor's own admin SDK; connect to the master, which lists all its slave servers and VPSes) | Servers and VPSes; start, stop (graceful), power off, restart when enabled | Admin keys can't be limited, so actions are off until enabled; suspend/unsuspend (billing) not offered. Mapping from the API docs, not yet run against a live panel |
 
 ## Billing and automation (Phase 8)
 

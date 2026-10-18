@@ -788,8 +788,11 @@ describe('hypervisors', () => {
   });
 
   it('Virtualizor: sends the admin API credentials and explains a rejected key', async () => {
-    // The key and pass go in adminapikey / adminapipass (the mock only answers those).
+    // The key and pass go in adminapikey / adminapipass with a signed apikey, as Virtualizor's SDK sends them (the mock only answers that).
     expect(vz.requests.length).toBeGreaterThan(0);
+    // The right key and pass without the signed apikey are refused, like the real panel does.
+    const raw = await fetch(`http://127.0.0.1:${vz.port}/index.php?act=servers&api=json&adminapikey=VZKEY123&adminapipass=vz-api-pass-77`, { redirect: 'manual' });
+    expect(raw.status).toBe(302);
     const bad = await ok(
       admin.post(`${V}/integrations`, { kind: 'virtualizor', name: 'VZ wrong key', url: `http://127.0.0.1:${vz.port}`, verifyTls: false, apiKey: 'WRONGKEY', apiPass: 'wrong-pass-123', actionsEnabled: false, syncMinutes: 10 }),
     );

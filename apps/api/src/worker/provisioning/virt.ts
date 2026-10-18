@@ -1,6 +1,7 @@
 import type { GuestAction } from '@crapplet/shared';
 import type { AdapterTarget } from '../../network/discovery/types';
 import { DeviceHttpError, deviceRequest } from '../adapters/http';
+import { createHash, randomInt } from 'node:crypto';
 import { PermanentError } from './engine';
 
 /**
@@ -132,11 +133,24 @@ export function proxmoxClient(cfg: { url: string; verifyTls: boolean; tokenId: s
 /* ------------------------------------------------------------------ Virtualizor */
 
 /**
- * Virtualizor admin API (index.php?act=…&api=json&adminapikey=…&adminapipass=…). The key
- * is in the query string by Virtualizor's design; error messages here never
- * include the query string. Response shapes follow Virtualizor's API docs and
- * have not been checked against a live panel.
+ * Virtualizor admin API, authenticated as Virtualizor's own admin SDK does
+ * (sdk/admin.php): adminapikey and adminapipass, plus a signed apikey made of
+ * a random 8-character string followed by md5(apipass + that string). Without
+ * the signed key the panel redirects to its login page. The key is in the
+ * query string by Virtualizor's design; error messages here never include the
+ * query string. Response shapes follow Virtualizor's API docs.
  */
+export function virtualizorApiKey(apiPass: string, rand?: string) {
+  const abc = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const r = rand ?? Array.from({ length: 8 }, () => abc[randomInt(abc.length)]).join('');
+  return (
+    r +
+    createHash('md5')
+      .update(apiPass + r)
+      .digest('hex')
+  );
+}
+
 /**
  * Virtualizor's "stop" asks the guest to shut down; "poweroff" cuts it off.
  * Its suspend/unsuspend is an administrative suspension (billing), not a pause,
@@ -149,13 +163,27 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
   // A master listing many slaves and VPSes can take a while to answer.
   const t = target(cfg.url, cfg.verifyTls, 60_000);
   const call = async (params: Record<string, string>) => {
-    const q = new URLSearchParams({ ...params, api: 'json', adminapikey: cfg.apiKey, adminapipass: cfg.apiPass });
+    const q = new URLSearchParams({ ...params, adminapikey: cfg.apiKey, adminapipass: cfg.apiPass, api: 'json', apikey: virtualizorApiKey(cfg.apiPass) });
     try {
       const res = await deviceRequest(t, 'GET', `/index.php?${q.toString()}`, { defaultPort: 4085, rawErrors: true });
       // Virtualizor answers a request it doesn't accept with a redirect to its login page.
-      if (res.status === 301 || res.status === 302 || res.status === 303 || res.status === 401 || res.status === 403)
+      if (res.status >= 300 && res.status < 400) {
+        let where: URL | null = null;
+        try {
+          where = res.location ? new URL(res.location, cfg.url) : null;
+        } catch {
+          where = null;
+        }
+        const base = new URL(cfg.url);
+        if (where && (where.hostname !== base.hostname || (where.port || '4085') !== (base.port || '4085') || where.protocol !== base.protocol) && !/act=login/.test(where.search))
+          throw new PermanentError(`Virtualizor redirects to ${where.protocol}//${where.host}${where.pathname}; use that address as the panel URL`);
         throw new PermanentError(
-          `Virtualizor did not accept the API credentials (HTTP ${res.status}). Use an Admin API key and password (Virtualizor admin panel → Configuration → API Credentials, on the master), and allow this NexoraDC server's IP for that key`,
+          `Virtualizor did not accept the API credentials (HTTP ${res.status}, redirect to its login page). Use the Admin API key and password of the master (Virtualizor admin → Configuration → Server Info, or Configuration → API Credentials), and if the key is limited to some IPs, add this NexoraDC server's public IP`,
+        );
+      }
+      if (res.status === 401 || res.status === 403)
+        throw new PermanentError(
+          `Virtualizor did not accept the API credentials (HTTP ${res.status}). Use the Admin API key and password of the master (Virtualizor admin → Configuration → Server Info, or Configuration → API Credentials), and if the key is limited to some IPs, add this NexoraDC server's public IP`,
         );
       if (res.status >= 400) throw new Error(`HTTP ${res.status} from Virtualizor`);
       const r = res.json as Row | null;

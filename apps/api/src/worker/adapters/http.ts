@@ -84,7 +84,7 @@ export function deviceRequest(
     /** Internal: use a new connection that is closed afterwards (retries). */ fresh?: boolean;
     /** Internal: offer TLS 1.2 at most (some older BMCs stall or reset on a TLS 1.3 hello). */ tls12?: boolean;
   },
-): Promise<{ status: number; json: unknown; text?: string }> {
+): Promise<{ status: number; json: unknown; text?: string; location?: string }> {
   const scheme = t.params.scheme ?? 'https';
   const lib = scheme === 'https' ? https : http;
   const payload = opts.raw ? Buffer.from(opts.raw.data) : opts.body === undefined ? undefined : Buffer.from(JSON.stringify(opts.body));
@@ -135,7 +135,7 @@ export function deviceRequest(
             } catch {
               json = null;
             }
-            return resolve({ status, json });
+            return resolve({ status, json, ...(res.headers.location ? { location: String(res.headers.location) } : {}) });
           }
           // Redirects: a GET to another path on the same host, scheme and port is
           // followed (BMCs redirect e.g. /Systems to /Systems/); anything else is

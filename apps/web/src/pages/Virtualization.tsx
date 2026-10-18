@@ -180,7 +180,7 @@ function Integrations({ kind, list }: { kind: Kind; list: IntegrationT[] }) {
                   ) : (
                     <span className="text-ink-3">Not yet</span>
                   )}
-                  {i.lastError && <div className="mt-1 max-w-[40ch] truncate text-[12px] text-crit" title={i.lastError}>{i.lastError}</div>}
+                  {i.lastError && <div className="mt-1 max-w-[60ch] text-[12px] leading-snug break-words text-crit">{i.lastError}</div>}
                 </td>
                 <td className="text-[13px]">{i.actionsEnabled ? <Chip tone="accent">Allowed</Chip> : <Chip>Read-only</Chip>}</td>
                 <td className="text-right whitespace-nowrap">

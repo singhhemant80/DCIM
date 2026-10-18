@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -297,7 +298,14 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
   const server = http.createServer((req, res) => {
     const url = new URL(req.url!, 'http://x');
     const q = Object.fromEntries(url.searchParams);
-    const { adminapikey: apikey, adminapipass: apipass, ...rest } = q;
+    const { adminapikey: apikey, adminapipass: apipass, apikey: signed, ...rest } = q;
+    // Like Virtualizor: the signed key is 8 random characters + md5(api pass + those characters).
+    const signedOk =
+      !!signed &&
+      signed.length === 40 &&
+      createHash('md5')
+        .update(apiPass + signed.slice(0, 8))
+        .digest('hex') === signed.slice(8);
     requests.push({ act: q.act ?? null, params: rest });
     const send = (b: unknown) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -305,7 +313,7 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
     };
     if (url.pathname !== '/index.php' || q.api !== 'json') return send({ error: { unknown: 'Unknown request' } });
     // Like Virtualizor: a request without valid admin API credentials is sent to the login page.
-    if (apikey !== apiKey || apipass !== apiPass) {
+    if (apikey !== apiKey || apipass !== apiPass || !signedOk) {
       res.writeHead(302, { Location: '/index.php?act=login' });
       return res.end();
     }
