@@ -204,6 +204,13 @@
       "when": 1792318189012,
       "tag": "0028_vm_reinstall",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1792323393102,
+      "tag": "0029_vm_bandwidth",
+      "breakpoints": true
     }
   ]
 }

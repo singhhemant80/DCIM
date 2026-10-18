@@ -2213,6 +2213,9 @@ export const virtGuests = pgTable(
     /** Installed OS as the hypervisor reports it (Virtualizor: template id and name). */
     osId: text('os_id'),
     osName: text('os_name'),
+    /** Bandwidth this billing month and the plan limit (GB), as the hypervisor counts it (Virtualizor). 0 limit = unlimited. */
+    bwUsedGb: real('bw_used_gb'),
+    bwLimitGb: real('bw_limit_gb'),
     ipAddresses: text('ip_addresses')
       .array()
       .notNull()

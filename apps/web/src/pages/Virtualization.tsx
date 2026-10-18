@@ -4,12 +4,15 @@ import { Link } from 'react-router-dom';
 import { GUEST_ACTIONS, GUEST_ACTION_LABELS, GUEST_SORTS, type GuestAction, type VirtTemplate } from '@crapplet/shared';
 
 type GuestSort = (typeof GUEST_SORTS)[number];
+type TrafficRange = '24h' | '7d' | '30d';
+const TRAFFIC_RANGE_LABELS: Record<TrafficRange, string> = { '24h': 'last 24 hours', '7d': 'last 7 days', '30d': 'last 30 days' };
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { relativeTime } from '../lib/format';
 import type { DeviceT } from '../lib/dcim';
 import { bytes, duration, newIdempotencyKey, type IntegrationT, type JobT, type VirtGuestT, type VirtHostT } from '../lib/provisioning';
 import { JobModal } from '../components/Jobs';
+import { volume } from '../components/TopIps';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Table, cx } from '../components/ui';
 
 type Kind = 'proxmox' | 'virtualizor';
@@ -38,7 +41,9 @@ const STATUS_FILTERS: [string, string][] = [
   ['missing', 'Missing'],
 ];
 const STATUS_DOT: Record<string, string> = { running: 'bg-ok', stopped: 'bg-ink-3', suspended: 'bg-warn', network_suspended: 'bg-warn', locked: 'bg-crit', paused: 'bg-warn', unknown: 'bg-ink-3/50', missing: 'bg-warn' };
-type GuestListT = Paginated<VirtGuestT> & { facets: { status: Record<string, number>; virtType: { value: string; count: number }[]; osName: { value: string; count: number }[] } };
+type GuestListT = Paginated<VirtGuestT & { bandwidth: { usedGb: number | null; limitGb: number | null } | null; traffic: { inBytes: number; outBytes: number } }> & {
+  facets: { status: Record<string, number>; virtType: { value: string; count: number }[]; osName: { value: string; count: number }[] };
+};
 
 /* ------------------------------------------------------------------ integration form */
 
@@ -360,6 +365,42 @@ function GuestActionDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; on
   );
 }
 
+/** Traffic measured from flow records over the period, and Virtualizor's monthly counter against the plan. */
+function BandwidthCell({ g, range }: { g: GuestListT['items'][number]; range: TrafficRange }) {
+  const t = g.traffic;
+  const total = t.inBytes + t.outBytes;
+  const bw = g.bandwidth;
+  const pct = bw && bw.usedGb !== null && bw.limitGb ? Math.min(100, (bw.usedGb / bw.limitGb) * 100) : null;
+  return (
+    <>
+      <span
+        className={cx('block tabular-nums', total ? 'font-medium' : 'text-ink-3')}
+        title={`Measured from flow records for this VM's addresses, ${TRAFFIC_RANGE_LABELS[range]}: ↓ ${volume(t.inBytes)} download, ↑ ${volume(t.outBytes)} upload`}
+      >
+        {total ? volume(total) : '—'}
+      </span>
+      {total > 0 && (
+        <span className="block text-[11.5px] text-ink-3 tabular-nums">
+          ↓ {volume(t.inBytes)} ↑ {volume(t.outBytes)}
+        </span>
+      )}
+      {bw && bw.usedGb !== null && (
+        <span className="mt-1 block text-[11.5px] text-ink-3" title="This month, as Virtualizor counts it">
+          <span className="tabular-nums">
+            {bw.usedGb.toFixed(bw.usedGb < 10 ? 2 : 1)} GB{bw.limitGb ? ` of ${bw.limitGb} GB` : ' (no limit)'}
+          </span>{' '}
+          this month
+          {pct !== null && (
+            <span className="mt-0.5 ml-auto block h-1 w-28 overflow-hidden rounded-full bg-sunken">
+              <span className={cx('block h-full rounded-full', pct >= 100 ? 'bg-crit' : pct >= 80 ? 'bg-warn' : 'bg-accent')} style={{ width: `${Math.max(2, pct)}%` }} />
+            </span>
+          )}
+        </span>
+      )}
+    </>
+  );
+}
+
 /** A random root password from an unambiguous alphabet (no 0/O, 1/l/I). */
 function newPassword() {
   const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
@@ -475,8 +516,11 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
   const [osName, setOsName] = useState('');
   const [sort, setSort] = useState<GuestSort>('name');
   const [dir, setDir] = useState<'asc' | 'desc'>('asc');
-  const filtered = !!(status || customerFilter || virtType || osName || search.trim() || nodeId);
+  const [trafficRange, setTrafficRange] = useState<TrafficRange>('30d');
+  const [bwFilter, setBwFilter] = useState<'' | 'over80' | 'over100'>('');
+  const filtered = !!(status || customerFilter || virtType || osName || bwFilter || search.trim() || nodeId);
   const clearAll = () => {
+    setBwFilter('');
     setStatus('');
     setCustomerFilter('');
     setVirtType('');
@@ -510,10 +554,10 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
   useEffect(() => setPage(1), [nodeId]);
   const [job, setJob] = useState<string | null>(null);
   const q = useQuery({
-    queryKey: ['virt', 'guests', kind, integrationId, nodeId, search, status, customerFilter, virtType, osName, sort, dir, page],
+    queryKey: ['virt', 'guests', kind, integrationId, nodeId, search, status, customerFilter, virtType, osName, bwFilter, trafficRange, sort, dir, page],
     queryFn: () =>
       api.get<GuestListT>(
-        `/virtualization/guests${qs({ kind, integrationId: integrationId || undefined, hostId: nodeId || undefined, q: search.trim() || undefined, status: status || undefined, customerId: customerFilter || undefined, virtType: virtType || undefined, osName: osName || undefined, sort, dir, page, pageSize: 50 })}`,
+        `/virtualization/guests${qs({ kind, integrationId: integrationId || undefined, hostId: nodeId || undefined, q: search.trim() || undefined, status: status || undefined, customerId: customerFilter || undefined, virtType: virtType || undefined, osName: osName || undefined, bandwidth: bwFilter || undefined, trafficRange, sort, dir, page, pageSize: 50 })}`,
       ),
     placeholderData: keepPreviousData,
     refetchInterval: (query) => (query.state.data?.items.some((g) => g.activeJob) ? 4000 : 60_000),
@@ -605,6 +649,29 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
               ))}
             </Select>
           ) : null}
+          <Select className="w-44" aria-label="Traffic period" value={trafficRange} onChange={(e) => (setTrafficRange(e.target.value as TrafficRange), setPage(1))}>
+            <option value="24h">Traffic: 24 hours</option>
+            <option value="7d">Traffic: 7 days</option>
+            <option value="30d">Traffic: 30 days</option>
+          </Select>
+          {kind === 'virtualizor' && (
+            <Select className="w-52" aria-label="Bandwidth limit" value={bwFilter} onChange={(e) => (setBwFilter(e.target.value as '' | 'over80' | 'over100'), setPage(1))}>
+              <option value="">Any bandwidth use</option>
+              <option value="over80">80 % of plan or more</option>
+              <option value="over100">At or over the plan</option>
+            </Select>
+          )}
+          <Button
+            size="sm"
+            variant={sort === 'traffic' && dir === 'desc' ? 'primary' : 'ghost'}
+            onClick={() => {
+              setSort('traffic');
+              setDir('desc');
+              setPage(1);
+            }}
+          >
+            Most bandwidth
+          </Button>
           {filtered && (
             <Button size="sm" variant="ghost" onClick={clearAll}>
               Clear filters
@@ -654,6 +721,24 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
                 </span>
               </th>
               <th>Addresses</th>
+              <th className="text-right">
+                <span className="block">Bandwidth</span>
+                <span className="font-normal text-ink-3">
+                  <button type="button" className={cx('hover:text-ink', sort === 'traffic' && 'font-medium text-ink')} onClick={() => sortBy('traffic')} title={`Measured from flow records, ${TRAFFIC_RANGE_LABELS[trafficRange]}`}>
+                    {trafficRange}
+                    {sort === 'traffic' ? (dir === 'desc' ? ' ▼' : ' ▲') : ''}
+                  </button>
+                  {kind === 'virtualizor' && (
+                    <>
+                      {' · '}
+                      <button type="button" className={cx('hover:text-ink', sort === 'bandwidth' && 'font-medium text-ink')} onClick={() => sortBy('bandwidth')} title="This month, as Virtualizor counts it">
+                        month
+                        {sort === 'bandwidth' ? (dir === 'desc' ? ' ▼' : ' ▲') : ''}
+                      </button>
+                    </>
+                  )}
+                </span>
+              </th>
               {staff && <SortTh k="customer">Customer</SortTh>}
               <th />
             </tr>
@@ -661,7 +746,7 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
           <tbody>
             {items.map((g) => (
               <tr key={g.id} className={g.missingSince ? 'opacity-60' : ''}>
-                <td>
+                <td className="min-w-56">
                   <div className="font-medium">{g.name}</div>
                   <div className="text-[12.5px] text-ink-3">
                     #{g.externalId}
@@ -685,6 +770,9 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
                   {g.diskBytes ? ` · ${bytes(g.diskBytes)} disk` : ''}
                 </td>
                 <td className="font-mono text-[12px]">{g.ipAddresses.length ? g.ipAddresses.join(', ') : <span className="font-sans text-ink-3">Not reported</span>}</td>
+                <td className="w-48 text-right text-[12.5px] whitespace-nowrap">
+                  <BandwidthCell g={g as GuestListT['items'][number]} range={trafficRange} />
+                </td>
                 {staff && (
                   <td>
                     {canAssign ? (

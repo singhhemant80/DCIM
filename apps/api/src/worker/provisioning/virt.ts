@@ -34,6 +34,9 @@ export interface VirtGuestInfo {
   /** Installed OS as the hypervisor reports it, where it does (Virtualizor). */
   osId?: string | null;
   osName?: string | null;
+  /** Bandwidth this billing month and its limit, in GB, as the hypervisor counts it (Virtualizor; 0 limit = unlimited). */
+  bwUsedGb?: number | null;
+  bwLimitGb?: number | null;
 }
 type GuestRef = { externalId: string; hostExternalId: string | null; virtType: string | null };
 export interface VirtClient {
@@ -220,6 +223,8 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
    */
   const powerStates = async (ids: string[]) => {
     const out = new Map<string, number>();
+    // Virtualizor's VPS Status also carries this month's used bandwidth and the plan's limit (GB).
+    const bw = new Map<string, { used: number | null; limit: number | null }>();
     const errors: string[] = [];
     // Virtualizor asks each node live, so keep batches small; one failing batch doesn't lose the others.
     for (let i = 0; i < ids.length; i += 25) {
@@ -231,6 +236,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
           const e = m[id];
           const st = n(e && typeof e === 'object' ? (e as Row).status : e);
           if (st !== null) out.set(id, st);
+          if (e && typeof e === 'object') bw.set(id, { used: n((e as Row).used_bandwidth), limit: n((e as Row).bandwidth) });
         }
       } catch (e) {
         errors.push((e as { cause?: Error })?.cause?.message || (e as Error).message);
@@ -238,7 +244,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
     }
     const missing = ids.filter((id) => !out.has(id)).length;
     const warning = missing ? `VM status unknown for ${missing} of ${ids.length} VPSes${errors.length ? `: ${errors[0]}` : ' (Virtualizor gave no status for them)'}` : undefined;
-    return { out, warning };
+    return { out, warning, bw };
   };
   const isSet = (x: unknown) => x !== undefined && x !== null && x !== '' && x !== '0' && x !== 0 && x !== false;
   const status = (v: Row, power: number | undefined): string => {
@@ -264,7 +270,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         if (Object.keys(chunk).length < per || Object.keys(vs).length === before) break;
       }
       // Power states; if the panel can't give them, statuses stay "unknown" rather than guessed.
-      const { out: power, warning } = await powerStates(Object.keys(vs));
+      const { out: power, warning, bw } = await powerStates(Object.keys(vs));
       // Installed OS templates (Virtualizor's OS Templates call; "ostemplates" are the downloaded ones).
       let templates: VirtTemplate[] | undefined;
       try {
@@ -301,6 +307,8 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
           ipAddresses: x.ips && typeof x.ips === 'object' ? Object.values(x.ips as Row).map(String) : [],
           osId: s(x.osid),
           osName: s(x.os_name),
+          bwUsedGb: bw.get(String(x.vpsid))?.used ?? null,
+          bwLimitGb: bw.get(String(x.vpsid))?.limit ?? n(x.bandwidth),
         })),
         warning,
         templates,

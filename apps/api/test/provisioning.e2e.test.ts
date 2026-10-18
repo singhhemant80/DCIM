@@ -893,6 +893,26 @@ describe('hypervisors', () => {
     const byName = (await ok(admin.get(`${base}&sort=name&dir=desc`))).items.map((g: { name: string }) => g.name);
     expect(byName.indexOf('vps12.example.net')).toBeLessThan(byName.indexOf('vps11.example.net'));
     expect((await admin.get(`${base}&sort=bogus`)).status).toBe(400);
+    // Bandwidth: Virtualizor's monthly counter (with the plan limit) and traffic measured from flow records.
+    vz.vps.get('11')!.bwUsed = 950;
+    vz.vps.get('11')!.bwLimit = 1000;
+    vz.vps.get('12')!.bwUsed = 12.5;
+    vz.vps.get('12')!.bwLimit = 0;
+    await syncDueIntegrations(deps(), { force: vzi.id });
+    await ctx.db.execute(sql`insert into ip_traffic_1h (org_id, bucket, address, in_bytes, out_bytes)
+      values (${ctx.org.id}, date_trunc('hour', now()) - interval '2 hours', '203.0.113.12', 7000000000, 3000000000),
+             (${ctx.org.id}, date_trunc('hour', now()) - interval '10 days', '203.0.113.12', 1000000000, 0),
+             (${ctx.org.id}, date_trunc('hour', now()) - interval '3 hours', '203.0.113.11', 500, 500)`);
+    const t30 = (await ok(admin.get(`${base}&sort=traffic&dir=desc`))).items.filter((g: { missingSince: string | null }) => !g.missingSince);
+    expect(t30.map((g: { name: string }) => g.name)).toEqual(['vps12.example.net', 'vps11.example.net']);
+    expect(t30[0].traffic).toEqual({ inBytes: 8_000_000_000, outBytes: 3_000_000_000 });
+    expect(t30[0].bandwidth).toEqual({ usedGb: 12.5, limitGb: 0 });
+    expect((await ok(admin.get(`${base}&sort=traffic&dir=desc&trafficRange=24h`))).items[0].traffic).toEqual({ inBytes: 7_000_000_000, outBytes: 3_000_000_000 });
+    expect((await ok(admin.get(`${base}&sort=bandwidth&dir=desc`))).items[0].name).toBe('vps11.example.net');
+    // Near or over the plan limit (an unlimited plan never is).
+    expect((await ok(admin.get(`${base}&bandwidth=over80`))).items.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net']);
+    expect((await ok(admin.get(`${base}&bandwidth=over100`))).items).toEqual([]);
+
     // A customer's own list ignores the customer filter.
     expect((await ok(acme.get(`${V}/guests?kind=virtualizor&customerId=${ctx.customers.globex}`))).items.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net']);
     await ctx.db

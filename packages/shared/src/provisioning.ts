@@ -429,7 +429,9 @@ export const guestReinstallSchema = z
 
 export const guestAssignSchema = z.object({ customerId: z.string().uuid().nullable() });
 export const hostMapSchema = z.object({ deviceId: z.string().uuid().nullable() });
-export const GUEST_SORTS = ['name', 'status', 'cpus', 'memory', 'disk', 'server', 'customer'] as const;
+export const GUEST_SORTS = ['name', 'status', 'cpus', 'memory', 'disk', 'server', 'customer', 'bandwidth', 'traffic'] as const;
+/** Period for the traffic measured from flow records per VM. */
+export const GUEST_TRAFFIC_RANGES = ['24h', '7d', '30d'] as const;
 export const guestListQuerySchema = paginationSchema.extend({
   kind: z.enum(VIRT_KINDS).optional(),
   integrationId: z.string().uuid().optional(),
@@ -444,5 +446,8 @@ export const guestListQuerySchema = paginationSchema.extend({
   /** Exact OS name as the hypervisor reports it, or "none" for VMs without one. */
   osName: z.string().trim().max(200).optional(),
   sort: z.enum(GUEST_SORTS).default('name'),
+  trafficRange: z.enum(GUEST_TRAFFIC_RANGES).default('30d'),
+  /** Virtualizor bandwidth use against the plan limit: at least 80 %, or at/over the limit. */
+  bandwidth: z.enum(['over80', 'over100']).optional(),
   dir: z.enum(['asc', 'desc']).default('asc'),
 });

@@ -953,6 +953,15 @@ export class ProvisioningService {
           : sql`g.missing_since is null and g.status = ${q.status}`;
     const typeCond = q.virtType ? sql`g.virt_type = ${q.virtType}` : null;
     const osCond = q.osName ? (q.osName === 'none' ? sql`g.os_name is null` : sql`g.os_name = ${q.osName}`) : null;
+    // Virtualizor's monthly bandwidth against the plan limit (0 = unlimited, never "over").
+    if (q.bandwidth) scope.push(sql`g.bw_limit_gb > 0 and g.bw_used_gb >= g.bw_limit_gb * ${q.bandwidth === 'over100' ? 1 : 0.8}`);
+    const hours = { '24h': 24, '7d': 168, '30d': 720 }[q.trafficRange];
+    // Traffic measured from the routers' flow records (hourly totals) for the VM's addresses.
+    const traffic = sql`left join lateral (
+          select coalesce(sum(t.in_bytes), 0)::float8 as in_b, coalesce(sum(t.out_bytes), 0)::float8 as out_b
+            from ip_traffic_1h t
+           where t.org_id = g.org_id and t.bucket >= date_trunc('hour', now()) - make_interval(hours => ${hours})
+             and t.address = any(select cdcim_try_inet(x) from unnest(g.ip_addresses) x)) tr on true`;
     const all = (...extra: (SQL | null)[]) => sql.join([...scope, ...extra.filter((x): x is SQL => !!x)], sql` and `);
     const conds = [...scope, ...[statusCond, typeCond, osCond].filter((x): x is SQL => !!x)];
     const dir = q.dir === 'desc' ? sql`desc` : sql`asc`;
@@ -964,6 +973,8 @@ export class ProvisioningService {
       disk: sql`g.disk_bytes ${dir} nulls last, g.name`,
       server: sql`h.name ${dir} nulls last, g.name`,
       customer: sql`c.name ${dir} nulls first, g.name`,
+      bandwidth: sql`g.bw_used_gb ${dir} nulls last, g.name`,
+      traffic: sql`(tr.in_b + tr.out_b) ${dir}, g.name`,
     }[q.sort];
     // VMs no longer reported always come last, whatever the sort.
     // Counts for the filter controls: each facet counted with the other filters applied, not its own.
@@ -977,9 +988,10 @@ export class ProvisioningService {
     const where = sql.join(conds, sql` and `);
     const [rows, total] = await Promise.all([
       this.db.execute(sql`
-        select g.*, h.name as host_name, i.name as integration_name, i.kind as integration_kind, i.actions_enabled, c.name as customer_name,
+        select g.*, h.name as host_name, i.name as integration_name, i.kind as integration_kind, i.actions_enabled, c.name as customer_name, tr.in_b, tr.out_b,
                (select j.status from provisioning_jobs j where j.guest_id = g.id and j.status in ('queued','running','waiting','verifying','recovery') limit 1) as active_job
           from virt_guests g join virt_integrations i on i.id = g.integration_id left join virt_hosts h on h.id = g.host_id left join customers c on c.id = g.customer_id
+          ${traffic}
          where ${where} order by (g.missing_since is not null), ${order} limit ${q.pageSize} offset ${(q.page - 1) * q.pageSize}`),
       this.db.execute<{ n: number }>(sql`select count(*)::int as n from virt_guests g where ${where}`),
     ]);
@@ -999,6 +1011,10 @@ export class ProvisioningService {
         uptimeSeconds: g.uptime_seconds === null ? null : Number(g.uptime_seconds),
         ipAddresses: g.ip_addresses,
         osName: g.os_name ?? null,
+        /** As the hypervisor counts it, this billing month (GB). */
+        bandwidth: g.bw_used_gb === null && g.bw_limit_gb === null ? null : { usedGb: g.bw_used_gb === null ? null : Number(g.bw_used_gb), limitGb: g.bw_limit_gb === null ? null : Number(g.bw_limit_gb) },
+        /** Measured from flow records for the VM's addresses over trafficRange. */
+        traffic: { inBytes: Number(g.in_b ?? 0), outBytes: Number(g.out_b ?? 0) },
         hostId: staff ? (g.host_id ?? null) : null,
         hostName: staff ? g.host_name : null,
         customerId: g.customer_id ?? null,
@@ -1011,6 +1027,7 @@ export class ProvisioningService {
       page: q.page,
       pageSize: q.pageSize,
       total: total.rows[0]?.n ?? 0,
+      trafficRange: q.trafficRange,
       facets: { status: Object.fromEntries(statusFacet.rows.map((x) => [x.k, x.n])), virtType: typeFacet.rows.map((x) => ({ value: x.k, count: x.n })), osName: osFacet.rows.map((x) => ({ value: x.k ?? 'none', count: x.n })) },
     };
   }

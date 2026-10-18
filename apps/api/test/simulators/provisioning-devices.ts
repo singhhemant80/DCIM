@@ -284,7 +284,10 @@ export async function startProxmox(read: { id: string; secret: string }, action:
 
 export interface MockVirtualizor {
   port: number;
-  vps: Map<string, { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; virt: string; ips: string[]; osid?: string; rebuild?: { osid: string; password: string; at: number } }>;
+  vps: Map<
+    string,
+    { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; virt: string; ips: string[]; osid?: string; bwUsed?: number; bwLimit?: number; rebuild?: { osid: string; password: string; at: number } }
+  >;
   /** Rebuild requests as received (POST bodies), to check the password went in the body and not the URL. */
   rebuilds: { query: Record<string, string>; body: Record<string, string> }[];
   /** How long a rebuild takes before the VPS reports the new OS and runs (ms). */
@@ -364,10 +367,10 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
     if (q.act === 'vs' && q.vs_status && mock.failStatus) return send({ error: { vs_status: 'Could not connect to the slave server' } });
     if (q.act === 'vs' && q.vs_status) {
       // Power state per VPS: 0 off, 1 on, 2 suspended (Virtualizor's VPS Status call).
-      const st: Record<string, { status: number; virt: string }> = {};
+      const st: Record<string, { status: number; virt: string; used_bandwidth: number; bandwidth: number }> = {};
       for (const id of q.vs_status.split(',')) {
         const v = vps.get(id);
-        if (v) st[id] = { status: v.suspended ? 2 : v.status, virt: v.virt };
+        if (v) st[id] = { status: v.suspended ? 2 : v.status, virt: v.virt, used_bandwidth: v.bwUsed ?? 0, bandwidth: v.bwLimit ?? 0 };
       }
       return send({ status: st });
     }
