@@ -778,6 +778,20 @@ describe('hypervisors', () => {
     // "Shut down" is Virtualizor's graceful stop, not its hard power-off.
     expect(vz.requests.some((r) => r.params.action === 'stop' && r.params.vpsid === '11')).toBe(true);
     expect(vz.requests.some((r) => r.params.action === 'poweroff')).toBe(false);
+    // Power state comes from vs_status (the list has none); suspension and a lock win over it.
+    vz.vps.set('13', { serid: '0', hostname: 'vps13.example.net', status: 1, suspended: 1, virt: 'kvm', ips: [] });
+    vz.vps.set('14', { serid: '0', hostname: 'vps14.example.net', status: 1, suspended: 0, locked: 'Abuse report', virt: 'kvm', ips: [] });
+    await syncDueIntegrations(deps(), { force: i.id });
+    const after = (await ok(admin.get(`${V}/guests?integrationId=${i.id}`))).items.map((g: { name: string; status: string }) => [g.name, g.status]);
+    expect(after).toEqual([
+      ['vps11.example.net', 'stopped'],
+      ['vps12.example.net', 'stopped'],
+      ['vps13.example.net', 'suspended'],
+      ['vps14.example.net', 'locked'],
+    ]);
+    expect(vz.requests.some((r) => r.params.vs_status === '11,12,13,14')).toBe(true);
+    vz.vps.delete('13');
+    vz.vps.delete('14');
     // Suspend/unsuspend are Virtualizor's administrative (billing) suspension: not offered.
     const sus = await admin.post(`${V}/guests/${list[1].id}/actions`, { action: 'resume', confirm: 'vps12.example.net' });
     expect(sus.body.error).toBe('action_unsupported');

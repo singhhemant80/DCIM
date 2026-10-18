@@ -18,7 +18,11 @@ interface Customer {
   code: string;
 }
 
-const statusTone = (s: string | null) => (s === 'running' || s === 'online' ? 'ok' : s === 'stopped' || s === 'offline' ? 'neutral' : s === 'suspended' ? 'warn' : 'neutral');
+const statusTone = (s: string | null) =>
+  s === 'running' || s === 'online' ? 'ok' : s === 'stopped' || s === 'offline' ? 'neutral' : s === 'suspended' || s === 'network_suspended' || s === 'paused' ? 'warn' : s === 'locked' ? 'crit' : 'neutral';
+/** VM states as people say them: running → Online, stopped → Offline. */
+const GUEST_STATUS_LABELS: Record<string, string> = { running: 'Online', stopped: 'Offline', suspended: 'Suspended', network_suspended: 'Network suspended', locked: 'Locked', paused: 'Paused', missing: 'Missing', unknown: 'Unknown' };
+const guestStatusLabel = (s: string | null) => (s ? (GUEST_STATUS_LABELS[s] ?? s) : 'Unknown');
 
 /* ------------------------------------------------------------------ integration form */
 
@@ -410,7 +414,7 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
                       Missing since {relativeTime(g.missingSince)}
                     </Chip>
                   ) : (
-                    <Chip tone={statusTone(g.status)}>{g.status ?? 'unknown'}</Chip>
+                    <Chip tone={statusTone(g.status)}>{guestStatusLabel(g.status)}</Chip>
                   )}
                   {g.activeJob && <div className="mt-1 text-[12px] text-accent">Action in progress</div>}
                 </td>

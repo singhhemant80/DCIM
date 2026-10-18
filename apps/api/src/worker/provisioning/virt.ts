@@ -200,10 +200,32 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       return fail(e);
     }
   };
-  const status = (v: Row): string => {
-    if (n(v.suspended) === 1) return 'suspended';
-    const st = n(v.status);
-    return st === 1 ? 'running' : st === 0 ? 'stopped' : (s(v.status) ?? 'unknown');
+  /**
+   * The VPS list has no power state; it comes from act=vs&vs_status=<ids>
+   * (documented: 0 off, 1 on, 2 suspended). Administrative suspension,
+   * network suspension and a lock come from the VPS list itself and win over
+   * the power state, as in Virtualizor's own panel.
+   */
+  const powerStates = async (ids: string[]) => {
+    const out = new Map<string, number>();
+    for (let i = 0; i < ids.length; i += 100) {
+      const part = ids.slice(i, i + 100);
+      const r = await call({ act: 'vs', vs_status: part.join(',') });
+      const m = (r.status && typeof r.status === 'object' ? r.status : r) as Record<string, unknown>;
+      for (const id of part) {
+        const e = m[id];
+        const st = n(e && typeof e === 'object' ? (e as Row).status : e);
+        if (st !== null) out.set(id, st);
+      }
+    }
+    return out;
+  };
+  const isSet = (x: unknown) => x !== undefined && x !== null && x !== '' && x !== '0' && x !== 0 && x !== false;
+  const status = (v: Row, power: number | undefined): string => {
+    if (n(v.suspended) === 1 || power === 2) return 'suspended';
+    if (n(v.nw_suspended) === 1) return 'network_suspended';
+    if (isSet(v.locked)) return 'locked';
+    return power === 1 ? 'running' : power === 0 ? 'stopped' : 'unknown';
   };
   return {
     async test() {
@@ -221,6 +243,8 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         Object.assign(vs, chunk);
         if (Object.keys(chunk).length < per || Object.keys(vs).length === before) break;
       }
+      // Power states; if the panel can't give them, statuses stay "unknown" rather than guessed.
+      const power = await powerStates(Object.keys(vs)).catch(() => new Map<string, number>());
       return {
         hosts: Object.values(servers).map((x) => ({
           externalId: String(x.serid),
@@ -237,7 +261,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
           hostExternalId: s(x.serid),
           virtType: s(x.virt),
           name: s(x.hostname) ?? s(x.vps_name) ?? `vps-${String(x.vpsid)}`,
-          status: status(x),
+          status: status(x, power.get(String(x.vpsid))),
           cpus: n(x.cores),
           memBytes: n(x.ram) === null ? null : n(x.ram)! * 1024 * 1024,
           diskBytes: n(x.space) === null ? null : n(x.space)! * 1024 ** 3,
@@ -251,7 +275,8 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       const vs = ((await call({ act: 'vs', vpsid: g.externalId })).vs as Record<string, Row> | undefined) ?? {};
       // Never fall back to another VPS's status if the filter was ignored.
       const v = vs[g.externalId];
-      return v ? status(v) : 'missing';
+      if (!v) return 'missing';
+      return status(v, (await powerStates([g.externalId])).get(g.externalId));
     },
     async guestAction(g, action) {
       if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');

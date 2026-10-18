@@ -284,7 +284,7 @@ export async function startProxmox(read: { id: string; secret: string }, action:
 
 export interface MockVirtualizor {
   port: number;
-  vps: Map<string, { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; virt: string; ips: string[] }>;
+  vps: Map<string, { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; virt: string; ips: string[] }>;
   requests: { act: string | null; params: Record<string, string> }[];
   close: () => Promise<void>;
 }
@@ -318,6 +318,15 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
       return res.end();
     }
     if (q.act === 'servers') return send({ servs: { '0': { serid: '0', server_name: 'kvm-node-1', status: '1', total_cores: '48', total_ram: '262144' } } });
+    if (q.act === 'vs' && q.vs_status) {
+      // Power state per VPS: 0 off, 1 on, 2 suspended (Virtualizor's VPS Status call).
+      const st: Record<string, { status: number; virt: string }> = {};
+      for (const id of q.vs_status.split(',')) {
+        const v = vps.get(id);
+        if (v) st[id] = { status: v.suspended ? 2 : v.status, virt: v.virt };
+      }
+      return send({ status: st });
+    }
     if (q.act === 'vs') {
       const vpsid = q.vpsid ?? q.suspend ?? q.unsuspend;
       if (q.suspend || q.unsuspend) {
@@ -340,7 +349,23 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
       const list = [...vps].filter(([id]) => !vpsid || id === vpsid).slice((pg - 1) * per, pg * per);
       return send({
         vs: Object.fromEntries(
-          list.map(([id, v]) => [id, { vpsid: id, vps_name: `v10${id}`, hostname: v.hostname, serid: v.serid, virt: v.virt, status: v.status, suspended: v.suspended, cores: '2', ram: '2048', space: '40', ips: Object.fromEntries(v.ips.map((ip, i) => [String(i + 1), ip])) }]),
+          list.map(([id, v]) => [
+            id,
+            {
+              vpsid: id,
+              vps_name: `v10${id}`,
+              hostname: v.hostname,
+              serid: v.serid,
+              virt: v.virt,
+              status: '1',
+              suspended: v.suspended,
+              locked: v.locked ?? '',
+              cores: '2',
+              ram: '2048',
+              space: '40',
+              ips: Object.fromEntries(v.ips.map((ip, i) => [String(i + 1), ip])),
+            },
+          ]),
         ),
       });
     }
