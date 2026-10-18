@@ -34,7 +34,8 @@ export interface VirtGuestInfo {
 }
 export interface VirtClient {
   test(): Promise<string>;
-  inventory(): Promise<{ hosts: VirtHostInfo[]; guests: VirtGuestInfo[] }>;
+  /** `warning`: the sync worked but part of the data could not be read (shown on the integration). */
+  inventory(): Promise<{ hosts: VirtHostInfo[]; guests: VirtGuestInfo[]; warning?: string }>;
   guestStatus(g: { externalId: string; hostExternalId: string | null; virtType: string | null }): Promise<string>;
   /** Seconds since the guest started, where the hypervisor reports it (used to verify reboots). */
   guestUptime?(g: { externalId: string; hostExternalId: string | null; virtType: string | null }): Promise<number | null>;
@@ -208,17 +209,25 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
    */
   const powerStates = async (ids: string[]) => {
     const out = new Map<string, number>();
-    for (let i = 0; i < ids.length; i += 100) {
-      const part = ids.slice(i, i + 100);
-      const r = await call({ act: 'vs', vs_status: part.join(',') });
-      const m = (r.status && typeof r.status === 'object' ? r.status : r) as Record<string, unknown>;
-      for (const id of part) {
-        const e = m[id];
-        const st = n(e && typeof e === 'object' ? (e as Row).status : e);
-        if (st !== null) out.set(id, st);
+    const errors: string[] = [];
+    // Virtualizor asks each node live, so keep batches small; one failing batch doesn't lose the others.
+    for (let i = 0; i < ids.length; i += 25) {
+      const part = ids.slice(i, i + 25);
+      try {
+        const r = await call({ act: 'vs', vs_status: part.join(',') });
+        const m = (r.status && typeof r.status === 'object' ? r.status : r) as Record<string, unknown>;
+        for (const id of part) {
+          const e = m[id];
+          const st = n(e && typeof e === 'object' ? (e as Row).status : e);
+          if (st !== null) out.set(id, st);
+        }
+      } catch (e) {
+        errors.push((e as { cause?: Error })?.cause?.message || (e as Error).message);
       }
     }
-    return out;
+    const missing = ids.filter((id) => !out.has(id)).length;
+    const warning = missing ? `VM status unknown for ${missing} of ${ids.length} VPSes${errors.length ? `: ${errors[0]}` : ' (Virtualizor gave no status for them)'}` : undefined;
+    return { out, warning };
   };
   const isSet = (x: unknown) => x !== undefined && x !== null && x !== '' && x !== '0' && x !== 0 && x !== false;
   const status = (v: Row, power: number | undefined): string => {
@@ -244,7 +253,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         if (Object.keys(chunk).length < per || Object.keys(vs).length === before) break;
       }
       // Power states; if the panel can't give them, statuses stay "unknown" rather than guessed.
-      const power = await powerStates(Object.keys(vs)).catch(() => new Map<string, number>());
+      const { out: power, warning } = await powerStates(Object.keys(vs));
       return {
         hosts: Object.values(servers).map((x) => ({
           externalId: String(x.serid),
@@ -268,6 +277,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
           uptimeSeconds: null,
           ipAddresses: x.ips && typeof x.ips === 'object' ? Object.values(x.ips as Row).map(String) : [],
         })),
+        warning,
       };
     },
     async guestStatus(g) {
@@ -276,7 +286,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       // Never fall back to another VPS's status if the filter was ignored.
       const v = vs[g.externalId];
       if (!v) return 'missing';
-      return status(v, (await powerStates([g.externalId])).get(g.externalId));
+      return status(v, (await powerStates([g.externalId])).out.get(g.externalId));
     },
     async guestAction(g, action) {
       if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');

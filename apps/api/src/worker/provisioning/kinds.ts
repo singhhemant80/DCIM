@@ -716,7 +716,10 @@ export async function syncDueIntegrations(deps: ProvisioningDeps, opts: { force?
         // Gone from the hypervisor: kept (with their customer assignment) and marked missing, never deleted silently.
         await tx.execute(sql`update virt_guests set missing_since = coalesce(missing_since, now()) where integration_id = ${i.id} and (last_seen_at is null or last_seen_at < ${started.toISOString()}::timestamptz)`);
         await tx.execute(sql`update virt_hosts set missing_since = coalesce(missing_since, now()) where integration_id = ${i.id} and (last_seen_at is null or last_seen_at < ${started.toISOString()}::timestamptz)`);
-        await tx.update(virtIntegrations).set({ lastSyncAt: started, lastSyncOk: true, lastError: null }).where(eq(virtIntegrations.id, i.id));
+        await tx
+          .update(virtIntegrations)
+          .set({ lastSyncAt: started, lastSyncOk: true, lastError: inv.warning?.slice(0, 500) ?? null })
+          .where(eq(virtIntegrations.id, i.id));
       });
     } catch (e) {
       await deps.db

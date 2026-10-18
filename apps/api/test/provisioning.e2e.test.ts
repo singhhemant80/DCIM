@@ -792,6 +792,17 @@ describe('hypervisors', () => {
     expect(vz.requests.some((r) => r.params.vs_status === '11,12,13,14')).toBe(true);
     vz.vps.delete('13');
     vz.vps.delete('14');
+    // If the status call fails, statuses stay unknown (never guessed) and the sync says why.
+    vz.failStatus = true;
+    await syncDueIntegrations(deps(), { force: i.id });
+    const broken = (await ok(admin.get(`${V}/integrations`))).find((x: { id: string }) => x.id === i.id);
+    expect(broken).toMatchObject({ lastSyncOk: true });
+    expect(broken.lastError).toMatch(/VM status unknown for 2 of 2 VPSes: .*Could not connect to the slave server/);
+    const live = (await ok(admin.get(`${V}/guests?integrationId=${i.id}`))).items.filter((g: { missingSince: string | null }) => !g.missingSince);
+    expect(live.map((g: { status: string }) => g.status)).toEqual(['unknown', 'unknown']);
+    vz.failStatus = false;
+    await syncDueIntegrations(deps(), { force: i.id });
+    expect((await ok(admin.get(`${V}/integrations`))).find((x: { id: string }) => x.id === i.id).lastError).toBeNull();
     // Suspend/unsuspend are Virtualizor's administrative (billing) suspension: not offered.
     const sus = await admin.post(`${V}/guests/${list[1].id}/actions`, { action: 'resume', confirm: 'vps12.example.net' });
     expect(sus.body.error).toBe('action_unsupported');

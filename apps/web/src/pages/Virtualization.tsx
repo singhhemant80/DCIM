@@ -8,7 +8,7 @@ import { relativeTime } from '../lib/format';
 import type { DeviceT } from '../lib/dcim';
 import { bytes, duration, newIdempotencyKey, type IntegrationT, type JobT, type VirtGuestT, type VirtHostT } from '../lib/provisioning';
 import { JobModal } from '../components/Jobs';
-import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Table } from '../components/ui';
+import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Table, cx } from '../components/ui';
 
 type Kind = 'proxmox' | 'virtualizor';
 const NAME: Record<Kind, string> = { proxmox: 'Proxmox VE', virtualizor: 'Virtualizor' };
@@ -184,7 +184,7 @@ function Integrations({ kind, list }: { kind: Kind; list: IntegrationT[] }) {
                   ) : (
                     <span className="text-ink-3">Not yet</span>
                   )}
-                  {i.lastError && <div className="mt-1 max-w-[60ch] text-[12px] leading-snug break-words text-crit">{i.lastError}</div>}
+                  {i.lastError && <div className={cx('mt-1 max-w-[60ch] text-[12px] leading-snug break-words', i.lastSyncOk ? 'text-warn' : 'text-crit')}>{i.lastError}</div>}
                 </td>
                 <td className="text-[13px]">{i.actionsEnabled ? <Chip tone="accent">Allowed</Chip> : <Chip>Read-only</Chip>}</td>
                 <td className="text-right whitespace-nowrap">

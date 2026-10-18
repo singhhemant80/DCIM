@@ -286,6 +286,8 @@ export interface MockVirtualizor {
   port: number;
   vps: Map<string, { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; virt: string; ips: string[] }>;
   requests: { act: string | null; params: Record<string, string> }[];
+  /** Make the VPS Status call fail (to test that statuses stay unknown and the reason is shown). */
+  failStatus: boolean;
   close: () => Promise<void>;
 }
 
@@ -295,7 +297,10 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
     ['12', { serid: '0', hostname: 'vps12.example.net', status: 0, suspended: 0, virt: 'kvm', ips: ['203.0.113.12'] }],
   ]);
   const requests: MockVirtualizor['requests'] = [];
-  const server = http.createServer((req, res) => {
+  // eslint-disable-next-line prefer-const
+  let server: http.Server;
+  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, close: () => closer(server)() };
+  server = http.createServer((req, res) => {
     const url = new URL(req.url!, 'http://x');
     const q = Object.fromEntries(url.searchParams);
     const { adminapikey: apikey, adminapipass: apipass, apikey: signed, ...rest } = q;
@@ -318,6 +323,7 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
       return res.end();
     }
     if (q.act === 'servers') return send({ servs: { '0': { serid: '0', server_name: 'kvm-node-1', status: '1', total_cores: '48', total_ram: '262144' } } });
+    if (q.act === 'vs' && q.vs_status && mock.failStatus) return send({ error: { vs_status: 'Could not connect to the slave server' } });
     if (q.act === 'vs' && q.vs_status) {
       // Power state per VPS: 0 off, 1 on, 2 suspended (Virtualizor's VPS Status call).
       const st: Record<string, { status: number; virt: string }> = {};
@@ -372,7 +378,8 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
     return send({ error: { act: 'Unknown act' } });
   });
   const port = await listen(server, listenPort);
-  return { port, vps, requests, close: closer(server) };
+  mock.port = port;
+  return mock;
 }
 
 /* ------------------------------------------------------------------ file server */
