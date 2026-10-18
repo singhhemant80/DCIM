@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { GUEST_ACTIONS, GUEST_ACTION_LABELS, type GuestAction, type VirtTemplate } from '@crapplet/shared';
+import { GUEST_ACTIONS, GUEST_ACTION_LABELS, GUEST_SORTS, type GuestAction, type VirtTemplate } from '@crapplet/shared';
+
+type GuestSort = (typeof GUEST_SORTS)[number];
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { relativeTime } from '../lib/format';
@@ -23,6 +25,20 @@ const statusTone = (s: string | null) =>
 /** VM states as people say them: running → Online, stopped → Offline. */
 const GUEST_STATUS_LABELS: Record<string, string> = { running: 'Online', stopped: 'Offline', suspended: 'Suspended', network_suspended: 'Network suspended', locked: 'Locked', paused: 'Paused', missing: 'Missing', unknown: 'Unknown' };
 const guestStatusLabel = (s: string | null) => (s ? (GUEST_STATUS_LABELS[s] ?? s) : 'Unknown');
+/** Status filter chips: value sent as ?status=, label; "missing" = no longer reported by the hypervisor. */
+const STATUS_FILTERS: [string, string][] = [
+  ['', 'All'],
+  ['running', 'Online'],
+  ['stopped', 'Offline'],
+  ['suspended', 'Suspended'],
+  ['network_suspended', 'Network suspended'],
+  ['locked', 'Locked'],
+  ['paused', 'Paused'],
+  ['unknown', 'Unknown'],
+  ['missing', 'Missing'],
+];
+const STATUS_DOT: Record<string, string> = { running: 'bg-ok', stopped: 'bg-ink-3', suspended: 'bg-warn', network_suspended: 'bg-warn', locked: 'bg-crit', paused: 'bg-warn', unknown: 'bg-ink-3/50', missing: 'bg-warn' };
+type GuestListT = Paginated<VirtGuestT> & { facets: { status: Record<string, number>; virtType: { value: string; count: number }[]; osName: { value: string; count: number }[] } };
 
 /* ------------------------------------------------------------------ integration form */
 
@@ -453,6 +469,37 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
   const canAssign = staff && can('provisioning.execute');
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('');
+  const [customerFilter, setCustomerFilter] = useState('');
+  const [virtType, setVirtType] = useState('');
+  const [osName, setOsName] = useState('');
+  const [sort, setSort] = useState<GuestSort>('name');
+  const [dir, setDir] = useState<'asc' | 'desc'>('asc');
+  const filtered = !!(status || customerFilter || virtType || osName || search.trim() || nodeId);
+  const clearAll = () => {
+    setStatus('');
+    setCustomerFilter('');
+    setVirtType('');
+    setOsName('');
+    setSearch('');
+    onNode('');
+    setPage(1);
+  };
+  const sortBy = (k: GuestSort) => {
+    if (sort === k) setDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else (setSort(k), setDir(k === 'name' || k === 'server' || k === 'customer' || k === 'status' ? 'asc' : 'desc'));
+    setPage(1);
+  };
+  const SortTh = ({ k, children, className }: { k: GuestSort; children: React.ReactNode; className?: string }) => (
+    <th className={className} aria-sort={sort === k ? (dir === 'asc' ? 'ascending' : 'descending') : undefined}>
+      <button type="button" className="inline-flex items-center gap-1 hover:text-ink" onClick={() => sortBy(k)}>
+        {children}
+        <span className={cx('text-[10px]', sort === k ? 'text-ink' : 'text-ink-3/50')} aria-hidden>
+          {sort === k && dir === 'desc' ? '▼' : '▲'}
+        </span>
+      </button>
+    </th>
+  );
   const [page, setPage] = useState(1);
   const [integrationId, setIntegrationId] = useState('');
   const [act, setAct] = useState<VirtGuestT | null>(null);
@@ -463,14 +510,19 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
   useEffect(() => setPage(1), [nodeId]);
   const [job, setJob] = useState<string | null>(null);
   const q = useQuery({
-    queryKey: ['virt', 'guests', kind, integrationId, nodeId, search, page],
-    queryFn: () => api.get<Paginated<VirtGuestT>>(`/virtualization/guests${qs({ kind, integrationId: integrationId || undefined, hostId: nodeId || undefined, q: search.trim() || undefined, page, pageSize: 50 })}`),
+    queryKey: ['virt', 'guests', kind, integrationId, nodeId, search, status, customerFilter, virtType, osName, sort, dir, page],
+    queryFn: () =>
+      api.get<GuestListT>(
+        `/virtualization/guests${qs({ kind, integrationId: integrationId || undefined, hostId: nodeId || undefined, q: search.trim() || undefined, status: status || undefined, customerId: customerFilter || undefined, virtType: virtType || undefined, osName: osName || undefined, sort, dir, page, pageSize: 50 })}`,
+      ),
     placeholderData: keepPreviousData,
     refetchInterval: (query) => (query.state.data?.items.some((g) => g.activeJob) ? 4000 : 60_000),
   });
   const customers = useQuery({ queryKey: ['customers', 'options'], queryFn: () => api.get<Paginated<Customer>>('/customers?pageSize=200'), enabled: canAssign });
   const assign = useMutation({ mutationFn: (v: { id: string; customerId: string | null }) => api.put(`/virtualization/guests/${v.id}/customer`, { customerId: v.customerId }), onSuccess: () => qc.invalidateQueries({ queryKey: ['virt', 'guests'] }) });
   const items = q.data?.items ?? [];
+  const facets = q.data?.facets;
+  const customerOptions = useQuery({ queryKey: ['customers', 'options'], queryFn: () => api.get<Paginated<Customer>>('/customers?pageSize=200'), enabled: staff });
   return (
     <Panel
       flush
@@ -497,27 +549,112 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
               ))}
             </Select>
           )}
-          <Input className="w-48" aria-label="Search" placeholder="Name, ID or IP" value={search} onChange={(e) => (setSearch(e.target.value), setPage(1))} />
+          <Input className="w-48" aria-label="Search" placeholder="Name, ID, IP or OS" value={search} onChange={(e) => (setSearch(e.target.value), setPage(1))} />
         </div>
       }
     >
+      <div className="flex flex-col gap-2 border-b border-rule px-4 py-3">
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Status">
+          {STATUS_FILTERS.map(([k, label]) => {
+            const n = k ? (facets?.status[k] ?? 0) : Object.values(facets?.status ?? {}).reduce((a, x) => a + x, 0);
+            if (k && !n && status !== k) return null;
+            return (
+              <button
+                key={k || 'all'}
+                type="button"
+                aria-pressed={status === k}
+                onClick={() => (setStatus(k), setPage(1))}
+                className={cx('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12.5px]', status === k ? 'border-accent bg-accent-soft font-medium text-ink' : 'border-rule bg-panel text-ink-2 hover:border-accent/50')}
+              >
+                {k && <span className={cx('size-1.5 rounded-full', STATUS_DOT[k] ?? 'bg-ink-3')} aria-hidden />}
+                {label}
+                <span className="text-ink-3 tabular-nums">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {staff && (
+            <Select className="w-48" aria-label="Customer" value={customerFilter} onChange={(e) => (setCustomerFilter(e.target.value), setPage(1))}>
+              <option value="">All customers</option>
+              <option value="own">{me?.organization.name ?? 'Own'} (own)</option>
+              {customerOptions.data?.items.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </Select>
+          )}
+          {(facets?.virtType.length ?? 0) > 1 || virtType ? (
+            <Select className="w-36" aria-label="Type" value={virtType} onChange={(e) => (setVirtType(e.target.value), setPage(1))}>
+              <option value="">All types</option>
+              {facets?.virtType.map((x) => (
+                <option key={x.value} value={x.value}>
+                  {x.value} ({x.count})
+                </option>
+              ))}
+            </Select>
+          ) : null}
+          {(facets?.osName.length ?? 0) > 1 || osName ? (
+            <Select className="w-56" aria-label="Operating system" value={osName} onChange={(e) => (setOsName(e.target.value), setPage(1))}>
+              <option value="">All operating systems</option>
+              {facets?.osName.map((x) => (
+                <option key={x.value} value={x.value}>
+                  {x.value === 'none' ? 'Not reported' : x.value} ({x.count})
+                </option>
+              ))}
+            </Select>
+          ) : null}
+          {filtered && (
+            <Button size="sm" variant="ghost" onClick={clearAll}>
+              Clear filters
+            </Button>
+          )}
+          {q.data && (
+            <span className="ml-auto text-[12.5px] text-ink-3">
+              {q.data.total} VM{q.data.total === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+      </div>
       {q.isLoading ? (
         <Loading />
       ) : q.error ? (
         <ErrorNote error={q.error} className="m-4" />
       ) : !items.length ? (
-        <EmptyState title={nodeId || search ? 'No matching virtual machines' : 'No virtual machines'}>
-          {staff ? (nodeId || search ? 'Try another server or search.' : 'VMs appear after the first sync.') : 'No VMs have been assigned to your account.'}
+        <EmptyState title={filtered ? 'No matching virtual machines' : 'No virtual machines'}>
+          {filtered ? 'Change or clear the filters.' : staff ? 'VMs appear after the first sync.' : 'No VMs have been assigned to your account.'}
         </EmptyState>
       ) : (
         <Table label="Virtual machines">
           <thead>
             <tr>
-              <th>VM</th>
-              <th>Status</th>
-              <th>Resources</th>
+              <SortTh k="name">VM</SortTh>
+              <SortTh k="status">Status</SortTh>
+              <th>
+                Resources{' '}
+                <span className="font-normal text-ink-3">
+                  (sort:{' '}
+                  {(
+                    [
+                      ['cpus', 'CPU'],
+                      ['memory', 'RAM'],
+                      ['disk', 'disk'],
+                    ] as const
+                  ).map(([k, l], i) => (
+                    <span key={k}>
+                      {i > 0 && ' · '}
+                      <button type="button" className={cx('hover:text-ink', sort === k && 'font-medium text-ink')} onClick={() => sortBy(k)}>
+                        {l}
+                        {sort === k ? (dir === 'desc' ? ' ▼' : ' ▲') : ''}
+                      </button>
+                    </span>
+                  ))}
+                  )
+                </span>
+              </th>
               <th>Addresses</th>
-              {staff && <th>Customer</th>}
+              {staff && <SortTh k="customer">Customer</SortTh>}
               <th />
             </tr>
           </thead>

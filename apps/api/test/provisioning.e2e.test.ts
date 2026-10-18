@@ -7,7 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { auditEvents, controlCredentials, devices, ipAddresses, osImages, provisioningJobs, provisioningSteps, virtGuests } from '../src/db/schema';
@@ -865,6 +865,40 @@ describe('hypervisors', () => {
     expect((await ok(again())).id).toBe(j2.id);
     expect((await drive(j2.id)).status).toBe('completed');
     expect(vz.rebuilds.filter((r) => r.body.osid === '270')).toHaveLength(1);
+
+    // Filters: status (with counts), customer, type, OS, sorting.
+    const base = `${V}/guests?integrationId=${vzi.id}`;
+    await ctx.db
+      .update(virtGuests)
+      .set({ customerId: ctx.customers.acme })
+      .where(and(eq(virtGuests.integrationId, vzi.id), eq(virtGuests.externalId, '11')));
+    const all = await ok(admin.get(base));
+    expect(all.facets.status).toMatchObject({ running: 1, stopped: 1 });
+    expect(all.facets.virtType).toEqual([{ value: 'kvm', count: 4 }]);
+    expect(all.facets.status).toMatchObject({ missing: 2 });
+    expect(all.facets.osName).toEqual([
+      { value: 'ubuntu-22.04-x86_64', count: 2 },
+      { value: 'none', count: 2 },
+    ]);
+    expect((await ok(admin.get(`${base}&status=running`))).items.map((g: { name: string }) => g.name)).toEqual(['vps12.example.net']);
+    // The status counts ignore the status filter itself (so every chip keeps its number).
+    expect((await ok(admin.get(`${base}&status=running`))).facets.status).toMatchObject({ running: 1, stopped: 1 });
+    expect((await ok(admin.get(`${base}&status=missing`))).items.every((g: { missingSince: string | null }) => !!g.missingSince)).toBe(true);
+    expect((await ok(admin.get(`${base}&customerId=${ctx.customers.acme}&status=stopped`))).items.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net']);
+    expect((await ok(admin.get(`${base}&customerId=own&status=running`))).items.map((g: { name: string }) => g.name)).toEqual(['vps12.example.net']);
+    expect((await ok(admin.get(`${base}&osName=ubuntu-22.04-x86_64`))).items.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net', 'vps12.example.net']);
+    expect((await ok(admin.get(`${base}&osName=none`))).items.map((g: { name: string }) => g.name)).toEqual(['vps13.example.net', 'vps14.example.net']);
+    expect((await ok(admin.get(`${base}&q=ubuntu&status=running`))).items.map((g: { name: string }) => g.name)).toEqual(['vps12.example.net']);
+    expect((await ok(admin.get(`${base}&virtType=xen`))).items).toEqual([]);
+    const byName = (await ok(admin.get(`${base}&sort=name&dir=desc`))).items.map((g: { name: string }) => g.name);
+    expect(byName.indexOf('vps12.example.net')).toBeLessThan(byName.indexOf('vps11.example.net'));
+    expect((await admin.get(`${base}&sort=bogus`)).status).toBe(400);
+    // A customer's own list ignores the customer filter.
+    expect((await ok(acme.get(`${V}/guests?kind=virtualizor&customerId=${ctx.customers.globex}`))).items.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net']);
+    await ctx.db
+      .update(virtGuests)
+      .set({ customerId: null })
+      .where(and(eq(virtGuests.integrationId, vzi.id), eq(virtGuests.externalId, '11')));
 
     // Actions off: no reinstall.
     await ok(admin.put(`${V}/integrations/${vzi.id}`, { kind: 'virtualizor', name: 'VZ panel', url: integ.url, verifyTls: false, apiKey: 'VZKEY123', apiPass: 'vz-api-pass-77', actionsEnabled: false, syncMinutes: 10 }));

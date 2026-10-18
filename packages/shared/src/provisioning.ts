@@ -429,11 +429,20 @@ export const guestReinstallSchema = z
 
 export const guestAssignSchema = z.object({ customerId: z.string().uuid().nullable() });
 export const hostMapSchema = z.object({ deviceId: z.string().uuid().nullable() });
+export const GUEST_SORTS = ['name', 'status', 'cpus', 'memory', 'disk', 'server', 'customer'] as const;
 export const guestListQuerySchema = paginationSchema.extend({
   kind: z.enum(VIRT_KINDS).optional(),
   integrationId: z.string().uuid().optional(),
   /** Only the VMs on this hypervisor node. */
   hostId: z.string().uuid().optional(),
   q: z.string().trim().max(100).optional(),
-  status: z.string().trim().max(20).optional(),
+  /** A status as stored (running, stopped, suspended, network_suspended, locked…), "unknown", or "missing" (no longer reported). */
+  status: z.string().trim().max(30).optional(),
+  /** Staff: a customer's VMs, or "own" for the organization's own (no customer). */
+  customerId: z.union([z.string().uuid(), z.literal('own')]).optional(),
+  virtType: z.string().trim().max(30).optional(),
+  /** Exact OS name as the hypervisor reports it, or "none" for VMs without one. */
+  osName: z.string().trim().max(200).optional(),
+  sort: z.enum(GUEST_SORTS).default('name'),
+  dir: z.enum(['asc', 'desc']).default('asc'),
 });

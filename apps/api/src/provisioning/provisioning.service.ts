@@ -935,21 +935,52 @@ export class ProvisioningService {
   }
 
   async guests(p: Principal, q: z.infer<typeof guestListQuerySchema>) {
-    const conds: SQL[] = [sql`g.org_id = ${p.orgId}`];
-    if (p.userType !== 'staff') conds.push(p.customerId ? sql`g.customer_id = ${p.customerId}` : sql`false`);
-    if (q.integrationId) conds.push(sql`g.integration_id = ${q.integrationId}`);
-    if (q.hostId) conds.push(sql`g.host_id = ${q.hostId}`);
-    if (q.kind) conds.push(sql`exists (select 1 from virt_integrations k where k.id = g.integration_id and k.kind = ${q.kind})`);
-    if (q.q) conds.push(sql`(g.name ilike ${'%' + q.q + '%'} or g.external_id = ${q.q} or ${q.q} = any(g.ip_addresses))`);
-    if (q.status) conds.push(sql`g.status = ${q.status}`);
-    const where = sql.join(conds, sql` and `);
     const staff = p.userType === 'staff';
+    // Scope (who and where) is shared by the list and the filter counts; the facet filters come on top.
+    const scope: SQL[] = [sql`g.org_id = ${p.orgId}`];
+    if (!staff) scope.push(p.customerId ? sql`g.customer_id = ${p.customerId}` : sql`false`);
+    if (q.integrationId) scope.push(sql`g.integration_id = ${q.integrationId}`);
+    if (q.hostId) scope.push(sql`g.host_id = ${q.hostId}`);
+    if (q.kind) scope.push(sql`exists (select 1 from virt_integrations k where k.id = g.integration_id and k.kind = ${q.kind})`);
+    if (staff && q.customerId) scope.push(q.customerId === 'own' ? sql`g.customer_id is null` : sql`g.customer_id = ${q.customerId}`);
+    if (q.q) scope.push(sql`(g.name ilike ${'%' + q.q + '%'} or g.external_id = ${q.q} or ${q.q} = any(g.ip_addresses) or g.os_name ilike ${'%' + q.q + '%'})`);
+    const statusCond = !q.status
+      ? null
+      : q.status === 'missing'
+        ? sql`g.missing_since is not null`
+        : q.status === 'unknown'
+          ? sql`g.missing_since is null and (g.status is null or g.status = 'unknown')`
+          : sql`g.missing_since is null and g.status = ${q.status}`;
+    const typeCond = q.virtType ? sql`g.virt_type = ${q.virtType}` : null;
+    const osCond = q.osName ? (q.osName === 'none' ? sql`g.os_name is null` : sql`g.os_name = ${q.osName}`) : null;
+    const all = (...extra: (SQL | null)[]) => sql.join([...scope, ...extra.filter((x): x is SQL => !!x)], sql` and `);
+    const conds = [...scope, ...[statusCond, typeCond, osCond].filter((x): x is SQL => !!x)];
+    const dir = q.dir === 'desc' ? sql`desc` : sql`asc`;
+    const order = {
+      name: sql`g.name ${dir}`,
+      status: sql`case when g.missing_since is not null then 'zz' else coalesce(g.status, 'unknown') end ${dir}, g.name`,
+      cpus: sql`g.cpus ${dir} nulls last, g.name`,
+      memory: sql`g.mem_bytes ${dir} nulls last, g.name`,
+      disk: sql`g.disk_bytes ${dir} nulls last, g.name`,
+      server: sql`h.name ${dir} nulls last, g.name`,
+      customer: sql`c.name ${dir} nulls first, g.name`,
+    }[q.sort];
+    // VMs no longer reported always come last, whatever the sort.
+    // Counts for the filter controls: each facet counted with the other filters applied, not its own.
+    const [statusFacet, typeFacet, osFacet] = await Promise.all([
+      this.db.execute<{ k: string; n: number }>(
+        sql`select case when g.missing_since is not null then 'missing' else coalesce(nullif(g.status, ''), 'unknown') end as k, count(*)::int as n from virt_guests g where ${all(typeCond, osCond)} group by 1`,
+      ),
+      this.db.execute<{ k: string; n: number }>(sql`select g.virt_type as k, count(*)::int as n from virt_guests g where ${all(statusCond, osCond)} and g.virt_type is not null group by 1 order by 1`),
+      this.db.execute<{ k: string | null; n: number }>(sql`select g.os_name as k, count(*)::int as n from virt_guests g where ${all(statusCond, typeCond)} group by 1 order by 1 nulls last limit 300`),
+    ]);
+    const where = sql.join(conds, sql` and `);
     const [rows, total] = await Promise.all([
       this.db.execute(sql`
         select g.*, h.name as host_name, i.name as integration_name, i.kind as integration_kind, i.actions_enabled, c.name as customer_name,
                (select j.status from provisioning_jobs j where j.guest_id = g.id and j.status in ('queued','running','waiting','verifying','recovery') limit 1) as active_job
           from virt_guests g join virt_integrations i on i.id = g.integration_id left join virt_hosts h on h.id = g.host_id left join customers c on c.id = g.customer_id
-         where ${where} order by (g.missing_since is not null), g.name limit ${q.pageSize} offset ${(q.page - 1) * q.pageSize}`),
+         where ${where} order by (g.missing_since is not null), ${order} limit ${q.pageSize} offset ${(q.page - 1) * q.pageSize}`),
       this.db.execute<{ n: number }>(sql`select count(*)::int as n from virt_guests g where ${where}`),
     ]);
     return {
@@ -980,6 +1011,7 @@ export class ProvisioningService {
       page: q.page,
       pageSize: q.pageSize,
       total: total.rows[0]?.n ?? 0,
+      facets: { status: Object.fromEntries(statusFacet.rows.map((x) => [x.k, x.n])), virtType: typeFacet.rows.map((x) => ({ value: x.k, count: x.n })), osName: osFacet.rows.map((x) => ({ value: x.k ?? 'none', count: x.n })) },
     };
   }
 
