@@ -5,7 +5,7 @@ import net from 'node:net';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { eq, sql } from 'drizzle-orm';
 import { POWER_ACTION_LABELS, GUEST_ACTION_LABELS, type GuestAction, type PowerAction } from '@crapplet/shared';
-import { controlCredentials, deviceEvents, devices, osImages, pxeSettings, virtGuests, virtHosts, virtIntegrations, type ControlCredential, type OsImage, type VirtIntegration } from '../../db/schema';
+import { controlCredentials, deviceEvents, devices, osImages, provisioningJobs, pxeSettings, virtGuests, virtHosts, virtIntegrations, type ControlCredential, type OsImage, type VirtIntegration } from '../../db/schema';
 import type { AdapterTarget } from '../../network/discovery/types';
 import { AuditService } from '../../audit/audit.service';
 import { controlContext, GUEST_TARGET_STATUS, jobContext, virtContext } from '../../provisioning/contexts';
@@ -670,7 +670,82 @@ export const guestActionKind: KindDef = {
   },
 };
 
-export const PROVISIONING_KINDS: Record<string, KindDef> = { power_action: powerActionKind, os_install: osInstallKind, image_verify: imageVerifyKind, guest_action: guestActionKind, image_process: imageProcessKind };
+/**
+ * Reinstall a VM from a hypervisor OS template (Virtualizor "Rebuild VPS").
+ * Erases the VM's disk, so the request step is never repeated automatically.
+ * The root password lives only in the job's encrypted secret and is deleted
+ * as soon as it has been sent. Verified when the hypervisor reports the new
+ * OS template and the VM running again.
+ */
+export const guestReinstallKind: KindDef = {
+  steps: (job) => [
+    {
+      name: 'Check the VM',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        if (!client.reinstall || !client.guestOs) throw new PermanentError('This hypervisor does not offer reinstalls from NexoraDC');
+        const os = await client.guestOs(ref);
+        if (os.status === 'missing') throw new PermanentError('The hypervisor no longer reports this VM');
+        if (os.status === 'locked') throw new PermanentError('The VM is locked in the hypervisor; unlock it there first');
+        ctx.state.osBefore = os.osName ?? os.osId;
+        return { done: true, detail: `The VM is ${os.status}${os.osName ? `, with ${os.osName}` : ''}` };
+      },
+    },
+    {
+      name: `Reinstall with ${String(job.params.osName ?? `template ${String(job.params.osid)}`)}`,
+      // Erases the disk: never sent twice. If the worker stops mid-request, the job goes to recovery for a person to check.
+      safeToRepeat: false,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        if (!ctx.job.secretEnc) throw new PermanentError('The root password is no longer stored for this job; start the reinstall again');
+        const { password } = JSON.parse(D(ctx).secrets.decrypt(ctx.job.secretEnc, jobContext(ctx.job.orgId, ctx.job.id))) as { password: string };
+        await client.reinstall!(ref, { osid: Number(ctx.job.params.osid), password, formatPrimaryOnly: ctx.job.params.formatPrimaryOnly === true });
+        // The password has done its job: drop it now rather than at the end of the job.
+        await D(ctx).db.update(provisioningJobs).set({ secretEnc: null }).where(eq(provisioningJobs.id, ctx.job.id));
+        ctx.job.secretEnc = null;
+        return { done: true, detail: 'The hypervisor accepted the reinstall' };
+      },
+    },
+    {
+      name: 'Verify the new OS',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        ctx.state.verifyFrom ??= ctx.now().toISOString();
+        const os = await client.guestOs!(ref);
+        const want = String(ctx.job.params.osid);
+        const onNewOs = os.osId === want;
+        if (onNewOs && os.status === 'running') {
+          await D(ctx).db.update(virtGuests).set({ status: os.status, osId: os.osId, osName: os.osName }).where(eq(virtGuests.id, ctx.job.guestId!));
+          return { done: true, detail: `The hypervisor reports ${os.osName ?? `template ${want}`} installed and the VM running` };
+        }
+        const limit = 30 * 60_000;
+        if (ctx.now().getTime() - new Date(String(ctx.state.verifyFrom)).getTime() > limit) {
+          if (onNewOs) {
+            ctx.state.unverified = `the hypervisor reports the new OS template, but the VM is ${os.status} after 30 minutes`;
+            await D(ctx).db.update(virtGuests).set({ status: os.status, osId: os.osId, osName: os.osName }).where(eq(virtGuests.id, ctx.job.guestId!));
+            return { done: true, detail: `New OS template set; the VM is ${os.status}` };
+          }
+          throw new PermanentError(`The hypervisor still reports ${os.osName ?? os.osId ?? 'another OS'} after 30 minutes; check the reinstall in the panel`);
+        }
+        return { wait: poll(ctx, 15_000), status: 'verifying', detail: onNewOs ? `New OS set; waiting for the VM to run (now ${os.status})` : 'Waiting for the hypervisor to report the new OS' };
+      },
+    },
+  ],
+  async onCompleted(ctx) {
+    return ctx.state.unverified ? { verified: false, note: String(ctx.state.unverified) } : { verified: true };
+  },
+};
+
+export const PROVISIONING_KINDS: Record<string, KindDef> = {
+  power_action: powerActionKind,
+  os_install: osInstallKind,
+  image_verify: imageVerifyKind,
+  guest_action: guestActionKind,
+  image_process: imageProcessKind,
+  guest_reinstall: guestReinstallKind,
+};
 
 /* ------------------------------------------------------------------ inventory sync (periodic, read-only) */
 
@@ -718,7 +793,7 @@ export async function syncDueIntegrations(deps: ProvisioningDeps, opts: { force?
         await tx.execute(sql`update virt_hosts set missing_since = coalesce(missing_since, now()) where integration_id = ${i.id} and (last_seen_at is null or last_seen_at < ${started.toISOString()}::timestamptz)`);
         await tx
           .update(virtIntegrations)
-          .set({ lastSyncAt: started, lastSyncOk: true, lastError: inv.warning?.slice(0, 500) ?? null })
+          .set({ lastSyncAt: started, lastSyncOk: true, lastError: inv.warning?.slice(0, 500) ?? null, ...(inv.templates ? { templates: inv.templates } : {}) })
           .where(eq(virtIntegrations.id, i.id));
       });
     } catch (e) {

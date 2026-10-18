@@ -154,6 +154,9 @@ export interface VirtGuestT {
   diskBytes: number | null;
   uptimeSeconds: number | null;
   ipAddresses: string[];
+  /** Installed OS as the hypervisor reports it (Virtualizor). */
+  osName: string | null;
+  hostId: string | null;
   hostName: string | null;
   customerId: string | null;
   customerName: string | null;

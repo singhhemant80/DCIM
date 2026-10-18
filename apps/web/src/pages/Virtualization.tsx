@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { GUEST_ACTIONS, GUEST_ACTION_LABELS, type GuestAction } from '@crapplet/shared';
+import { GUEST_ACTIONS, GUEST_ACTION_LABELS, type GuestAction, type VirtTemplate } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { relativeTime } from '../lib/format';
@@ -223,7 +223,7 @@ function Integrations({ kind, list }: { kind: Kind; list: IntegrationT[] }) {
   );
 }
 
-function Hosts({ kind, integrations }: { kind: Kind; integrations: IntegrationT[] }) {
+function Hosts({ kind, integrations, nodeId, onNode }: { kind: Kind; integrations: IntegrationT[]; nodeId: string; onNode: (id: string) => void }) {
   const { can } = useAuth();
   const canExecute = can('provisioning.execute');
   const qc = useQueryClient();
@@ -253,7 +253,7 @@ function Hosts({ kind, integrations }: { kind: Kind; integrations: IntegrationT[
           </thead>
           <tbody>
             {hosts.map((h) => (
-              <tr key={h.id} className={h.missingSince ? 'opacity-60' : ''}>
+              <tr key={h.id} className={cx(h.missingSince && 'opacity-60', nodeId === h.id && 'bg-accent-soft')}>
                 <td>
                   <div className="font-medium">{h.name}</div>
                   <div className="text-[12.5px] text-ink-3">
@@ -267,7 +267,11 @@ function Hosts({ kind, integrations }: { kind: Kind; integrations: IntegrationT[
                   {h.cpus ? ` of ${h.cpus}` : ''}
                 </td>
                 <td className="text-[13px]">{h.memTotal ? `${h.memUsed !== null ? `${bytes(h.memUsed)} / ` : ''}${bytes(h.memTotal)}` : '—'}</td>
-                <td>{h.guests}</td>
+                <td>
+                  <button type="button" className="text-accent hover:underline" title={`Show only the VMs on ${h.name}`} onClick={() => onNode(nodeId === h.id ? '' : h.id)}>
+                    {h.guests} {nodeId === h.id ? '· showing' : '· show'}
+                  </button>
+                </td>
                 <td>
                   {canExecute ? (
                     <Select className="w-52" aria-label={`DCIM server for ${h.name}`} value={h.deviceId ?? ''} onChange={(e) => map.mutate({ id: h.id, deviceId: e.target.value || null })}>
@@ -340,7 +344,110 @@ function GuestActionDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; on
   );
 }
 
-function Guests({ kind, integrations, staff }: { kind: Kind; integrations: IntegrationT[] | null; staff: boolean }) {
+/** A random root password from an unambiguous alphabet (no 0/O, 1/l/I). */
+function newPassword() {
+  const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const b = new Uint32Array(20);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => abc[x % abc.length]).join('');
+}
+
+function ReinstallDialog({ guest, onClose, onQueued }: { guest: VirtGuestT; onClose: () => void; onQueued: (id: string) => void }) {
+  const t = useQuery({
+    queryKey: ['virt', 'templates', guest.id],
+    queryFn: () => api.get<{ supported: boolean; actionsEnabled: boolean; currentOs: string | null; synced: boolean; items: VirtTemplate[]; matchedType: boolean }>(`/virtualization/guests/${guest.id}/templates`),
+  });
+  const [osid, setOsid] = useState('');
+  const [password, setPassword] = useState('');
+  const [show, setShow] = useState(false);
+  const [primaryOnly, setPrimaryOnly] = useState(false);
+  const [confirm, setConfirm] = useState('');
+  const [key] = useState(newIdempotencyKey);
+  const m = useMutation({
+    mutationFn: () => api.post<JobT>(`/virtualization/guests/${guest.id}/reinstall`, { osid: Number(osid), password, confirm, formatPrimaryOnly: primaryOnly }, { 'Idempotency-Key': `${key}:${osid}` }),
+    onSuccess: (j) => onQueued(j.id),
+  });
+  const items = t.data?.items ?? [];
+  const groups = new Map<string, VirtTemplate[]>();
+  for (const x of items) groups.set(x.distro ?? 'Other', [...(groups.get(x.distro ?? 'Other') ?? []), x]);
+  const kvmLike = /kvm|proxk|xen/i.test(guest.virtType ?? '');
+  const ready = !!osid && password.length >= 8 && confirm.trim().toLowerCase() === guest.name.toLowerCase();
+  return (
+    <Modal open onOpenChange={(o) => !o && onClose()} title={`Reinstall ${guest.name}`} description="Installs a fresh operating system from the hypervisor's OS templates." wide>
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ready) m.mutate();
+        }}
+      >
+        <div className="rounded-lg border border-crit/40 bg-crit-soft px-3 py-2 text-[13px]">
+          <strong>Everything on this VM's disk{kvmLike && primaryOnly ? ' (primary disk)' : ''} is erased.</strong> {t.data?.currentOs ? `It now runs ${t.data.currentOs}. ` : ''}The VM keeps its addresses and resources; take a backup first
+          if anything on it matters.
+        </div>
+        {t.isLoading && <Loading />}
+        <ErrorNote error={t.error} />
+        {t.data && !t.data.synced && <p className="text-[13px] text-warn">The OS templates have not been read yet. Press Sync now on the connection, then try again.</p>}
+        {t.data && t.data.synced && !items.length && <p className="text-[13px] text-warn">Virtualizor lists no installed OS templates. Download some in Virtualizor (Media → OS Templates) and sync again.</p>}
+        {items.length > 0 && (
+          <Field label="Operating system" hint={t.data && !t.data.matchedType ? `No template is marked for ${guest.virtType ?? 'this VM type'}; all are listed and Virtualizor refuses one that doesn't fit.` : undefined}>
+            {(id) => (
+              <Select id={id} value={osid} onChange={(e) => setOsid(e.target.value)} required>
+                <option value="">Choose a template…</option>
+                {[...groups].map(([distro, list]) => (
+                  <optgroup key={distro} label={distro}>
+                    {list.map((x) => (
+                      <option key={x.osid} value={x.osid}>
+                        {x.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </Select>
+            )}
+          </Field>
+        )}
+        <Field label="New root password" hint="At least 8 characters. Sent to Virtualizor once for the install; NexoraDC does not keep it. Save it before you start.">
+          {(id) => (
+            <div className="flex gap-2">
+              <Input id={id} type={show ? 'text' : 'password'} autoComplete="new-password" className="font-mono" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <Button type="button" variant="ghost" onClick={() => setShow((v) => !v)}>
+                {show ? 'Hide' : 'Show'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setPassword(newPassword());
+                  setShow(true);
+                }}
+              >
+                Generate
+              </Button>
+            </div>
+          )}
+        </Field>
+        {kvmLike && (
+          <label className="flex items-center gap-2 text-[13px]">
+            <input type="checkbox" checked={primaryOnly} onChange={(e) => setPrimaryOnly(e.target.checked)} /> Format only the primary disk (keep additional disks)
+          </label>
+        )}
+        <Field label={`Type ${guest.name} to confirm`}>{(id) => <Input id={id} autoComplete="off" value={confirm} onChange={(e) => setConfirm(e.target.value)} />}</Field>
+        <ErrorNote error={m.error} />
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="danger" busy={m.isPending} disabled={!ready}>
+            Erase and reinstall
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; integrations: IntegrationT[] | null; staff: boolean; nodeId: string; onNode: (id: string) => void }) {
   const { can, me } = useAuth();
   const canControl = can('hardware.control');
   const canAssign = staff && can('provisioning.execute');
@@ -349,10 +456,15 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
   const [page, setPage] = useState(1);
   const [integrationId, setIntegrationId] = useState('');
   const [act, setAct] = useState<VirtGuestT | null>(null);
+  const [reinstall, setReinstall] = useState<VirtGuestT | null>(null);
+  const hosts = useQuery({ queryKey: ['virt', 'hosts'], queryFn: () => api.get<VirtHostT[]>('/virtualization/hosts'), enabled: staff });
+  const ids = new Set((integrations ?? []).map((i) => i.id));
+  const nodes = (hosts.data ?? []).filter((h) => ids.has(h.integrationId) && (!integrationId || h.integrationId === integrationId)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  useEffect(() => setPage(1), [nodeId]);
   const [job, setJob] = useState<string | null>(null);
   const q = useQuery({
-    queryKey: ['virt', 'guests', kind, integrationId, search, page],
-    queryFn: () => api.get<Paginated<VirtGuestT>>(`/virtualization/guests${qs({ kind, integrationId: integrationId || undefined, q: search.trim() || undefined, page, pageSize: 50 })}`),
+    queryKey: ['virt', 'guests', kind, integrationId, nodeId, search, page],
+    queryFn: () => api.get<Paginated<VirtGuestT>>(`/virtualization/guests${qs({ kind, integrationId: integrationId || undefined, hostId: nodeId || undefined, q: search.trim() || undefined, page, pageSize: 50 })}`),
     placeholderData: keepPreviousData,
     refetchInterval: (query) => (query.state.data?.items.some((g) => g.activeJob) ? 4000 : 60_000),
   });
@@ -362,7 +474,7 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
   return (
     <Panel
       flush
-      title={staff ? 'Virtual machines' : 'Your virtual machines'}
+      title={staff ? (nodeId && nodes.find((h) => h.id === nodeId) ? `Virtual machines on ${nodes.find((h) => h.id === nodeId)!.name}` : 'Virtual machines') : 'Your virtual machines'}
       actions={
         <div className="flex gap-2">
           {staff && integrations && integrations.length > 1 && (
@@ -371,6 +483,16 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
               {integrations.map((i) => (
                 <option key={i.id} value={i.id}>
                   {i.name}
+                </option>
+              ))}
+            </Select>
+          )}
+          {staff && nodes.length > 0 && (
+            <Select className="w-44" aria-label={kind === 'proxmox' ? 'Node' : 'Server'} value={nodeId} onChange={(e) => onNode(e.target.value)}>
+              <option value="">{kind === 'proxmox' ? 'All nodes' : 'All servers'}</option>
+              {nodes.map((h) => (
+                <option key={h.id} value={h.id}>
+                  {h.name} ({h.guests})
                 </option>
               ))}
             </Select>
@@ -384,7 +506,9 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
       ) : q.error ? (
         <ErrorNote error={q.error} className="m-4" />
       ) : !items.length ? (
-        <EmptyState title="No virtual machines">{staff ? 'VMs appear after the first sync.' : 'No VMs have been assigned to your account.'}</EmptyState>
+        <EmptyState title={nodeId || search ? 'No matching virtual machines' : 'No virtual machines'}>
+          {staff ? (nodeId || search ? 'Try another server or search.' : 'VMs appear after the first sync.') : 'No VMs have been assigned to your account.'}
+        </EmptyState>
       ) : (
         <Table label="Virtual machines">
           <thead>
@@ -407,6 +531,7 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
                     {g.virtType ? ` · ${g.virtType}` : ''}
                     {g.hostName ? ` · ${g.hostName}` : ''}
                   </div>
+                  {g.osName && <div className="text-[12.5px] text-ink-2">{g.osName}</div>}
                 </td>
                 <td>
                   {g.missingSince ? (
@@ -439,10 +564,15 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
                     )}
                   </td>
                 )}
-                <td className="text-right">
+                <td className="text-right whitespace-nowrap">
                   {canControl && g.actionsEnabled && !g.missingSince && (
                     <Button size="sm" variant="ghost" disabled={!!g.activeJob} onClick={() => setAct(g)}>
                       Actions
+                    </Button>
+                  )}
+                  {staff && canControl && g.actionsEnabled && !g.missingSince && g.integrationKind === 'virtualizor' && (
+                    <Button size="sm" variant="ghost" disabled={!!g.activeJob} onClick={() => setReinstall(g)}>
+                      Reinstall
                     </Button>
                   )}
                 </td>
@@ -464,6 +594,17 @@ function Guests({ kind, integrations, staff }: { kind: Kind; integrations: Integ
           }}
         />
       )}
+      {reinstall && (
+        <ReinstallDialog
+          guest={reinstall}
+          onClose={() => setReinstall(null)}
+          onQueued={(id) => {
+            setReinstall(null);
+            setJob(id);
+            void qc.invalidateQueries({ queryKey: ['virt', 'guests'] });
+          }}
+        />
+      )}
       <JobModal id={job} onClose={() => setJob(null)} />
     </Panel>
   );
@@ -476,6 +617,12 @@ function VirtualizationPage({ kind }: { kind: Kind }) {
   const staff = me?.user.userType === 'staff';
   const q = useQuery({ queryKey: ['virt', 'integrations'], queryFn: () => api.get<IntegrationT[]>('/virtualization/integrations'), enabled: staff, refetchInterval: 30_000 });
   const mine = (q.data ?? []).filter((i) => i.kind === kind);
+  const [nodeId, setNodeId] = useState('');
+  const vmsRef = useRef<HTMLDivElement>(null);
+  const pickNode = (id: string) => {
+    setNodeId(id);
+    if (id) vmsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   return (
     <>
       <PageHeader
@@ -488,8 +635,12 @@ function VirtualizationPage({ kind }: { kind: Kind }) {
       />
       <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
         {staff && (q.isLoading ? <Loading /> : q.error ? <ErrorNote error={q.error} /> : <Integrations kind={kind} list={mine} />)}
-        {staff && q.data && <Hosts kind={kind} integrations={mine} />}
-        {(!staff || mine.length > 0) && <Guests kind={kind} integrations={staff ? mine : null} staff={staff} />}
+        {staff && q.data && <Hosts kind={kind} integrations={mine} nodeId={nodeId} onNode={pickNode} />}
+        {(!staff || mine.length > 0) && (
+          <div ref={vmsRef} className="scroll-mt-4">
+            <Guests kind={kind} integrations={staff ? mine : null} staff={staff} nodeId={nodeId} onNode={setNodeId} />
+          </div>
+        )}
       </div>
     </>
   );

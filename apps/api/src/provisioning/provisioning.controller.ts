@@ -8,6 +8,7 @@ import {
   bootCallbackSchema,
   controlCredentialSchema,
   guestActionSchema,
+  guestReinstallSchema,
   guestAssignSchema,
   guestListQuerySchema,
   hostMapSchema,
@@ -309,6 +310,24 @@ export class VirtualizationController {
   @ApiZodBody(guestActionSchema)
   guestAction(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(guestActionSchema)) b: Infer<typeof guestActionSchema>, @Headers(IDEM) idem: string | undefined, @ReqMeta() meta: RequestMeta) {
     return this.svc.guestAction(p, id, b, idem, meta);
+  }
+
+  @Get('guests/:id/templates')
+  @RequirePermissions('hardware.control')
+  @StaffOnly()
+  @ApiOperation({ summary: 'OS templates this VM can be reinstalled with (from the last sync).' })
+  guestTemplates(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.svc.guestTemplates(p, id);
+  }
+
+  @Post('guests/:id/reinstall')
+  @RequirePermissions('hardware.control')
+  @StaffOnly()
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @ApiZodBody(guestReinstallSchema)
+  @ApiOperation({ summary: 'Reinstall a VM from an OS template (erases its disk). The root password is used once and not kept.' })
+  reinstallGuest(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(guestReinstallSchema)) b: Infer<typeof guestReinstallSchema>, @Headers(IDEM) idem: string | undefined, @ReqMeta() meta: RequestMeta) {
+    return this.svc.reinstallGuest(p, id, b, idem, meta);
   }
 }
 

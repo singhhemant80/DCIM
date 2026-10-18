@@ -22,6 +22,7 @@ const describe = (j: JobT) => {
   if (j.kind === 'os_install') return `${p.imageName ?? j.imageName ?? 'image'} as ${p.hostname ?? '?'} (${p.method === 'pxe' ? 'PXE' : 'virtual media'}${p.mode === 'interactive' ? ', interactive' : ''})`;
   if (j.kind === 'image_process') return `preparing ${p.fileName ?? 'ISO'}`;
   if (j.kind === 'guest_action') return String(p.action ?? '');
+  if (j.kind === 'guest_reinstall') return `with ${p.osName ?? 'a new OS'}`;
   return 'checksum verification';
 };
 

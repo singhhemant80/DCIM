@@ -284,7 +284,11 @@ export async function startProxmox(read: { id: string; secret: string }, action:
 
 export interface MockVirtualizor {
   port: number;
-  vps: Map<string, { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; virt: string; ips: string[] }>;
+  vps: Map<string, { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; virt: string; ips: string[]; osid?: string; rebuild?: { osid: string; password: string; at: number } }>;
+  /** Rebuild requests as received (POST bodies), to check the password went in the body and not the URL. */
+  rebuilds: { query: Record<string, string>; body: Record<string, string> }[];
+  /** How long a rebuild takes before the VPS reports the new OS and runs (ms). */
+  rebuildMs: number;
   requests: { act: string | null; params: Record<string, string> }[];
   /** Make the VPS Status call fail (to test that statuses stay unknown and the reason is shown). */
   failStatus: boolean;
@@ -293,14 +297,35 @@ export interface MockVirtualizor {
 
 export async function startVirtualizor(apiKey: string, apiPass: string, listenPort?: number): Promise<MockVirtualizor> {
   const vps: MockVirtualizor['vps'] = new Map([
-    ['11', { serid: '0', hostname: 'vps11.example.net', status: 1, suspended: 0, virt: 'kvm', ips: ['203.0.113.11'] }],
-    ['12', { serid: '0', hostname: 'vps12.example.net', status: 0, suspended: 0, virt: 'kvm', ips: ['203.0.113.12'] }],
+    ['11', { serid: '0', hostname: 'vps11.example.net', status: 1, suspended: 0, virt: 'kvm', ips: ['203.0.113.11'], osid: '270' }],
+    ['12', { serid: '0', hostname: 'vps12.example.net', status: 0, suspended: 0, virt: 'kvm', ips: ['203.0.113.12'], osid: '270' }],
   ]);
   const requests: MockVirtualizor['requests'] = [];
   // eslint-disable-next-line prefer-const
   let server: http.Server;
-  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, close: () => closer(server)() };
+  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, close: () => closer(server)() };
+  // Installed templates ("ostemplates"), as Virtualizor lists them; one for another virtualization type.
+  const templates: Record<string, Record<string, string>> = {
+    '270': { osid: '270', type: 'kvm', name: 'ubuntu-22.04-x86_64', filename: 'ubuntu-22.04-x86_64.img', distro: 'ubuntu' },
+    '310': { osid: '310', type: 'kvm', name: 'almalinux-9-x86_64', filename: 'almalinux-9-x86_64.img', distro: 'almalinux' },
+    '448': { osid: '448', type: 'openvz', name: 'centos-7-x86_64', filename: 'centos-7-x86_64.tar.gz', distro: 'centos' },
+  };
+  // A rebuild in progress finishes after rebuildMs: the VPS then reports the new OS and runs.
+  const settle = () => {
+    for (const v of vps.values())
+      if (v.rebuild && Date.now() - v.rebuild.at >= mock.rebuildMs) {
+        v.osid = v.rebuild.osid;
+        v.status = 1;
+        v.rebuild = undefined;
+      }
+  };
   server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => handle(req, res, Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString('utf8')))));
+  });
+  const handle = (req: http.IncomingMessage, res: http.ServerResponse, body: Record<string, string>) => {
+    settle();
     const url = new URL(req.url!, 'http://x');
     const q = Object.fromEntries(url.searchParams);
     const { adminapikey: apikey, adminapipass: apipass, apikey: signed, ...rest } = q;
@@ -321,6 +346,19 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
     if (apikey !== apiKey || apipass !== apiPass || !signedOk) {
       res.writeHead(302, { Location: '/index.php?act=login' });
       return res.end();
+    }
+    if (q.act === 'ostemplates') return send({ title: 'OS Templates', ostemplates: templates });
+    if (q.act === 'rebuild') {
+      mock.rebuilds.push({ query: rest, body });
+      const v = vps.get(body.vpsid ?? '');
+      if (req.method !== 'POST' || body.reos !== '1') return send({ error: { reos: 'Invalid request' } });
+      if (!v) return send({ error: { vpsid: 'VPS not found' } });
+      if (!templates[body.osid ?? '']) return send({ error: { osid: 'The OS template was not found' } });
+      if (!body.newpass || body.newpass !== body.conf) return send({ error: { newpass: 'The passwords do not match' } });
+      v.status = 0;
+      v.rebuild = { osid: body.osid!, password: body.newpass, at: Date.now() };
+      settle();
+      return send({ title: 'Rebuild Virtual Server', done: 1, actid: '345' });
     }
     if (q.act === 'servers') return send({ servs: { '0': { serid: '0', server_name: 'kvm-node-1', status: '1', total_cores: '48', total_ram: '262144' } } });
     if (q.act === 'vs' && q.vs_status && mock.failStatus) return send({ error: { vs_status: 'Could not connect to the slave server' } });
@@ -366,6 +404,8 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
               status: '1',
               suspended: v.suspended,
               locked: v.locked ?? '',
+              osid: v.osid ?? '0',
+              os_name: templates[v.osid ?? '']?.name ?? '',
               cores: '2',
               ram: '2048',
               space: '40',
@@ -376,7 +416,7 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
       });
     }
     return send({ error: { act: 'Unknown act' } });
-  });
+  };
   const port = await listen(server, listenPort);
   mock.port = port;
   return mock;

@@ -3,9 +3,16 @@ import { dateRangeFields, paginationSchema } from './schemas';
 
 /* ------------------------------------------------------------------ jobs */
 
-export const JOB_KINDS = ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process'] as const;
+export const JOB_KINDS = ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process', 'guest_reinstall'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
-export const JOB_KIND_LABELS: Record<JobKind, string> = { power_action: 'Power action', os_install: 'OS installation', image_verify: 'Image checksum', guest_action: 'VM action', image_process: 'ISO preparation' };
+export const JOB_KIND_LABELS: Record<JobKind, string> = {
+  power_action: 'Power action',
+  os_install: 'OS installation',
+  image_verify: 'Image checksum',
+  guest_action: 'VM action',
+  image_process: 'ISO preparation',
+  guest_reinstall: 'VM reinstall',
+};
 
 /**
  * queued → running → (waiting ⇄ running) → verifying → completed
@@ -398,11 +405,35 @@ export type GuestAction = (typeof GUEST_ACTIONS)[number];
 export const GUEST_ACTION_LABELS: Record<GuestAction, string> = { start: 'Start', stop: 'Stop (hard)', shutdown: 'Shut down', reboot: 'Reboot', suspend: 'Suspend', resume: 'Resume' };
 
 export const guestActionSchema = z.object({ action: z.enum(GUEST_ACTIONS), confirm: z.string().trim().min(1).max(200) });
+/** An OS template the hypervisor can install (from the read-only sync). */
+export interface VirtTemplate {
+  osid: number;
+  name: string;
+  distro: string | null;
+  /** Virtualization type the template is for (e.g. kvm, proxk, openvz), as the panel names it. */
+  type: string | null;
+}
+/**
+ * Reinstall a VM from one of the hypervisor's OS templates (Virtualizor "Rebuild VPS").
+ * Erases the VM's disk. The root password goes to the hypervisor once and is not kept.
+ */
+export const guestReinstallSchema = z
+  .object({
+    osid: z.number().int().positive(),
+    password: z.string().min(8, 'At least 8 characters').max(128),
+    confirm: z.string().trim().min(1).max(200),
+    /** Only the primary disk is formatted (KVM / Proxmox KVM / Xen HVM); other disks are kept. */
+    formatPrimaryOnly: z.boolean().default(false),
+  })
+  .refine((v) => !/[\u0000-\u001f]/.test(v.password), { message: 'The password cannot contain control characters', path: ['password'] });
+
 export const guestAssignSchema = z.object({ customerId: z.string().uuid().nullable() });
 export const hostMapSchema = z.object({ deviceId: z.string().uuid().nullable() });
 export const guestListQuerySchema = paginationSchema.extend({
   kind: z.enum(VIRT_KINDS).optional(),
   integrationId: z.string().uuid().optional(),
+  /** Only the VMs on this hypervisor node. */
+  hostId: z.string().uuid().optional(),
   q: z.string().trim().max(100).optional(),
   status: z.string().trim().max(20).optional(),
 });

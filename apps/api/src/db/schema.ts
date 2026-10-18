@@ -1854,7 +1854,7 @@ export type PowerTariff = typeof powerTariffs.$inferSelect;
 
 /* ============================================================== Phase 6: provisioning and virtualization */
 
-export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process']);
+export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process', 'guest_reinstall']);
 export const jobStatusEnum = pgEnum('job_status', ['queued', 'running', 'waiting', 'verifying', 'completed', 'failed', 'cancelled', 'recovery']);
 export const stepStatusEnum = pgEnum('job_step_status', ['pending', 'running', 'done', 'failed', 'skipped']);
 export const bmcKindEnum = pgEnum('bmc_kind', ['redfish', 'ipmi']);
@@ -2160,6 +2160,8 @@ export const virtIntegrations = pgTable(
     lastSyncAt: ts('last_sync_at'),
     lastSyncOk: boolean('last_sync_ok'),
     lastError: text('last_error'),
+    /** OS templates the hypervisor can install, from the last sync (Virtualizor). */
+    templates: jsonb('templates').$type<{ osid: number; name: string; distro: string | null; type: string | null }[]>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -2208,6 +2210,9 @@ export const virtGuests = pgTable(
     memBytes: bigint('mem_bytes', { mode: 'number' }),
     diskBytes: bigint('disk_bytes', { mode: 'number' }),
     uptimeSeconds: bigint('uptime_seconds', { mode: 'number' }),
+    /** Installed OS as the hypervisor reports it (Virtualizor: template id and name). */
+    osId: text('os_id'),
+    osName: text('os_name'),
     ipAddresses: text('ip_addresses')
       .array()
       .notNull()

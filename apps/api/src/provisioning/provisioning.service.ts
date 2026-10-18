@@ -24,6 +24,8 @@ import {
   type PowerAction,
   type VirtIntegrationInput,
   guestListQuerySchema,
+  guestReinstallSchema,
+  type VirtTemplate,
   jobListQuerySchema,
   recoveryDecisionSchema,
 } from '@crapplet/shared';
@@ -936,6 +938,7 @@ export class ProvisioningService {
     const conds: SQL[] = [sql`g.org_id = ${p.orgId}`];
     if (p.userType !== 'staff') conds.push(p.customerId ? sql`g.customer_id = ${p.customerId}` : sql`false`);
     if (q.integrationId) conds.push(sql`g.integration_id = ${q.integrationId}`);
+    if (q.hostId) conds.push(sql`g.host_id = ${q.hostId}`);
     if (q.kind) conds.push(sql`exists (select 1 from virt_integrations k where k.id = g.integration_id and k.kind = ${q.kind})`);
     if (q.q) conds.push(sql`(g.name ilike ${'%' + q.q + '%'} or g.external_id = ${q.q} or ${q.q} = any(g.ip_addresses))`);
     if (q.status) conds.push(sql`g.status = ${q.status}`);
@@ -964,6 +967,8 @@ export class ProvisioningService {
         diskBytes: g.disk_bytes === null ? null : Number(g.disk_bytes),
         uptimeSeconds: g.uptime_seconds === null ? null : Number(g.uptime_seconds),
         ipAddresses: g.ip_addresses,
+        osName: g.os_name ?? null,
+        hostId: staff ? (g.host_id ?? null) : null,
         hostName: staff ? g.host_name : null,
         customerId: g.customer_id ?? null,
         customerName: staff ? (g.customer_name ?? null) : null,
@@ -1013,6 +1018,62 @@ export class ProvisioningService {
       throw new BadRequestException({ error: 'action_unsupported', message: 'Suspend and resume are administrative actions in Virtualizor; use the panel' });
     if (!ProvisioningService.confirmMatches(input.confirm, [g.name, g.externalId])) throw new BadRequestException({ error: 'confirmation_mismatch', message: `Type the VM's name (${g.name}) to confirm` });
     const r = await this.createJob(p, { kind: 'guest_action', guestId: g.id, params: { action: input.action, vm: g.name } }, idem, { op: 'guest', id, action: input.action }, meta, 'virt.guest_action', { action: input.action, vm: g.name });
+    return { ...ProvisioningService.publicJob(r.job), replayed: r.replayed };
+  }
+
+  /** A staff member's view of one VM plus its integration, for reinstalls. */
+  private async reinstallTarget(p: Principal, id: string) {
+    if (p.userType !== 'staff') throw new ForbiddenException({ error: 'forbidden', message: 'Only staff can reinstall VMs' });
+    const [g] = await this.db
+      .select()
+      .from(virtGuests)
+      .where(and(eq(virtGuests.id, id), eq(virtGuests.orgId, p.orgId)));
+    if (!g) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
+    const [i] = await this.db.select().from(virtIntegrations).where(eq(virtIntegrations.id, g.integrationId));
+    if (!i) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
+    return { g, i };
+  }
+
+  /**
+   * OS templates this VM can be reinstalled with: the hypervisor's installed
+   * templates from the last sync, those for the VM's virtualization type first.
+   */
+  async guestTemplates(p: Principal, id: string) {
+    const { g, i } = await this.reinstallTarget(p, id);
+    const all = (i.templates ?? []) as VirtTemplate[];
+    const t = (g.virtType ?? '').toLowerCase();
+    const matching = all.filter((x) => (x.type ?? '').toLowerCase() === t);
+    return {
+      supported: i.kind === 'virtualizor',
+      actionsEnabled: i.enabled && i.actionsEnabled,
+      currentOs: g.osName,
+      synced: i.templates !== null,
+      // When the panel's template types don't name this VM's type, all are offered and the panel decides.
+      items: matching.length ? matching : all,
+      matchedType: matching.length > 0,
+    };
+  }
+
+  async reinstallGuest(p: Principal, id: string, input: z.infer<typeof guestReinstallSchema>, idem: string | undefined, meta: RequestMeta) {
+    const { g, i } = await this.reinstallTarget(p, id);
+    if (i.kind !== 'virtualizor') throw new BadRequestException({ error: 'action_unsupported', message: 'Reinstall is offered for Virtualizor VMs' });
+    if (g.missingSince) throw new ConflictException({ error: 'vm_missing', message: 'The hypervisor no longer reports this VM' });
+    if (!i.enabled || !i.actionsEnabled) throw new ForbiddenException({ error: 'actions_disabled', message: 'VM actions are not enabled for this hypervisor' });
+    const tpl = ((i.templates ?? []) as VirtTemplate[]).find((x) => x.osid === input.osid);
+    if (!tpl) throw new BadRequestException({ error: 'invalid_template', message: 'That OS template is not installed on the hypervisor (as of the last sync)' });
+    if (!ProvisioningService.confirmMatches(input.confirm, [g.name, g.externalId])) throw new BadRequestException({ error: 'confirmation_mismatch', message: `Type the VM's name (${g.name}) to confirm` });
+    const jobId = randomUUID();
+    const params = { osid: tpl.osid, osName: tpl.name, vm: g.name, osBefore: g.osName, formatPrimaryOnly: input.formatPrimaryOnly };
+    const r = await this.createJob(
+      p,
+      { id: jobId, kind: 'guest_reinstall', guestId: g.id, params, secretEnc: this.secrets.encrypt(JSON.stringify({ password: input.password }), jobContext(p.orgId, jobId)) },
+      idem,
+      // Same request = same template and password; only a hash of the password is compared.
+      { op: 'reinstall', id, osid: tpl.osid, formatPrimaryOnly: input.formatPrimaryOnly, password: createHash('sha256').update(input.password).digest('hex') },
+      meta,
+      'virt.guest_reinstall',
+      { vm: g.name, os: tpl.name, osBefore: g.osName },
+    );
     return { ...ProvisioningService.publicJob(r.job), replayed: r.replayed };
   }
 

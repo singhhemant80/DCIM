@@ -233,6 +233,12 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 * Customers see only addresses assigned to them, directly or through a prefix assigned to them, and never the exporter configuration.
 * Real time per IP (optional, per router): while someone has the live view open (a heartbeat that lapses after 20 s), the worker streams MikroTik Torch on the configured interface over the device's stored RouterOS API credential. Torch is a read-only monitor; the API client can only send `/login`, `…/print`, `/tool/torch` and `/cancel`, and the interface name cannot contain API separators. Torch costs router CPU while it runs, so it stops as soon as nobody watches. The rates are kept in Redis for 5 seconds and never stored.
 
+## VM reinstall (Virtualizor)
+
+* Reinstall erases the VM's disk. It is staff only (`hardware.control`), needs the integration's VM-actions opt-in, the template must be one the panel reported at the last sync, and the VM's name must be typed.
+* The new root password is required by Virtualizor. NexoraDC encrypts it in the job's secret (same envelope as other job secrets), sends it to Virtualizor once in the POST body (never in the URL), and deletes it from the job right after Virtualizor accepts the request; the job's end clears it again. It is not in the job's parameters, steps, audit entry or logs; the idempotency check compares only a SHA-256 of it.
+* The rebuild step is never repeated automatically; an interrupted one goes to recovery for a person.
+
 ## ISO uploads and the PXE service
 
 - **Uploads** are staff-only (`provisioning.execute`), in chunks of at most 16 MiB written at the server's own offset; free disk space for the ISO and an extracted copy is checked first. The file is read with `bsdtar` (list, extract) by the worker; nothing in it is executed. Extraction drops ISO ownership and permissions. An optional vendor SHA-256 is compared before the image can be used.

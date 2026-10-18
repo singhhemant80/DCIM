@@ -1,4 +1,4 @@
-import type { GuestAction } from '@crapplet/shared';
+import type { GuestAction, VirtTemplate } from '@crapplet/shared';
 import type { AdapterTarget } from '../../network/discovery/types';
 import { DeviceHttpError, deviceRequest } from '../adapters/http';
 import { createHash, randomInt } from 'node:crypto';
@@ -31,15 +31,24 @@ export interface VirtGuestInfo {
   diskBytes: number | null;
   uptimeSeconds: number | null;
   ipAddresses: string[];
+  /** Installed OS as the hypervisor reports it, where it does (Virtualizor). */
+  osId?: string | null;
+  osName?: string | null;
 }
+type GuestRef = { externalId: string; hostExternalId: string | null; virtType: string | null };
 export interface VirtClient {
   test(): Promise<string>;
   /** `warning`: the sync worked but part of the data could not be read (shown on the integration). */
-  inventory(): Promise<{ hosts: VirtHostInfo[]; guests: VirtGuestInfo[]; warning?: string }>;
+  /** `templates`: OS templates the hypervisor can install, where it offers reinstalls (undefined: not read). */
+  inventory(): Promise<{ hosts: VirtHostInfo[]; guests: VirtGuestInfo[]; warning?: string; templates?: VirtTemplate[] }>;
   guestStatus(g: { externalId: string; hostExternalId: string | null; virtType: string | null }): Promise<string>;
   /** Seconds since the guest started, where the hypervisor reports it (used to verify reboots). */
   guestUptime?(g: { externalId: string; hostExternalId: string | null; virtType: string | null }): Promise<number | null>;
   guestAction(g: { externalId: string; hostExternalId: string | null; virtType: string | null }, action: GuestAction): Promise<void>;
+  /** Reinstall from an OS template, erasing the disk (Virtualizor "Rebuild VPS"). */
+  reinstall?(g: GuestRef, input: { osid: number; password: string; formatPrimaryOnly: boolean }): Promise<void>;
+  /** The guest's installed OS and state, read together (verifies a reinstall). */
+  guestOs?(g: GuestRef): Promise<{ osId: string | null; osName: string | null; status: string }>;
 }
 
 type Row = Record<string, unknown>;
@@ -163,10 +172,12 @@ const VZ_ACTIONS: Partial<Record<GuestAction, string>> = { start: 'start', shutd
 export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey: string; apiPass: string; actionsEnabled: boolean }): VirtClient {
   // A master listing many slaves and VPSes can take a while to answer.
   const t = target(cfg.url, cfg.verifyTls, 60_000);
-  const call = async (params: Record<string, string>) => {
+  const call = async (params: Record<string, string>, post?: Record<string, string>) => {
     const q = new URLSearchParams({ ...params, adminapikey: cfg.apiKey, adminapipass: cfg.apiPass, api: 'json', apikey: virtualizorApiKey(cfg.apiPass) });
     try {
-      const res = await deviceRequest(t, 'GET', `/index.php?${q.toString()}`, { defaultPort: 4085, rawErrors: true });
+      const res = post
+        ? await deviceRequest(t, 'POST', `/index.php?${q.toString()}`, { defaultPort: 4085, rawErrors: true, raw: { data: new URLSearchParams(post).toString(), contentType: 'application/x-www-form-urlencoded' } })
+        : await deviceRequest(t, 'GET', `/index.php?${q.toString()}`, { defaultPort: 4085, rawErrors: true });
       // Virtualizor answers a request it doesn't accept with a redirect to its login page.
       if (res.status >= 300 && res.status < 400) {
         let where: URL | null = null;
@@ -254,6 +265,18 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       }
       // Power states; if the panel can't give them, statuses stay "unknown" rather than guessed.
       const { out: power, warning } = await powerStates(Object.keys(vs));
+      // Installed OS templates (Virtualizor's OS Templates call; "ostemplates" are the downloaded ones).
+      let templates: VirtTemplate[] | undefined;
+      try {
+        const r = await call({ act: 'ostemplates', page: '1', reslen: '1000' });
+        const list = (r.ostemplates && typeof r.ostemplates === 'object' ? r.ostemplates : {}) as Record<string, Row>;
+        templates = Object.entries(list)
+          .map(([key, x]) => ({ osid: n(x.osid) ?? n(key) ?? 0, name: s(x.name) ?? s(x.filename) ?? `Template ${key}`, distro: s(x.distro), type: s(x.type) ?? s(x.Nvirt) }))
+          .filter((x) => x.osid > 0)
+          .sort((a, b) => a.name.localeCompare(b.name));
+      } catch {
+        templates = undefined;
+      }
       return {
         hosts: Object.values(servers).map((x) => ({
           externalId: String(x.serid),
@@ -276,8 +299,11 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
           diskBytes: n(x.space) === null ? null : n(x.space)! * 1024 ** 3,
           uptimeSeconds: null,
           ipAddresses: x.ips && typeof x.ips === 'object' ? Object.values(x.ips as Row).map(String) : [],
+          osId: s(x.osid),
+          osName: s(x.os_name),
         })),
         warning,
+        templates,
       };
     },
     async guestStatus(g) {
@@ -294,6 +320,27 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       const a = VZ_ACTIONS[action];
       if (!a) throw new PermanentError(`DCIM does not offer ${action} for Virtualizor`);
       await call({ act: 'vs', action: a, vpsid: g.externalId });
+    },
+    /**
+     * Virtualizor "Rebuild VPS": act=rebuild (changeserid = the VPS's node, as
+     * Virtualizor's SDK sends it) with vpsid, reos=1, osid, newpass and conf
+     * posted. The password goes in the POST body, never in the URL.
+     */
+    async reinstall(g, input) {
+      if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');
+      if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
+      const r = await call(
+        { act: 'rebuild', ...(g.hostExternalId && /^\d+$/.test(g.hostExternalId) ? { changeserid: g.hostExternalId } : {}) },
+        { vpsid: g.externalId, reos: '1', osid: String(input.osid), newpass: input.password, conf: input.password, ...(input.formatPrimaryOnly ? { format_primary: '1' } : {}), eu_send_rebuild_email: '0' },
+      );
+      if (!(n(r.done) === 1 || r.done === true)) throw new PermanentError('Virtualizor did not confirm the reinstall (no "done" in its answer); check the VPS in the panel');
+    },
+    async guestOs(g) {
+      if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
+      const vs = ((await call({ act: 'vs', vpsid: g.externalId })).vs as Record<string, Row> | undefined) ?? {};
+      const v = vs[g.externalId];
+      if (!v) return { osId: null, osName: null, status: 'missing' };
+      return { osId: s(v.osid), osName: s(v.os_name), status: status(v, (await powerStates([g.externalId])).out.get(g.externalId)) };
     },
   };
 }

@@ -812,6 +812,65 @@ describe('hypervisors', () => {
     expect(events).not.toMatch(/VZKEY123|vz-api-pass-77/);
   });
 
+  it('Virtualizor: VMs per node, and reinstall from an OS template (password used once, never kept)', async () => {
+    const vzi = (await ok(admin.get(`${V}/integrations`))).find((x: { name: string }) => x.name === 'VZ panel');
+    await syncDueIntegrations(deps(), { force: vzi.id });
+    const integ = (await ok(admin.get(`${V}/integrations`))).find((x: { id: string }) => x.id === vzi.id);
+    // Node filter: only that node's VMs.
+    const hosts = await ok(admin.get(`${V}/hosts?integrationId=${vzi.id}`));
+    const host = (Array.isArray(hosts) ? hosts : hosts.items)[0];
+    const onNode = (await ok(admin.get(`${V}/guests?integrationId=${vzi.id}&hostId=${host.id}`))).items.filter((g: { missingSince: string | null }) => !g.missingSince);
+    expect(onNode.map((g: { name: string }) => g.name)).toEqual(['vps11.example.net', 'vps12.example.net']);
+    expect(onNode[0]).toMatchObject({ osName: 'ubuntu-22.04-x86_64', hostId: host.id });
+    expect((await ok(admin.get(`${V}/guests?integrationId=${vzi.id}&hostId=${'0'.repeat(8)}-0000-4000-8000-000000000000`))).items).toEqual([]);
+    expect(integ).toBeTruthy();
+
+    const vm = onNode[1];
+    // Templates for this VM's type (kvm) only; the openvz one is left out.
+    const t = await ok(admin.get(`${V}/guests/${vm.id}/templates`));
+    expect(t).toMatchObject({ supported: true, actionsEnabled: true, matchedType: true, currentOs: 'ubuntu-22.04-x86_64' });
+    expect(t.items.map((x: { osid: number }) => x.osid)).toEqual([310, 270]);
+    // Staff only; type the name; a template the panel doesn't have is refused; short passwords too.
+    expect((await acme.get(`${V}/guests/${vm.id}/templates`)).status).toBe(403);
+    expect((await acme.post(`${V}/guests/${vm.id}/reinstall`, { osid: 310, password: 'Str0ng-Pass-9', confirm: vm.name })).status).toBe(403);
+    expect((await admin.post(`${V}/guests/${vm.id}/reinstall`, { osid: 310, password: 'Str0ng-Pass-9', confirm: 'wrong' })).body.error).toBe('confirmation_mismatch');
+    expect((await admin.post(`${V}/guests/${vm.id}/reinstall`, { osid: 999, password: 'Str0ng-Pass-9', confirm: vm.name })).body.error).toBe('invalid_template');
+    expect((await admin.post(`${V}/guests/${vm.id}/reinstall`, { osid: 310, password: 'short', confirm: vm.name })).status).toBe(400);
+
+    const j = await ok(admin.post(`${V}/guests/${vm.id}/reinstall`, { osid: 310, password: 'Str0ng-Pass-9', confirm: vm.name }));
+    expect(JSON.stringify(j)).not.toContain('Str0ng-Pass-9');
+    // The password is stored encrypted while the job waits.
+    expect((await job(j.id)).secretEnc).toBeTruthy();
+    const done = await drive(j.id);
+    expect(done.status).toBe('completed');
+    expect(done.result).toMatchObject({ verified: true });
+    expect(done.secretEnc).toBeNull();
+    // Sent as Virtualizor expects: POST body, on the VPS's node; the password never in the URL.
+    const rb = vz.rebuilds.at(-1)!;
+    expect(rb.body).toMatchObject({ vpsid: '12', reos: '1', osid: '310', newpass: 'Str0ng-Pass-9', conf: 'Str0ng-Pass-9' });
+    expect(rb.query).toMatchObject({ act: 'rebuild', changeserid: '0' });
+    expect(JSON.stringify(rb.query)).not.toContain('Str0ng-Pass-9');
+    expect(vz.vps.get('12')).toMatchObject({ osid: '310', status: 1 });
+    const g = (await ok(admin.get(`${V}/guests?integrationId=${vzi.id}&q=vps12`))).items[0];
+    expect(g).toMatchObject({ osName: 'almalinux-9-x86_64', status: 'running' });
+    // Nowhere in the job, its steps or the audit log.
+    const everything = JSON.stringify([await ok(admin.get(`${P}/jobs/${j.id}`)), await stepsOf(j.id), await ok(admin.get('/api/v1/audit?action=virt.guest_reinstall'))]);
+    expect(everything).not.toContain('Str0ng-Pass-9');
+    expect(everything).toContain('almalinux-9-x86_64');
+
+    // A retried request with the same Idempotency-Key never starts a second reinstall.
+    const again = () => admin.agent.post(`${V}/guests/${vm.id}/reinstall`).set('X-CSRF-Token', admin.csrf).set('Idempotency-Key', 'reinstall-2').send({ osid: 270, password: 'An0ther-Pass-7', confirm: vm.name });
+    const j2 = await ok(again());
+    // Same key, same body: the same job, not a second reinstall.
+    expect((await ok(again())).id).toBe(j2.id);
+    expect((await drive(j2.id)).status).toBe('completed');
+    expect(vz.rebuilds.filter((r) => r.body.osid === '270')).toHaveLength(1);
+
+    // Actions off: no reinstall.
+    await ok(admin.put(`${V}/integrations/${vzi.id}`, { kind: 'virtualizor', name: 'VZ panel', url: integ.url, verifyTls: false, apiKey: 'VZKEY123', apiPass: 'vz-api-pass-77', actionsEnabled: false, syncMinutes: 10 }));
+    expect((await admin.post(`${V}/guests/${vm.id}/reinstall`, { osid: 310, password: 'Str0ng-Pass-9', confirm: vm.name })).body.error).toBe('actions_disabled');
+  });
+
   it('Virtualizor: sends the admin API credentials and explains a rejected key', async () => {
     // The key and pass go in adminapikey / adminapipass with a signed apikey, as Virtualizor's SDK sends them (the mock only answers that).
     expect(vz.requests.length).toBeGreaterThan(0);
