@@ -95,12 +95,15 @@ export function Chip({ tone = 'neutral', children, title }: { tone?: Tone; child
   );
 }
 
-export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
+export function PageHeader({ title, description, actions, icon }: { title: string; description?: ReactNode; actions?: ReactNode; icon?: ReactNode }) {
   return (
     <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
-      <div className="min-w-0">
-        <h1 className="text-[22px] leading-tight font-semibold tracking-[-0.01em]">{title}</h1>
-        {description && <p className="mt-1 max-w-[70ch] text-ink-2">{description}</p>}
+      <div className="flex min-w-0 items-center gap-3">
+        {icon}
+        <div className="min-w-0">
+          <h1 className="text-[22px] leading-tight font-semibold tracking-[-0.01em]">{title}</h1>
+          {description && <p className="mt-1 max-w-[70ch] text-ink-2">{description}</p>}
+        </div>
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
     </header>
@@ -139,7 +142,11 @@ export function ErrorNote({ error, className }: { error: unknown; className?: st
           ))}
         </ul>
       )}
-      {rid && <p className="mt-1 opacity-75">Reference: <span className="font-mono">{rid}</span></p>}
+      {rid && (
+        <p className="mt-1 opacity-75">
+          Reference: <span className="font-mono">{rid}</span>
+        </p>
+      )}
     </div>
   );
 }

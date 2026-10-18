@@ -13,6 +13,7 @@ import type { DeviceT } from '../lib/dcim';
 import { bytes, duration, newIdempotencyKey, type IntegrationT, type JobT, type VirtGuestT, type VirtHostT } from '../lib/provisioning';
 import { JobModal } from '../components/Jobs';
 import { volume } from '../components/TopIps';
+import { OsIcon } from '../components/OsIcon';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Table, cx } from '../components/ui';
 
 type Kind = 'proxmox' | 'virtualizor';
@@ -874,16 +875,21 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
           <tbody>
             {items.map((g) => (
               <tr key={g.id} className={g.missingSince ? 'opacity-60' : ''}>
-                <td className="min-w-56">
-                  <Link to={`/integrations/${g.integrationKind}/vms/${g.id}`} className="font-medium hover:text-accent hover:underline">
-                    {g.name}
-                  </Link>
-                  <div className="text-[12.5px] text-ink-3">
-                    #{g.externalId}
-                    {g.virtType ? ` · ${g.virtType}` : ''}
-                    {g.hostName ? ` · ${g.hostName}` : ''}
+                <td className="min-w-64">
+                  <div className="flex items-start gap-2.5">
+                    <OsIcon osName={g.osName} size={20} className="mt-0.5" />
+                    <div className="min-w-0">
+                      <Link to={`/integrations/${g.integrationKind}/vms/${g.id}`} className="font-medium hover:text-accent hover:underline">
+                        {g.name}
+                      </Link>
+                      <div className="text-[12.5px] text-ink-3">
+                        #{g.externalId}
+                        {g.virtType ? ` · ${g.virtType}` : ''}
+                        {g.hostName ? ` · ${g.hostName}` : ''}
+                      </div>
+                      {g.osName && <div className="text-[12.5px] text-ink-2">{g.osName}</div>}
+                    </div>
                   </div>
-                  {g.osName && <div className="text-[12.5px] text-ink-2">{g.osName}</div>}
                 </td>
                 <td>
                   {g.missingSince ? (

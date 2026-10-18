@@ -10,6 +10,7 @@ import { JobModal, JobStatusChip } from '../components/Jobs';
 import { VncViewer } from '../components/Console';
 import { RateChart } from '../components/RateChart';
 import { volume } from '../components/TopIps';
+import { OsIcon, osInfo } from '../components/OsIcon';
 import { Button, Chip, EmptyState, ErrorNote, Loading, PageHeader, Panel, Select, Stat, Table, cx } from '../components/ui';
 import { AccessBadge, GuestActionDialog, ReinstallDialog, UsageBar, guestStatusLabel, statusTone, type AccessT } from './Virtualization';
 
@@ -153,6 +154,7 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
         </Link>
       </div>
       <PageHeader
+        icon={<OsIcon osName={g.osName} size={32} className="rounded-xl" />}
         title={g.name}
         description={[`#${g.externalId}`, g.virtType, g.hostName && `on ${g.hostName}`, g.osName].filter(Boolean).join(' · ')}
         actions={
@@ -227,7 +229,13 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
               <dt className="text-ink-3">Type</dt>
               <dd>{g.virtType ?? '—'}</dd>
               <dt className="text-ink-3">Operating system</dt>
-              <dd>{g.osName ?? '—'}</dd>
+              <dd className="flex items-center gap-2">
+                <OsIcon osName={g.osName} size={14} />
+                <span>
+                  {g.osName ?? '—'}
+                  {osInfo(g.osName) && <span className="text-ink-3"> · {osInfo(g.osName)!.label}</span>}
+                </span>
+              </dd>
               <dt className="text-ink-3">Resources</dt>
               <dd>
                 {g.cpus ?? '—'} vCPU · {bytes(g.memBytes)} RAM{g.diskBytes ? ` · ${bytes(g.diskBytes)} disk` : ''}
