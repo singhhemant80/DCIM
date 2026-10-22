@@ -218,6 +218,13 @@
       "when": 1792331079922,
       "tag": "0030_vm_console",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1792684924325,
+      "tag": "0031_server_health",
+      "breakpoints": true
     }
   ]
 }

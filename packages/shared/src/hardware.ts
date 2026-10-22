@@ -167,3 +167,40 @@ export const devicePhotoSchema = z.object({
     .regex(/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/, 'Upload a JPEG, PNG or WebP image'),
 });
 export type DevicePhotoInput = z.infer<typeof devicePhotoSchema>;
+
+/* ------------------------------------------------------------------ server health (frequent) */
+
+export const SERVER_ROLLUP_KEYS = ['system', 'cpu', 'memory', 'storage', 'psu', 'fans', 'temperature', 'voltage', 'network', 'battery'] as const;
+export type ServerRollupKey = (typeof SERVER_ROLLUP_KEYS)[number];
+export const SERVER_ROLLUP_LABELS: Record<ServerRollupKey, string> = {
+  system: 'System',
+  cpu: 'CPU',
+  memory: 'Memory',
+  storage: 'Storage',
+  psu: 'PSU',
+  fans: 'Fans',
+  temperature: 'Temp',
+  voltage: 'Voltage',
+  network: 'Network',
+  battery: 'Battery',
+};
+
+/** A server's current health from its BMC (read every few minutes; the full hardware walk is daily). Null = not reported. */
+export interface ServerHealth {
+  /** How it was read: "Redfish", "Redfish + WS-Man", "WS-Man". */
+  source: string;
+  powerState: string | null;
+  /** Health per component as the BMC rolls it up. */
+  rollup: Partial<Record<ServerRollupKey, HwHealth>>;
+  /** Dell CUPS (iDRAC Enterprise / Datacenter): CPU, memory, IO and overall system usage in %. */
+  cpuUsagePct: number | null;
+  memoryUsagePct: number | null;
+  ioUsagePct: number | null;
+  systemUsagePct: number | null;
+  inletC: number | null;
+  exhaustC: number | null;
+  cpuTempC: number | null;
+  maxTempC: number | null;
+  /** Parts that could not be read (the rest is still used). */
+  warnings: string[];
+}

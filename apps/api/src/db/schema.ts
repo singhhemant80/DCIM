@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import type { HardwareInventory } from '@crapplet/shared';
+import type { HardwareInventory, ServerHealth } from '@crapplet/shared';
 import {
   bigint,
   bigserial,
@@ -1029,6 +1029,30 @@ export const deviceHardware = pgTable('device_hardware', {
   inventory: jsonb('inventory').$type<HardwareInventory>(),
   health: text('health'),
 });
+
+/**
+ * A server's current health from its BMC (component rollups, temperatures,
+ * usage), read every few minutes by the worker; the latest only.
+ */
+export const serverHealth = pgTable(
+  'server_health',
+  {
+    deviceId: uuid('device_id')
+      .primaryKey()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    orgId: orgRef(),
+    /** idle | running */
+    status: text('status').notNull().default('idle'),
+    startedAt: ts('started_at'),
+    /** When `data` was read. */
+    at: ts('at'),
+    nextAt: ts('next_at'),
+    data: jsonb('data').$type<ServerHealth>(),
+    lastError: text('last_error'),
+    lastAttemptAt: ts('last_attempt_at'),
+  },
+  (t) => [index('server_health_org_idx').on(t.orgId), index('server_health_next_idx').on(t.nextAt)],
+);
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' });
 

@@ -28,7 +28,25 @@ interface FleetItemT {
   ping: { mgmt: PingT | null; server: PingT | null };
   metrics: { at: string | null; fresh: boolean; cpuPct: number | null; memoryPct: number | null; diskPct: number | null; temperatureC: number | null; uptimeSeconds: number | null; error: string | null } | null;
   hardware: { at: string | null; health: string | null; powerState: string | null; psuCount: number | null; maxTempC: number | null; problems: { part: string; name: string; health: string }[]; error: string | null } | null;
+  bmc: BmcT | null;
   alerts: number;
+}
+type Hw = 'OK' | 'Warning' | 'Critical' | null;
+interface BmcT {
+  at: string | null;
+  fresh: boolean;
+  source?: string;
+  powerState?: string | null;
+  rollup?: Partial<Record<string, Hw>>;
+  cpuUsagePct?: number | null;
+  memoryUsagePct?: number | null;
+  ioUsagePct?: number | null;
+  systemUsagePct?: number | null;
+  inletC?: number | null;
+  exhaustC?: number | null;
+  cpuTempC?: number | null;
+  maxTempC?: number | null;
+  error: string | null;
 }
 interface FleetT {
   at: string;
@@ -101,6 +119,83 @@ function Load({ m }: { m: FleetItemT['metrics'] }) {
         </div>
       )}
       {m.uptimeSeconds !== null && <div className="text-ink-3">up {uptime(m.uptimeSeconds)}</div>}
+    </div>
+  );
+}
+
+const ROLLUP: [string, string][] = [
+  ['cpu', 'CPU'],
+  ['memory', 'Memory'],
+  ['storage', 'Storage'],
+  ['psu', 'PSU'],
+  ['fans', 'Fans'],
+  ['temperature', 'Temp'],
+  ['voltage', 'Voltage'],
+  ['battery', 'Battery'],
+  ['network', 'Network'],
+];
+const HW_CLS: Record<string, string> = { OK: 'bg-ok/10 text-ok ring-ok/25', Warning: 'bg-warn/10 text-warn ring-warn/30', Critical: 'bg-crit/10 text-crit ring-crit/30' };
+
+/** A server's current health from its BMC (read every 5 minutes): component rollups, usage, temperatures. */
+function BmcLoad({ b }: { b: BmcT }) {
+  if (!b.fresh || !b.rollup)
+    return (
+      <div className="text-[12.5px] text-warn" title={b.error ?? undefined}>
+        {b.error ? 'BMC health read failed' : b.at ? `BMC health stale (${relativeTime(b.at)})` : 'BMC health not read yet'}
+      </div>
+    );
+  const chips = ROLLUP.filter(([k]) => b.rollup![k]);
+  const usage = [
+    ['CPU', b.cpuUsagePct],
+    ['Memory', b.memoryUsagePct],
+    ['IO', b.ioUsagePct],
+  ].filter(([, v]) => v !== null && v !== undefined) as [string, number][];
+  const temps = [
+    ['Inlet', b.inletC, 30, 35],
+    ['CPU', b.cpuTempC, 70, 85],
+    ['Exhaust', b.exhaustC, 60, 70],
+  ].filter(([, v]) => v !== null && v !== undefined) as [string, number, number, number][];
+  return (
+    <div className="max-w-[260px] text-[12.5px]">
+      {chips.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {chips.map(([k, label]) => (
+            <span key={k} className={cx('rounded px-1.5 py-px text-[11.5px] font-medium ring-1 ring-inset', HW_CLS[b.rollup![k]!])} title={`${label}: ${b.rollup![k]} (from the BMC)`}>
+              {label}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="text-ink-3">{b.rollup.system ? `System ${b.rollup.system}` : 'No component health reported'}</div>
+      )}
+      {usage.length > 0 ? (
+        <div className="mt-1 whitespace-nowrap tabular-nums">
+          {usage.map(([l, v], i) => (
+            <span key={l}>
+              {i > 0 && ' · '}
+              {l} <span className={pctTone(v)}>{v.toFixed(0)}%</span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-1 text-ink-3" title="iDRAC reports CPU / memory / IO usage only with an Enterprise or Datacenter license (13th generation and later); other BMCs don't report it">
+          Usage not reported by the BMC
+        </div>
+      )}
+      {temps.length > 0 && (
+        <div className="whitespace-nowrap tabular-nums">
+          {temps.map(([l, v, w, c], i) => (
+            <span key={l}>
+              {i > 0 && ' · '}
+              {l} <span className={pctTone(v, w, c)}>{v.toFixed(0)} °C</span>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="text-ink-3 whitespace-nowrap" title={b.source ? `Source: ${b.source}` : undefined}>
+        BMC {b.at ? relativeTime(b.at) : ''}
+        {b.powerState ? ` · power ${b.powerState}` : ''}
+      </div>
     </div>
   );
 }
@@ -281,7 +376,18 @@ export function HealthPage() {
                       {!d.ping.mgmt && !d.ping.server && <span className="text-[12.5px] text-ink-3">—</span>}
                     </td>
                     <td>
-                      <Load m={d.metrics} />
+                      {d.bmc ? (
+                        <>
+                          <BmcLoad b={d.bmc} />
+                          {d.metrics && (
+                            <div className="mt-1 border-t border-rule pt-1">
+                              <Load m={d.metrics} />
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <Load m={d.metrics} />
+                      )}
                     </td>
                     <td>
                       <Hardware d={d} canRefresh={canRefresh && SERVER.includes(d.category)} />
@@ -302,8 +408,9 @@ export function HealthPage() {
           )}
           {fleet.data && (
             <p className="border-t border-rule px-4 py-2.5 text-[12px] text-ink-3">
-              Ping every minute; CPU / memory / temperature with each monitoring poll; the BMC's hardware health (PSUs, fans, temperatures, drives, memory, CPUs) is read daily or on "re-read". Amber from 75 % (70 °C), red from 90 % (85 °C).
-              Devices with nothing set up to check are "Not checked", never "Healthy". Updated {relativeTime(fleet.data.at)}.
+              Ping every minute; CPU / memory / temperature with each monitoring poll; servers' current health from the BMC (CPU, memory, storage, PSU, fan, temperature and voltage status; inlet / CPU temperatures; usage where the BMC
+              reports it) every 5 minutes; the BMC's per-part hardware inventory daily or on "re-read". Amber from 75 % (70 °C), red from 90 % (85 °C). Devices with nothing set up to check are "Not checked", never "Healthy". Updated{' '}
+              {relativeTime(fleet.data.at)}.
             </p>
           )}
         </Panel>

@@ -79,6 +79,7 @@ export async function startRedfish(
       Status: { State: 'Enabled', Health: 'Warning', HealthRollup: 'Warning' },
       ProcessorSummary: { Count: 2, Model: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', LogicalProcessorCount: 128 },
       MemorySummary: { TotalSystemMemoryGiB: 128 },
+      Oem: { Dell: { DellSystem: { CPURollupStatus: 'OK', SysMemPrimaryStatus: 'Warning', StorageRollupStatus: 'OK', PSRollupStatus: 'Critical', FanRollupStatus: 'OK', TempRollupStatus: 'OK', VoltRollupStatus: 'OK' } } },
       Processors: link(`${S}/Processors`),
       ...(opts.noMemoryLink || opts.oldIdrac ? {} : { Memory: link(`${S}/Memory`) }),
       ...(opts.oldIdrac ? { SimpleStorage: link(`${S}/SimpleStorage`) } : { Storage: link(`${S}/Storage`) }),
@@ -210,7 +211,24 @@ export async function startRedfish(
               .join('')}</n1:DCIM_${other}>`;
           const items: Record<string, Record<string, string>[]> = {
             SystemView: [
-              { Manufacturer: 'Dell Inc.', Model: 'PowerEdge R630', ServiceTag: 'SIM630X', BIOSVersionString: '2.17.0', PowerState: '2', HostName: 'r630-sim', PrimaryStatus: '1', SysMemTotalSize: '98304', PopulatedCPUSockets: '2' },
+              {
+                Manufacturer: 'Dell Inc.',
+                Model: 'PowerEdge R630',
+                ServiceTag: 'SIM630X',
+                BIOSVersionString: '2.17.0',
+                PowerState: '2',
+                HostName: 'r630-sim',
+                PrimaryStatus: '2',
+                SysMemTotalSize: '98304',
+                PopulatedCPUSockets: '2',
+                CPURollupStatus: '1',
+                SysMemPrimaryStatus: '1',
+                StorageRollupStatus: '1',
+                PSRollupStatus: '1',
+                FanRollupStatus: '2',
+                TempRollupStatus: '1',
+                VoltRollupStatus: '0',
+              },
             ],
             CPUView: ['1', '2'].map((n) => ({ FQDD: `CPU.Socket.${n}`, Model: 'Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz', NumberOfProcessorCores: '14', NumberOfEnabledThreads: '28', MaxClockSpeed: '4000', PrimaryStatus: '1' })),
             PhysicalDiskView: [
@@ -244,6 +262,10 @@ export async function startRedfish(
               { ElementName: 'System Board Pwr Consumption', SensorType: '1', BaseUnits: '7', UnitModifier: '0', CurrentReading: String(watts ?? 0), PrimaryStatus: '1' },
               { ElementName: 'System Board Inlet Temp', SensorType: '2', BaseUnits: '2', UnitModifier: '-1', CurrentReading: '230', UpperThresholdCritical: '470', PrimaryStatus: '1' },
               { ElementName: 'System Board Fan1A', SensorType: '5', BaseUnits: '19', UnitModifier: '0', CurrentReading: '5040', PrimaryStatus: '1' },
+              { ElementName: 'CPU1 Temp', SensorType: '2', BaseUnits: '2', UnitModifier: '-1', CurrentReading: '610', PrimaryStatus: '1' },
+              { ElementName: 'System Board CPU Usage', SensorType: '1', BaseUnits: '65', UnitModifier: '0', CurrentReading: '37', PrimaryStatus: '1' },
+              { ElementName: 'System Board MEM Usage', SensorType: '1', BaseUnits: '65', UnitModifier: '0', CurrentReading: '12', PrimaryStatus: '1' },
+              { ElementName: 'System Board IO Usage', SensorType: '1', BaseUnits: '65', UnitModifier: '0', CurrentReading: '4', PrimaryStatus: '1' },
             ],
           };
           return reply(

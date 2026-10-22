@@ -1,4 +1,6 @@
+import type { ServerHealth } from '@crapplet/shared';
 import type { Adapter, AdapterTarget, DiscoveryResult, PowerSnapshot, TestResult } from '../../network/discovery/types';
+import { emptyServerHealth, fromDellSensors, rollupFromDellSystemView, rollupFromRedfishSystem, temperaturesFromThermal } from './server-health';
 import { DeviceHttpError, basicAuth, deviceRequest, str } from './http';
 import { collectRedfishInventory } from './redfish-inventory';
 import { dellInventoryViaWsman, dellMemoryViaWsman, dellPowerViaWsman, dellSystemFromView, wsmanEnumerate } from './dell-wsman';
@@ -98,6 +100,10 @@ export async function findRedfishSystems(get: (path: string) => Promise<Row>): P
 
 /** Per BMC (host:port), the Redfish link its power reading came from last time. */
 const powerLinks = new Map<string, string>();
+/** Per BMC, where its system and thermal readings are (found once, then read directly). */
+const healthLinks = new Map<string, { system: string; thermal: string | null }>();
+/** Per Dell BMC: no usage sensors over WS-Man (no license or no WS-Man); asked again after this time. */
+const noDellSensorsUntil = new Map<string, number>();
 
 export function redfishAdapter(): Adapter {
   const get = async (t: AdapterTarget, path: string): Promise<Row> => {
@@ -166,6 +172,88 @@ export function redfishAdapter(): Adapter {
         { applies: (m) => /dell/i.test(m ?? ''), label: 'WS-Man', read: () => dellMemoryViaWsman(t) },
         async () => found,
       );
+    },
+    /**
+     * A server's current health in a few requests: the system resource
+     * (component rollups, power state), the chassis Thermal resource, and on
+     * Dell the iDRAC's usage sensors over WS-Man. iDRACs whose Redfish fails
+     * are read over WS-Man only. Read-only.
+     */
+    async serverHealth(t): Promise<ServerHealth> {
+      const key = `${t.host}:${t.port ?? ''}`;
+      const out = emptyServerHealth('Redfish');
+      let links = healthLinks.get(key);
+      let sys: Row | null = null;
+      let redfishErr: Error | null = null;
+      try {
+        if (links) {
+          try {
+            sys = await get(t, links.system);
+          } catch (e) {
+            if (isAuth(e)) throw e;
+            healthLinks.delete(key);
+            links = undefined;
+          }
+        }
+        if (!sys) {
+          const path = (await findRedfishSystems((p) => get(t, p))).paths[0]!;
+          sys = await get(t, path);
+          const chassisLinks = Array.isArray((sys.Links as Row | undefined)?.Chassis) ? ((sys.Links as Row).Chassis as unknown[]).map(odataId).filter((x): x is string => !!x) : [];
+          let thermal: string | null = null;
+          for (const c of [...chassisLinks, '/redfish/v1/Chassis/System.Embedded.1', '/redfish/v1/Chassis/1', '/redfish/v1/Chassis/0', '/redfish/v1/Chassis/Self'].slice(0, 5)) {
+            try {
+              thermal = odataId((await get(t, c)).Thermal);
+              if (thermal) break;
+            } catch (e) {
+              if (isAuth(e)) throw e;
+            }
+          }
+          links = { system: path, thermal };
+          if (healthLinks.size > 5000) healthLinks.clear();
+          healthLinks.set(key, links);
+        }
+      } catch (e) {
+        if (isAuth(e) || !(e instanceof DeviceHttpError) || e.status === null) throw e;
+        redfishErr = e;
+      }
+      if (sys) {
+        out.powerState = str(sys.PowerState);
+        out.rollup = rollupFromRedfishSystem(sys);
+        if (links?.thermal) {
+          try {
+            Object.assign(out, temperaturesFromThermal(await get(t, links.thermal)));
+          } catch (e) {
+            if (isAuth(e)) throw e;
+            out.warnings.push(`Thermal: ${(e as Error).message}`.slice(0, 200));
+          }
+        }
+      }
+      const dell = /dell/i.test(String(sys?.Manufacturer ?? '')) || /System\.Embedded/.test(links?.system ?? '');
+      if (!sys || (dell && (noDellSensorsUntil.get(key) ?? 0) < Date.now())) {
+        try {
+          if (!sys) {
+            const view = (await wsmanEnumerate(t, 'DCIM_SystemView'))[0];
+            if (!view) throw new Error('no system view');
+            out.rollup = rollupFromDellSystemView(view);
+            out.powerState = dellSystemFromView([view])?.powerState ?? null;
+          }
+          const sens = fromDellSensors(await wsmanEnumerate(t, 'DCIM_NumericSensor'));
+          out.cpuUsagePct = sens.cpuUsagePct;
+          out.memoryUsagePct = sens.memoryUsagePct;
+          out.ioUsagePct = sens.ioUsagePct;
+          out.systemUsagePct = sens.systemUsagePct;
+          for (const k of ['inletC', 'exhaustC', 'cpuTempC', 'maxTempC'] as const) out[k] ??= sens[k];
+          out.source = sys ? 'Redfish + WS-Man' : 'WS-Man';
+          // No usage sensors (no license): don't ask WS-Man every few minutes; temperatures come from Redfish.
+          if (sys && sens.cpuUsagePct === null && sens.systemUsagePct === null) noDellSensorsUntil.set(key, Date.now() + 6 * 3600_000);
+        } catch (w) {
+          if (isAuth(w)) throw w;
+          if (!sys) throw new Error(`${redfishErr?.message ?? 'Redfish failed'} (WS-Man also failed: ${(w as Error).message.slice(0, 160)})`);
+          noDellSensorsUntil.set(key, Date.now() + 6 * 3600_000);
+          out.warnings.push(`WS-Man sensors: ${(w as Error).message}`.slice(0, 200));
+        }
+      }
+      return out;
     },
     async power(t): Promise<PowerSnapshot> {
       try {

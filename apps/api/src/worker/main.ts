@@ -20,6 +20,7 @@ import { createLiveLoop } from './monitoring/live';
 import { sweepDuePrefix } from './monitoring/ping';
 import { checkDueDevices } from './monitoring/device-ping';
 import { fetchDueHardware } from './hardware/collect';
+import { pollDueServerHealth } from './hardware/server-health';
 import { startConsoleRelay } from './console/relay';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
 import { FLOW_COLLECTOR_STATUS_KEY, WORKER_HEARTBEAT_KEY, flowLiveKey } from '../health/worker-heartbeat';
@@ -201,6 +202,8 @@ async function main() {
     every('device-ping', 15_000, () => checkDueDevices({ db, logger })),
     // Server hardware and event logs from the BMC (Redfish): on request, when first configured, then daily.
     every('hardware', 10_000, () => fetchDueHardware({ db, secrets, logger })),
+    // Servers' current health from their BMC (rollups, temperatures, usage) every 5 minutes.
+    every('server-health', 15_000, () => pollDueServerHealth({ db, secrets, logger }).then(() => undefined)),
     every('events', 2_000, async () => {
       // Fan out, then run the workflows and webhooks that fan-out produced.
       while ((await dispatchEvents(automation)) === 200);

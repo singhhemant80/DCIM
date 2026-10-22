@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { Db } from '../db/db';
+import { SERVER_ROLLUP_LABELS, type ServerHealth, type ServerRollupKey } from '@crapplet/shared';
 import { CHECKED_STATES } from '../dcim/reachability';
 
 /**
@@ -31,6 +32,7 @@ export async function fleetHealth(db: Db, orgId: string) {
            m.enabled as polling, m.last_ok_at, m.last_error as poll_error,
            h.at as health_at, h.cpu_pct, h.memory_used_bytes, h.memory_total_bytes, h.disk_used_bytes, h.disk_total_bytes, h.temperature_c, h.uptime_seconds, h.last_error as health_error,
            hw.fetched_at as hw_at, hw.status as hw_job, hw.last_error as hw_error,
+           sh.at as sh_at, sh.data as sh_data, sh.last_error as sh_error, sh.last_attempt_at as sh_attempt,
            hw.inventory->'system'->>'health' as hw_health, hw.inventory->'system'->>'powerState' as power_state,
            (select count(*) from jsonb_array_elements(coalesce(hw.inventory->'psus', '[]'::jsonb)))::int as psu_count,
            (select max((e->>'celsius')::float8) from jsonb_array_elements(coalesce(hw.inventory->'temperatures', '[]'::jsonb)) e where jsonb_typeof(e->'celsius') = 'number') as hw_max_temp,
@@ -47,6 +49,7 @@ export async function fleetHealth(db: Db, orgId: string) {
       left join device_monitoring m on m.device_id = d.id
       left join device_health h on h.device_id = d.id
       left join device_hardware hw on hw.device_id = d.id
+      left join server_health sh on sh.device_id = d.id
      where d.org_id = ${orgId} and d.lifecycle_state in (${states}) and d.category not in ('patch_panel')
      order by name`);
 
@@ -91,16 +94,34 @@ export async function fleetHealth(db: Db, orgId: string) {
       else if (temp !== null && temp >= 70) warn(`${temp.toFixed(0)} °C`);
     }
 
-    // Hardware from the BMC (servers).
-    const hwHealth = (x.hw_health as string | null) ?? null;
-    const hwProblems = (x.hw_problems as { part: string; name: string; health: string }[]) ?? [];
-    if (x.hw_at) {
+    // Current health from the BMC (every 5 minutes): component rollups, temperatures, usage.
+    const shAt = x.sh_at ? new Date(String(x.sh_at)) : null;
+    const sh = (x.sh_data as ServerHealth | null) ?? null;
+    const shFresh = !!sh && !!shAt && Date.now() - shAt.getTime() < 15 * 60_000;
+    const rollup = shFresh ? sh!.rollup : {};
+    if (shFresh) {
       signals++;
+      const parts = Object.entries(rollup).filter(([k, h]) => k !== 'system' && (h === 'Warning' || h === 'Critical')) as [ServerRollupKey, string][];
+      for (const [k, h] of parts) (h === 'Critical' ? crit : warn)(`${SERVER_ROLLUP_LABELS[k]}: ${h} (BMC)`);
+      if (!parts.length && (rollup.system === 'Critical' || rollup.system === 'Warning')) (rollup.system === 'Critical' ? crit : warn)(`BMC reports the system ${rollup.system}`);
+      const u = sh!;
+      if (u.cpuUsagePct !== null && u.cpuUsagePct >= 90) crit(`CPU usage ${u.cpuUsagePct.toFixed(0)}% (BMC)`);
+      else if (u.cpuUsagePct !== null && u.cpuUsagePct >= 75) warn(`CPU usage ${u.cpuUsagePct.toFixed(0)}% (BMC)`);
+      if (u.memoryUsagePct !== null && u.memoryUsagePct >= 90) warn(`Memory usage ${u.memoryUsagePct.toFixed(0)}% (BMC)`);
+      if (u.inletC !== null && u.inletC >= 35) warn(`Inlet ${u.inletC.toFixed(0)} °C`);
+    } else if (x.sh_error && x.sh_attempt) warn(`BMC health read failed: ${String(x.sh_error)}`);
+
+    // Hardware from the BMC's daily walk (servers): per part. With a fresh rollup, only parts of components it doesn't call OK.
+    const hwHealth = (x.hw_health as string | null) ?? null;
+    const PART_KEY: Record<string, ServerRollupKey> = { PSU: 'psu', Fan: 'fans', Temperature: 'temperature', Drive: 'storage', Controller: 'storage', Volume: 'storage', Memory: 'memory', CPU: 'cpu' };
+    const hwProblems = ((x.hw_problems as { part: string; name: string; health: string }[]) ?? []).filter((pb) => !shFresh || rollup[PART_KEY[pb.part] ?? 'system'] !== 'OK');
+    if (x.hw_at) {
+      if (!shFresh) signals++;
       for (const pb of hwProblems) (pb.health === 'Critical' ? crit : warn)(`${pb.part} ${pb.name}: ${pb.health}`);
-      if (hwHealth === 'Critical' && !hwProblems.some((pb) => pb.health === 'Critical')) crit('BMC reports the system Critical');
-      else if (hwHealth === 'Warning' && !hwProblems.length) warn('BMC reports the system Warning');
+      if (!shFresh && hwHealth === 'Critical' && !hwProblems.some((pb) => pb.health === 'Critical')) crit('BMC reports the system Critical');
+      else if (!shFresh && hwHealth === 'Warning' && !hwProblems.length) warn('BMC reports the system Warning');
     }
-    if (x.hw_error && x.hw_job === 'failed') warn(`BMC read failed: ${String(x.hw_error)}`);
+    if (x.hw_error && x.hw_job === 'failed' && !shFresh) warn(`BMC read failed: ${String(x.hw_error)}`);
 
     // Alerts.
     const alerts = (x.alerts as { severity: string; message: string; since: string }[]) ?? [];
@@ -147,6 +168,8 @@ export async function fleetHealth(db: Db, orgId: string) {
               error: x.hw_job === 'failed' ? ((x.hw_error as string | null) ?? null) : null,
             }
           : null,
+      /** Current health from the BMC (servers, every 5 minutes). */
+      bmc: sh || x.sh_error ? { at: shAt?.toISOString() ?? null, fresh: shFresh, ...(sh ?? {}), error: (x.sh_error as string | null) ?? null } : null,
       alerts: alerts.length,
     };
   });

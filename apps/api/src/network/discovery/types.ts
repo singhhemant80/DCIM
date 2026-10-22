@@ -1,4 +1,4 @@
-import type { CredentialKind, InterfaceKind } from '@crapplet/shared';
+import type { CredentialKind, InterfaceKind, ServerHealth } from '@crapplet/shared';
 import type { HardwareInventory } from '@crapplet/shared';
 
 /**
@@ -163,6 +163,8 @@ export interface Adapter {
   health?(t: AdapterTarget): Promise<HealthSnapshot>;
   /** Read-only hardware inventory and event logs from a server's BMC. */
   hardware?(t: AdapterTarget): Promise<HardwareInventory>;
+  /** Read-only current health of a server from its BMC: component rollups, temperatures, usage (a few requests). */
+  serverHealth?(t: AdapterTarget): Promise<ServerHealth>;
 }
 
 /** The secret fields of each credential kind (everything else is stored in plain params). */
