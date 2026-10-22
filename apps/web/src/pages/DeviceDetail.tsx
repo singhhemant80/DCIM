@@ -10,6 +10,7 @@ import { daysUntil, STATE_TONE, useRacks, type DeviceT, type EventT } from '../l
 import { PowerControlPanel } from '../components/PowerControl';
 import { AccessoriesPanel, BmcHardwarePanel } from '../components/DeviceHardware';
 import { ConsolePanel } from '../components/Console';
+import { BmcPanel } from '../components/Bmc';
 import { DeviceAddressesPanel, DevicePortsPanel } from '../components/DeviceNetwork';
 import { DevicePhotoPanel } from '../components/DevicePhoto';
 import { Button, Chip, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Textarea } from '../components/ui';
@@ -161,7 +162,9 @@ function PlacementForm({ device, onClose }: { device: DeviceT; onClose: () => vo
           </Button>
         </div>
       </div>
-      {inService && device.location && <p className="text-[12.5px] text-ink-3">This device is {LIFECYCLE_LABELS[device.lifecycleState].toLowerCase()}. To take it out of the rack, change its state to “In inventory”, which removes it in the same step.</p>}
+      {inService && device.location && (
+        <p className="text-[12.5px] text-ink-3">This device is {LIFECYCLE_LABELS[device.lifecycleState].toLowerCase()}. To take it out of the rack, change its state to “In inventory”, which removes it in the same step.</p>
+      )}
     </form>
   );
 }
@@ -359,15 +362,22 @@ export function DeviceDetailPage() {
                       [
                         'Reachability',
                         <span className="flex flex-col gap-0.5">
-                          {([['mgmt', MGMT_LABEL], ['server', SERVER_LABEL]] as const).filter(([k]) => staff || d.reachability![k].state !== 'unknown').map(([k, label]) => (
-                            <span key={k} className="flex items-start gap-1.5 text-[13px]">
-                              <span className={`mt-1.5 size-2 shrink-0 rounded-full ${DOT[d.reachability![k].state]}`} />
-                              <span>
-                                <span className="font-medium">{label}</span>
-                                {d.reachability![k].target ? <span className="font-mono text-ink-3"> {d.reachability![k].target}</span> : null}: {checkText(d.reachability![k])}
+                          {(
+                            [
+                              ['mgmt', MGMT_LABEL],
+                              ['server', SERVER_LABEL],
+                            ] as const
+                          )
+                            .filter(([k]) => staff || d.reachability![k].state !== 'unknown')
+                            .map(([k, label]) => (
+                              <span key={k} className="flex items-start gap-1.5 text-[13px]">
+                                <span className={`mt-1.5 size-2 shrink-0 rounded-full ${DOT[d.reachability![k].state]}`} />
+                                <span>
+                                  <span className="font-medium">{label}</span>
+                                  {d.reachability![k].target ? <span className="font-mono text-ink-3"> {d.reachability![k].target}</span> : null}: {checkText(d.reachability![k])}
+                                </span>
                               </span>
-                            </span>
-                          ))}
+                            ))}
                         </span>,
                       ],
                     ] as [string, ReactNode][])
@@ -415,6 +425,7 @@ export function DeviceDetailPage() {
               </>
             )}
           </Panel>
+          {staff && (d.category === 'server' || d.category === 'gpu_server' || d.category === 'storage') && <BmcPanel deviceId={d.id} canWrite={can('monitoring.configure')} />}
           {(d.category === 'server' || d.category === 'gpu_server' || d.category === 'storage') && <BmcHardwarePanel deviceId={d.id} canWrite={canWrite} staff={staff} />}
           {can('ipam.read') && <DeviceAddressesPanel deviceId={d.id} />}
           {can('monitoring.read') && <DevicePortsPanel deviceId={d.id} />}
@@ -433,8 +444,7 @@ export function DeviceDetailPage() {
                     'Warranty',
                     d.warrantyExpires ? (
                       <span>
-                        {d.warrantyExpires}{' '}
-                        {warrantyDays !== null && warrantyDays < 0 ? <Chip tone="crit">Expired</Chip> : warrantyDays !== null && warrantyDays <= 90 ? <Chip tone="warn">{warrantyDays} days left</Chip> : null}
+                        {d.warrantyExpires} {warrantyDays !== null && warrantyDays < 0 ? <Chip tone="crit">Expired</Chip> : warrantyDays !== null && warrantyDays <= 90 ? <Chip tone="warn">{warrantyDays} days left</Chip> : null}
                       </span>
                     ) : null,
                   ],

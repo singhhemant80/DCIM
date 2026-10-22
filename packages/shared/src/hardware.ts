@@ -204,3 +204,45 @@ export interface ServerHealth {
   /** Parts that could not be read (the rest is still used). */
   warnings: string[];
 }
+
+/* ------------------------------------------------------------------ BMC set-up in one place */
+
+export const BMC_TYPES = ['idrac', 'ilo', 'irmc', 'redfish', 'ipmi'] as const;
+export type BmcType = (typeof BMC_TYPES)[number];
+export const BMC_TYPE_LABELS: Record<BmcType, string> = { idrac: 'Dell iDRAC', ilo: 'HPE iLO', irmc: 'Fujitsu iRMC', redfish: 'Other (Redfish)', ipmi: 'IPMI only' };
+
+/**
+ * A server's BMC entered once (address, login) and used everywhere it is
+ * needed: read-only monitoring (hardware, health, power readings, ping),
+ * and — only when ticked — power control and the consoles. Each use is still
+ * stored as its own encrypted credential, checked against its own permission.
+ */
+export const bmcSetupSchema = z
+  .object({
+    type: z.enum(BMC_TYPES),
+    host: z.string().trim().min(1).max(255),
+    /** Redfish (HTTPS) port; empty = 443. IPMI: 623. */
+    port: z.number().int().min(1).max(65535).nullable().optional(),
+    username: z.string().trim().min(1).max(64),
+    password: z.string().min(1).max(256),
+    verifyTls: z.boolean().default(false),
+    /** Power readings from the BMC (on by default). */
+    power: z.boolean().default(true),
+    /** Use the same login for power on / off / restart and installs. */
+    control: z.boolean().default(false),
+    /** Serial console over IPMI (IPMI over LAN must be enabled on the BMC). */
+    serialConsole: z.boolean().default(false),
+    /** The BMC's VNC server password (iDRAC: a separate password), for the graphical console. */
+    vncPassword: z.string().min(1).max(64).nullable().optional(),
+    /** A separate read-only account for monitoring (recommended); empty = the login above. */
+    readOnly: z
+      .object({ username: z.string().trim().min(1).max(64), password: z.string().min(1).max(256) })
+      .nullable()
+      .optional(),
+  })
+  .superRefine((v, ctx) => {
+    const ipmiUsed = v.type === 'ipmi' || v.serialConsole;
+    if (ipmiUsed && v.username.length > 16) ctx.addIssue({ code: 'custom', path: ['username'], message: 'IPMI user names are at most 16 characters' });
+    if (ipmiUsed && v.password.length > 20) ctx.addIssue({ code: 'custom', path: ['password'], message: 'IPMI passwords are at most 20 characters' });
+  });
+export type BmcSetupInput = z.infer<typeof bmcSetupSchema>;

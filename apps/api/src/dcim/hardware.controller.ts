@@ -2,11 +2,12 @@ import { Body, Controller, Delete, Get, HttpCode, Param, ParseUUIDPipe, Post, Pu
 import type { Response } from 'express';
 import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
-import { accessorySchema, devicePhotoSchema, hardwareApplySchema } from '@crapplet/shared';
+import { accessorySchema, bmcSetupSchema, devicePhotoSchema, hardwareApplySchema, type BmcSetupInput } from '@crapplet/shared';
 import { ApiZodBody, ZodPipe } from '../common/zod';
 import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly } from '../auth/decorators';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { HardwareService } from './hardware.service';
+import { BmcService } from './bmc.service';
 
 const UUID = new ParseUUIDPipe();
 const removeQuery = z.object({ returnToStock: z.enum(['true', 'false']).optional() });
@@ -15,7 +16,27 @@ const removeQuery = z.object({ returnToStock: z.enum(['true', 'false']).optional
 @ApiCookieAuth()
 @Controller({ path: 'dcim/devices/:id', version: '1' })
 export class DeviceHardwareController {
-  constructor(private readonly svc: HardwareService) {}
+  constructor(
+    private readonly svc: HardwareService,
+    private readonly bmc: BmcService,
+  ) {}
+
+  @Get('bmc')
+  @StaffOnly()
+  @RequirePermissions('dcim.read')
+  @ApiOperation({ summary: "The server's BMC and where it is used (monitoring, power readings, power control, consoles). Passwords are never returned." })
+  bmcStatus(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.bmc.status(p, id);
+  }
+
+  @Put('bmc')
+  @StaffOnly()
+  @RequirePermissions('monitoring.configure')
+  @ApiZodBody(bmcSetupSchema)
+  @ApiOperation({ summary: 'Enter the BMC once: stored as the read-only monitoring credential and, when asked, for power control and the consoles (each under its own permission). Write-only.' })
+  bmcSetup(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(bmcSetupSchema)) b: BmcSetupInput, @ReqMeta() m: RequestMeta) {
+    return this.bmc.setup(p, id, b, m);
+  }
 
   @Get('hardware')
   @RequirePermissions('dcim.read')

@@ -2,7 +2,7 @@ import { formatWattsShort } from '@crapplet/shared';
 import { checkText, DOT, MGMT_LABEL, SERVER_LABEL } from '../lib/reachability';
 import { money, sourceLabel } from '../lib/power';
 import { PeriodPicker, periodLabel, periodParams, periodReady, type PeriodValue } from '../components/DateRange';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -21,6 +21,7 @@ import { formatDateTime } from '../lib/format';
 import { daysUntil, STATE_TONE, useManufacturers, useModels, useTree, type DeviceReachabilityT, type DeviceT, type ModelT, type SparePartT } from '../lib/dcim';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Table, Textarea, cx } from '../components/ui';
 import { useCustomerOptions } from './Racks';
+import { BmcLoginFields, BmcResults, bmcBody, emptyBmcLogin, isBmcType, putBmc, type BmcLoginT, type BmcResultT, type BmcStatusT } from '../components/Bmc';
 
 /* ------------------------------------------------------------------ device form */
 
@@ -62,11 +63,24 @@ export function DeviceForm({ device, onClose }: { device?: DeviceT; onClose: (sa
   const [disks, setDisks] = useState<DiskRow[]>((device?.disks ?? []).map((d) => ({ slot: s(d.slot), type: d.type, sizeGb: String(d.sizeGb), model: s(d.model) })));
   const [nics, setNics] = useState<NicRow[]>((device?.nics ?? []).map((n) => ({ name: n.name, mac: s(n.mac), speed: s(n.speed) })));
   const [custom, setCustom] = useState<{ k: string; v: string }[]>(Object.entries(device?.custom ?? {}).map(([k, v]) => ({ k, v: s(v as string) })));
+  const { can, me } = useAuth();
+  const canBmc = me?.user.userType === 'staff' && can('monitoring.configure');
+  const bmcNow = useQuery({ queryKey: ['dcim', 'bmc', device?.id], queryFn: () => api.get<BmcStatusT>(`/dcim/devices/${device!.id}/bmc`), enabled: !!device && canBmc });
+  const [bmc, setBmc] = useState<BmcLoginT>(emptyBmcLogin);
+  const [bmcResults, setBmcResults] = useState<BmcResultT[] | null>(null);
+  // Once the device is saved, a retry (e.g. after a BMC error) updates it instead of adding another.
+  const [savedId, setSavedId] = useState<string | null>(device?.id ?? null);
+  const bmcType = isBmcType(f.mgmtType) ? f.mgmtType : null;
+  const bmcConfigured = !!bmcNow.data?.configured;
+  const bmcUser = bmcNow.data?.control?.username ?? bmcNow.data?.monitoring?.username ?? '';
+  useEffect(() => {
+    if (bmcUser) setBmc((x) => (x.username ? x : { ...x, username: bmcUser, control: !!bmcNow.data?.control, serialConsole: !!bmcNow.data?.console.sol, power: bmcNow.data?.power ? bmcNow.data.power.enabled : true }));
+  }, [bmcUser]); // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((x) => ({ ...x, [k]: e.target.value }));
   const n = (v: string) => (v.trim() === '' ? null : Number(v));
   const t = (v: string) => (v.trim() === '' ? null : v.trim());
   const m = useMutation({
-    mutationFn: () => {
+    mutationFn: async (): Promise<{ id: string } | null> => {
       const body = {
         modelId: f.modelId,
         assetTag: f.assetTag,
@@ -97,11 +111,24 @@ export function DeviceForm({ device, onClose }: { device?: DeviceT; onClose: (sa
         custom: Object.fromEntries(custom.filter((c) => c.k.trim()).map((c) => [c.k.trim(), c.v])),
         ...(device ? {} : { initialState: f.initialState }),
       };
-      return device ? api.patch<{ id: string }>(`/dcim/devices/${device.id}`, body) : api.post<{ id: string }>('/dcim/devices', body);
+      const saved = savedId ? await api.patch<{ id: string }>(`/dcim/devices/${savedId}`, body) : await api.post<{ id: string }>('/dcim/devices', body);
+      setSavedId(saved.id);
+      // The BMC login, entered here once, is stored for every use (monitoring, power, control, consoles).
+      if (canBmc && bmcType && bmc.password) {
+        if (!f.mgmtAddress.trim()) throw new Error('Enter the management (BMC) address to save the BMC login');
+        if (!bmc.username.trim()) throw new Error('Enter the BMC user name');
+        const r = await putBmc(saved.id, bmcBody(bmcType, f.mgmtAddress, bmc));
+        if (r.results.some((x) => x.status !== 'set')) {
+          setBmcResults(r.results);
+          await qc.invalidateQueries({ queryKey: ['dcim'] });
+          return null;
+        }
+      }
+      return saved;
     },
     onSuccess: async (saved) => {
       await qc.invalidateQueries({ queryKey: ['dcim'] });
-      onClose(saved);
+      if (saved) onClose(saved);
     },
   });
   const model = models.data?.find((x) => x.id === f.modelId);
@@ -242,7 +269,30 @@ export function DeviceForm({ device, onClose }: { device?: DeviceT; onClose: (sa
           <Field label="Server address" hint="The server's own IP or host name (OS), pinged for reachability. Empty: the host name, if it is a full name">{(id, d) => <Input id={id} aria-describedby={d} value={f.serverAddress} onChange={set('serverAddress')} className="font-mono" placeholder="203.0.113.10" />}</Field>
           <Field label="BMC firmware">{(id) => <Input id={id} value={f.bmcFirmware} onChange={set('bmcFirmware')} />}</Field>
         </div>
-        <p className="mt-2 text-[12.5px] text-ink-3">Management passwords are not stored here; they go into the encrypted credential store with the remote-management integration (Phase 6).</p>
+        {canBmc && bmcType && (
+          <div className="mt-4 rounded-lg border border-rule p-4">
+            <div className="mb-3 text-[13px] text-ink-2">
+              BMC login — entered once and used for hardware, health, power readings and, if ticked, power control and the consoles. Stored encrypted; never shown again.
+              {bmcConfigured && bmcNow.data?.monitoring && (
+                <span className="block text-ink-3">
+                  Currently {bmcNow.data.monitoring.username}@{bmcNow.data.monitoring.host}. {f.mgmtAddress.trim() !== (bmcNow.data.host ?? '') ? 'The address changed: enter the password again to move the login to it.' : ''}
+                </span>
+              )}
+            </div>
+            <BmcLoginFields f={bmc} setF={setBmc} type={bmcType} keepHint={bmcConfigured ? 'Leave empty to keep the stored login' : 'Leave empty to set it up later'} />
+          </div>
+        )}
+        {bmcResults && (
+          <div className="mt-3 flex flex-col gap-2">
+            <p className="text-[13px]">The device and BMC monitoring were saved; some uses were not:</p>
+            <BmcResults results={bmcResults} />
+            <div>
+              <Button type="button" size="sm" onClick={() => onClose(savedId ? { id: savedId } : undefined)}>
+                Close
+              </Button>
+            </div>
+          </div>
+        )}
       </fieldset>
 
       <fieldset className="grid gap-4 sm:grid-cols-3">
@@ -522,7 +572,11 @@ function ReachCell({ r, customer }: { r: DeviceReachabilityT; customer?: boolean
           <span key={k} className="flex items-center gap-1.5 whitespace-nowrap" title={`${k === 'mgmt' ? MGMT_LABEL : SERVER_LABEL}: ${checkText(c)}`}>
             <span className={cx('size-2 shrink-0 rounded-full', DOT[c.state])} aria-hidden />
             <span className="w-7 text-ink-3">{label}</span>
-            {c.target ? <span className="font-mono">{c.target}</span> : <span className="text-ink-3">{c.reason?.startsWith('Not checked: no') ? (customer ? 'not monitored' : 'no address') : customer ? (c.state === 'up' ? 'reachable' : c.state === 'down' ? '' : '—') : '—'}</span>}
+            {c.target ? (
+              <span className="font-mono">{c.target}</span>
+            ) : (
+              <span className="text-ink-3">{c.reason?.startsWith('Not checked: no') ? (customer ? 'not monitored' : 'no address') : customer ? (c.state === 'up' ? 'reachable' : c.state === 'down' ? '' : '—') : '—'}</span>
+            )}
             {c.state === 'up' && c.rttMs !== null && <span className="text-ink-3">{c.rttMs < 10 ? c.rttMs.toFixed(1) : Math.round(c.rttMs)} ms</span>}
             {c.state === 'down' && <span className="text-crit">down</span>}
           </span>
@@ -534,7 +588,12 @@ function ReachCell({ r, customer }: { r: DeviceReachabilityT; customer?: boolean
 
 function PowerNowCell({ p }: { p: PowerStatus }) {
   if (p.quality === 'off') return <span className="text-ink-3">Not powered</span>;
-  if (p.watts === null) return <span className="text-ink-3" title="No measurement and no estimate">Unknown</span>;
+  if (p.watts === null)
+    return (
+      <span className="text-ink-3" title="No measurement and no estimate">
+        Unknown
+      </span>
+    );
   return (
     <span>
       {formatWattsShort(p.watts)}
@@ -619,11 +678,7 @@ function DevicesTab() {
         <a href={exportHref} className="inline-flex h-9 items-center rounded-lg border border-rule-strong bg-field px-3.5 font-medium hover:bg-panel" download>
           Export CSV
         </a>
-        {selected.size > 0 && can('dcim.write') && (
-          <Button onClick={() => setDialog('bulk')}>
-            Edit {selected.size} selected
-          </Button>
-        )}
+        {selected.size > 0 && can('dcim.write') && <Button onClick={() => setDialog('bulk')}>Edit {selected.size} selected</Button>}
         {selected.size > 0 && (
           <Button onClick={() => navigate(`/hardware/labels?ids=${[...selected].join(',')}`)}>
             Print {selected.size} label{selected.size === 1 ? '' : 's'}
@@ -695,7 +750,17 @@ function DevicesTab() {
         {list.isLoading && <Loading />}
         <ErrorNote error={list.error} className="m-4" />
         {list.data && items.length === 0 && (
-          <EmptyState title={params.toString() ? 'No devices match' : 'No devices yet'} action={!params.toString() && can('dcim.write') && <Button variant="primary" onClick={() => setDialog('add')}>Add device</Button>}>
+          <EmptyState
+            title={params.toString() ? 'No devices match' : 'No devices yet'}
+            action={
+              !params.toString() &&
+              can('dcim.write') && (
+                <Button variant="primary" onClick={() => setDialog('add')}>
+                  Add device
+                </Button>
+              )
+            }
+          >
             {params.toString() ? 'Try clearing a filter.' : 'Add devices one by one or import your existing inventory from CSV.'}
           </EmptyState>
         )}
@@ -1351,7 +1416,9 @@ export function CustomerEquipment({ embedded, customerId, onIds }: { embedded?: 
     >
       {list.isLoading && <Loading />}
       <ErrorNote error={list.error} className="m-4" />
-      {list.data?.items.length === 0 && <EmptyState title="No equipment yet">{customerId ? 'Assign servers to this customer from their page (Edit → Customer).' : 'Servers and colocated equipment assigned to your account appear here.'}</EmptyState>}
+      {list.data?.items.length === 0 && (
+        <EmptyState title="No equipment yet">{customerId ? 'Assign servers to this customer from their page (Edit → Customer).' : 'Servers and colocated equipment assigned to your account appear here.'}</EmptyState>
+      )}
       {power && (!embedded || customerId) && items.length > 0 && list.data?.totals && <TotalsBar t={list.data.totals} period={periodLabel(period, PERIOD_LABELS)} />}
       {!!items.length && (
         <Table label={customerId ? 'Equipment' : 'Your equipment'}>
@@ -1405,7 +1472,9 @@ export function CustomerEquipment({ embedded, customerId, onIds }: { embedded?: 
           </tbody>
         </Table>
       )}
-      {power && !!items.length && <p className="px-4 py-2.5 text-[12px] text-ink-3">Energy is measured where {customerId ? 'the' : 'your'} server's power is read (BMC or metered PDU outlet) and estimated otherwise; * marks estimated energy.</p>}
+      {power && !!items.length && (
+        <p className="px-4 py-2.5 text-[12px] text-ink-3">Energy is measured where {customerId ? 'the' : 'your'} server's power is read (BMC or metered PDU outlet) and estimated otherwise; * marks estimated energy.</p>
+      )}
     </Panel>
   );
   if (embedded) return body;

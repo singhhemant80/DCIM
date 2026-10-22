@@ -96,7 +96,10 @@ export function BmcHardwarePanel({ deviceId, canWrite, staff }: { deviceId: stri
   if (h.status === 'not_configured')
     return staff ? (
       <Panel title="Hardware from the BMC">
-        <p className="text-[13px] text-ink-2">Add a Redfish credential (iDRAC, iLO, iRMC, XClarity) under Ports & network → Read-only access, and NexoraDC reads the CPUs, memory, drives, power supplies, fans, temperatures, network ports, firmware and event log automatically, then once a day.</p>
+        <p className="text-[13px] text-ink-2">
+          Set up the BMC (iDRAC, iLO, iRMC, XClarity) in the BMC panel or when editing the server, and NexoraDC reads the CPUs, memory, drives, power supplies, fans, temperatures, network ports, firmware and event log automatically, then
+          once a day.
+        </p>
       </Panel>
     ) : null;
   const inv = h.inventory;
@@ -127,7 +130,11 @@ export function BmcHardwarePanel({ deviceId, canWrite, staff }: { deviceId: stri
       }
     >
       <ErrorNote error={refresh.error} className="mb-3" />
-      {h.lastError && <p className={`mb-3 rounded-md px-3 py-2 text-[13px] ${h.status === 'failed' ? 'bg-crit-soft text-crit' : 'bg-warn-soft text-warn'}`}>{h.status === 'failed' ? `Last read failed: ${h.lastError}${inv ? ' (showing the previous reading)' : ''}` : h.lastError}</p>}
+      {h.lastError && (
+        <p className={`mb-3 rounded-md px-3 py-2 text-[13px] ${h.status === 'failed' ? 'bg-crit-soft text-crit' : 'bg-warn-soft text-warn'}`}>
+          {h.status === 'failed' ? `Last read failed: ${h.lastError}${inv ? ' (showing the previous reading)' : ''}` : h.lastError}
+        </p>
+      )}
       {!inv ? (
         <p className="text-[13px] text-ink-3">{busy ? 'The worker is reading the BMC; this takes up to a minute.' : 'Nothing read yet.'}</p>
       ) : (
