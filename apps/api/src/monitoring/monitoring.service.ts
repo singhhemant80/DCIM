@@ -1,3 +1,4 @@
+import { fleetHealth } from './fleet-health';
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { DASHBOARD_MAX_ITEMS, RANGE_RESOLUTION, type DeviceMonitoringInput, type RateRange } from '@crapplet/shared';
@@ -110,6 +111,11 @@ export class MonitoringService {
 
   /* ------------------------------------------------------------ device health */
 
+  /** Every device in service with one health status (see fleet-health.ts). Staff only. */
+  fleetHealth(p: Principal) {
+    return fleetHealth(this.db, p.orgId);
+  }
+
   /** Polled devices with their latest health (CPU, memory, storage, sensors). Staff only. */
   async health(p: Principal) {
     const r = await this.db.execute<Record<string, unknown>>(sql`
@@ -177,7 +183,19 @@ export class MonitoringService {
    */
   async dashboard(p: Principal) {
     const items = (
-      await this.db.execute<{ id: string; interface_id: string; position: number; added_by: string | null; name: string; description: string | null; device_id: string; device_name: string; speed_bps: string | null; monitored: boolean; polling: boolean | null }>(sql`
+      await this.db.execute<{
+        id: string;
+        interface_id: string;
+        position: number;
+        added_by: string | null;
+        name: string;
+        description: string | null;
+        device_id: string;
+        device_name: string;
+        speed_bps: string | null;
+        monitored: boolean;
+        polling: boolean | null;
+      }>(sql`
         select x.id, x.interface_id, x.position, x.added_by, i.name, i.description, i.device_id, coalesce(d.hostname, d.asset_tag) as device_name,
                i.speed_bps, i.monitored, m.enabled as polling
           from monitor_dashboard_items x

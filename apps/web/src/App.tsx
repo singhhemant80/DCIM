@@ -26,6 +26,7 @@ import { NetworkDevicePage } from './pages/NetworkDevice';
 import { IpamPage, PrefixDetailPage } from './pages/Ipam';
 import { NetworkMonitoringPage } from './pages/NetworkMonitoring';
 import { AlertsPage } from './pages/Alerts';
+import { HealthPage } from './pages/Health';
 import { PowerPage } from './pages/Power';
 import { ImagesPage, ProvisioningPage } from './pages/Provisioning';
 import { ProxmoxPage, VirtualizorPage } from './pages/Virtualization';
@@ -55,6 +56,7 @@ export const IMPLEMENTED: Record<string, ComponentType> = {
   ipam: IpamPage,
   'network-monitoring': NetworkMonitoringPage,
   alerts: AlertsPage,
+  health: HealthPage,
   power: PowerPage,
   provisioning: ProvisioningPage,
   images: ImagesPage,

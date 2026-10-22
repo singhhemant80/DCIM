@@ -73,6 +73,14 @@ export class MonitoringController {
     return { live: true, everySeconds: 1, until: new Date(Date.now() + LIVE_WATCH_TTL_MS).toISOString() };
   }
 
+  @Get('fleet-health')
+  @StaffOnly()
+  @RequirePermissions('monitoring.read')
+  @ApiOperation({ summary: 'Every device in service with one health status and its reasons: ping, polled health, BMC hardware health and firing alerts.' })
+  fleetHealth(@CurrentPrincipal() p: Principal) {
+    return this.svc.fleetHealth(p);
+  }
+
   @Get('health')
   @StaffOnly()
   @RequirePermissions('monitoring.read')

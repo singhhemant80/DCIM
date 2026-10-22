@@ -35,6 +35,7 @@ Last updated: Phase 9, 14 October 2026.
 | 25 | Users and Permissions | **Done** | 1 | Users, custom roles, sessions, MFA reset |
 | 26 | Audit Logs | **Done** | 1 | Filter, details, integrity verification |
 | 27 | System Settings | **Done** | 1 | Organization, timezone, currency, session and MFA policy |
+| 28 | Health | **Done** | 9 | Every server and network device in service (racked, provisioning, active, maintenance) with one status and its reasons, worst first: ping of the management / BMC and server addresses, polled CPU / memory / disk / temperature (amber 75 % / 70 °C, red 90 % / 85 °C, stale after 5 min), the BMC's hardware health per part (PSUs, fans, temperatures, drives, memory, CPUs, controllers, volumes; read daily or on "re-read") and firing alerts. Devices with nothing set up to check are "Not checked", never healthy. Filter by status and type, search; refreshes every 15 s. Staff only. `fleet-health.e2e` |
 
 The web app's navigation reads this status from `@crapplet/shared` (`NAV_SECTIONS`). A test fails if a section is marked available without a real page, or the reverse.
 
