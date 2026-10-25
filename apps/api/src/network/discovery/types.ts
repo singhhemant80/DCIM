@@ -165,6 +165,15 @@ export interface Adapter {
   hardware?(t: AdapterTarget): Promise<HardwareInventory>;
   /** Read-only current health of a server from its BMC: component rollups, temperatures, usage (a few requests). */
   serverHealth?(t: AdapterTarget): Promise<ServerHealth>;
+  /** Read-only BGP state of a router: sessions and, where the router reports them, the prefixes sent to each peer. */
+  bgp?(t: AdapterTarget): Promise<BgpReadout>;
+}
+
+export interface BgpReadout {
+  sessions: DiscoveredBgpPeer[];
+  /** Prefixes sent per peer (session name or address); null when the router does not report them. */
+  advertisements: { peer: string; prefix: string }[] | null;
+  warnings: string[];
 }
 
 /** The secret fields of each credential kind (everything else is stored in plain params). */

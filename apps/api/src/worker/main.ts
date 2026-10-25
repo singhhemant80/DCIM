@@ -22,6 +22,8 @@ import { checkDueDevices } from './monitoring/device-ping';
 import { fetchDueHardware } from './hardware/collect';
 import { pollDueRouting } from './routing/check';
 import { ripeStat } from './routing/ripestat';
+import { irrClient } from './routing/irr';
+import { pollDueUpstreams } from './routing/upstreams';
 import { pollDueServerHealth } from './hardware/server-health';
 import { startConsoleRelay } from './console/relay';
 import { monitoringChannel, type MonitoringEvent } from '../monitoring/events';
@@ -205,6 +207,7 @@ async function main() {
     // Server hardware and event logs from the BMC (Redfish): on request, when first configured, then daily.
     every('hardware', 10_000, () => fetchDueHardware({ db, secrets, logger })),
     // Servers' current health from their BMC (rollups, temperatures, usage) every 5 minutes.
+    ...(config.CDCIM_ROUTING_CHECK === 'true' ? [every('upstreams', 30_000, () => pollDueUpstreams({ db, secrets, logger, irr: irrClient(config.CDCIM_IRR_URL) }).then(() => undefined))] : []),
     ...(config.CDCIM_ROUTING_CHECK === 'true' ? [every('routing', 20_000, () => pollDueRouting({ db, logger, client: ripeStat(config.CDCIM_RIPESTAT_URL) }).then(() => undefined))] : []),
     every('server-health', 15_000, () => pollDueServerHealth({ db, secrets, logger }).then(() => undefined)),
     every('events', 2_000, async () => {

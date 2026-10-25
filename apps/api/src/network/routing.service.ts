@@ -1,8 +1,9 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
-import { parseCidr, routingSkipReason, type AsnRoutingData, type BgpAsnInput, type PrefixRoutingData } from '@crapplet/shared';
+import { parseCidr, routingSkipReason, type AsnRoutingData, type BgpAsnInput, type BgpUpstreamInput, type PrefixRoutingData } from '@crapplet/shared';
 import { DB, type Db } from '../db/db';
-import { bgpAsns, prefixes } from '../db/schema';
+import { bgpAsns, bgpUpstreams, prefixes } from '../db/schema';
+import { evaluateUpstream } from './upstream-eval';
 import { AuditService, actorFrom } from '../audit/audit.service';
 import { rethrowDbError } from '../common/pg-errors';
 import { APP_CONFIG, type AppConfig } from '../config/config';
@@ -72,6 +73,8 @@ export class RoutingService {
       // Long and private prefixes are listed only on the IPAM pages, not here.
       .filter((x) => x.checked || !routingSkipReason(x.prefix) || x.skipReason === 'Routing check turned off');
     const checked = items.filter((x) => x.checked && x.level);
+    const ourAsns = asns.map((a) => a.asn);
+    const upstreams = await this.db.select().from(bgpUpstreams).where(eq(bgpUpstreams.orgId, p.orgId)).orderBy(bgpUpstreams.name);
     return {
       enabled: this.config.CDCIM_ROUTING_CHECK === 'true',
       source: 'RIPEstat: RIPE RIS route collectors, RIPE NCC RPKI validator, routing registries (IRR)',
@@ -79,6 +82,7 @@ export class RoutingService {
         id: a.id,
         asn: a.asn,
         name: a.name,
+        asSet: a.asSet,
         notes: a.notes,
         checkedAt: a.checkedAt,
         nextAt: a.nextAt,
@@ -86,6 +90,19 @@ export class RoutingService {
         error: a.lastError,
         data: a.data as AsnRoutingData | null,
         notInIpam: (a.data?.prefixes ?? []).filter((x) => !documented.has(x)),
+      })),
+      upstreams: upstreams.map((u) => ({
+        id: u.id,
+        asn: u.asn,
+        name: u.name,
+        kind: u.kind,
+        asSet: u.asSet,
+        notes: u.notes,
+        checkedAt: u.checkedAt,
+        running: u.status === 'running',
+        error: u.lastError,
+        data: u.data,
+        ...evaluateUpstream({ asn: u.asn, name: u.name, kind: u.kind, asSet: u.asSet }, u.data, ourAsns, items),
       })),
       totals: {
         prefixes: items.filter((x) => x.checked).length,
@@ -121,7 +138,7 @@ export class RoutingService {
     try {
       const [row] = await this.db
         .insert(bgpAsns)
-        .values({ orgId: p.orgId, asn: input.asn, name: input.name ?? null, notes: input.notes ?? null, nextAt: new Date() })
+        .values({ orgId: p.orgId, asn: input.asn, name: input.name ?? null, asSet: input.asSet ?? null, notes: input.notes ?? null, nextAt: new Date() })
         .returning();
       // Prefixes are checked again against the new list of origins.
       await this.db.execute(sql`update prefix_routing set next_at = now() where org_id = ${p.orgId}`);
@@ -136,7 +153,7 @@ export class RoutingService {
   async updateAsn(p: Principal, id: string, input: BgpAsnInput, meta: RequestMeta) {
     const [row] = await this.db
       .update(bgpAsns)
-      .set({ asn: input.asn, name: input.name ?? null, notes: input.notes ?? null, nextAt: new Date() })
+      .set({ asn: input.asn, name: input.name ?? null, asSet: input.asSet ?? null, notes: input.notes ?? null, nextAt: new Date() })
       .where(and(eq(bgpAsns.id, id), eq(bgpAsns.orgId, p.orgId)))
       .returning();
     if (!row) throw new NotFoundException({ error: 'not_found', message: 'ASN not found' });
@@ -155,8 +172,58 @@ export class RoutingService {
     await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'routing.asn_delete', target: { type: 'bgp_asn', id }, outcome: 'success', meta, metadata: { asn: row.asn } });
   }
 
-  /** Check now: one prefix, one ASN, or everything. */
-  async checkNow(p: Principal, input: { prefixId?: string; asnId?: string }) {
+  async addUpstream(p: Principal, input: BgpUpstreamInput, meta: RequestMeta) {
+    try {
+      const [row] = await this.db
+        .insert(bgpUpstreams)
+        .values({ orgId: p.orgId, asn: input.asn, name: input.name, kind: input.kind, asSet: input.asSet ?? null, notes: input.notes ?? null, nextAt: new Date() })
+        .returning();
+      await this.audit.record({
+        orgId: p.orgId,
+        actor: actorFrom(p),
+        action: 'routing.upstream_create',
+        target: { type: 'bgp_upstream', id: row!.id },
+        outcome: 'success',
+        meta,
+        metadata: { asn: input.asn, kind: input.kind, asSet: input.asSet ?? null },
+      });
+      return row;
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505' || String((err as { cause?: { code?: string } }).cause?.code) === '23505') throw new BadRequestException({ error: 'duplicate', message: `AS${input.asn} is already added` });
+      rethrowDbError(err);
+    }
+  }
+
+  async updateUpstream(p: Principal, id: string, input: BgpUpstreamInput, meta: RequestMeta) {
+    const [row] = await this.db
+      .update(bgpUpstreams)
+      .set({ asn: input.asn, name: input.name, kind: input.kind, asSet: input.asSet ?? null, notes: input.notes ?? null, nextAt: new Date() })
+      .where(and(eq(bgpUpstreams.id, id), eq(bgpUpstreams.orgId, p.orgId)))
+      .returning();
+    if (!row) throw new NotFoundException({ error: 'not_found', message: 'Upstream not found' });
+    await this.audit.record({
+      orgId: p.orgId,
+      actor: actorFrom(p),
+      action: 'routing.upstream_update',
+      target: { type: 'bgp_upstream', id },
+      outcome: 'success',
+      meta,
+      metadata: { asn: input.asn, kind: input.kind, asSet: input.asSet ?? null },
+    });
+    return row;
+  }
+
+  async removeUpstream(p: Principal, id: string, meta: RequestMeta) {
+    const [row] = await this.db
+      .delete(bgpUpstreams)
+      .where(and(eq(bgpUpstreams.id, id), eq(bgpUpstreams.orgId, p.orgId)))
+      .returning();
+    if (!row) throw new NotFoundException({ error: 'not_found', message: 'Upstream not found' });
+    await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), action: 'routing.upstream_delete', target: { type: 'bgp_upstream', id }, outcome: 'success', meta, metadata: { asn: row.asn } });
+  }
+
+  /** Check now: one prefix, one ASN, one upstream, or everything. */
+  async checkNow(p: Principal, input: { prefixId?: string; asnId?: string; upstreamId?: string }) {
     if (input.prefixId) {
       const [x] = await this.db
         .select({ id: prefixes.id, orgId: prefixes.orgId })
@@ -164,6 +231,11 @@ export class RoutingService {
         .where(and(eq(prefixes.id, input.prefixId), eq(prefixes.orgId, p.orgId)));
       if (!x) throw new NotFoundException({ error: 'not_found', message: 'Prefix not found' });
       await this.db.execute(sql`insert into prefix_routing (prefix_id, org_id, next_at) values (${x.id}, ${p.orgId}, now()) on conflict (prefix_id) do update set next_at = now()`);
+    } else if (input.upstreamId) {
+      await this.db
+        .update(bgpUpstreams)
+        .set({ nextAt: new Date() })
+        .where(and(eq(bgpUpstreams.id, input.upstreamId), eq(bgpUpstreams.orgId, p.orgId)));
     } else if (input.asnId) {
       await this.db
         .update(bgpAsns)
@@ -172,6 +244,7 @@ export class RoutingService {
     } else {
       await this.db.execute(sql`update prefix_routing set next_at = now() where org_id = ${p.orgId}`);
       await this.db.update(bgpAsns).set({ nextAt: new Date() }).where(eq(bgpAsns.orgId, p.orgId));
+      await this.db.update(bgpUpstreams).set({ nextAt: new Date() }).where(eq(bgpUpstreams.orgId, p.orgId));
     }
     return { queued: true };
   }

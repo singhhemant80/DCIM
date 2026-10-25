@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import type { AsnRoutingData, HardwareInventory, PrefixRoutingData, ServerHealth } from '@crapplet/shared';
+import type { AsnRoutingData, HardwareInventory, PrefixRoutingData, ServerHealth, UpstreamCheckData } from '@crapplet/shared';
 import {
   bigint,
   bigserial,
@@ -933,6 +933,8 @@ export const bgpAsns = pgTable(
     orgId: orgRef(),
     asn: bigint('asn', { mode: 'number' }).notNull(),
     name: text('name'),
+    /** The organization's own AS-SET, if any. */
+    asSet: text('as_set'),
     notes: text('notes'),
     /** idle | running */
     status: text('status').notNull().default('idle'),
@@ -945,6 +947,36 @@ export const bgpAsns = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex('bgp_asns_org_asn_uq').on(t.orgId, t.asn), index('bgp_asns_next_idx').on(t.nextAt)],
+);
+
+/**
+ * A network the organization's routes go through: an IX peering service
+ * (a provider re-announcing them at exchanges) or a transit provider. Checked
+ * read-only: the provider's AS-SET in the IRR, route objects, and the BGP
+ * sessions on the organization's own routers.
+ */
+export const bgpUpstreams = pgTable(
+  'bgp_upstreams',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    asn: bigint('asn', { mode: 'number' }).notNull(),
+    name: text('name').notNull(),
+    /** ix_peering | transit | other */
+    kind: text('kind').notNull().default('ix_peering'),
+    asSet: text('as_set'),
+    notes: text('notes'),
+    /** idle | running */
+    status: text('status').notNull().default('idle'),
+    startedAt: ts('started_at'),
+    checkedAt: ts('checked_at'),
+    nextAt: ts('next_at'),
+    data: jsonb('data').$type<UpstreamCheckData>(),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('bgp_upstreams_org_asn_uq').on(t.orgId, t.asn), index('bgp_upstreams_next_idx').on(t.nextAt), check('bgp_upstreams_kind_ck', sql`${t.kind} in ('ix_peering', 'transit', 'other')`)],
 );
 
 /** The last global routing check of a prefix (RIPEstat: RIS collectors, RPKI, IRR). */

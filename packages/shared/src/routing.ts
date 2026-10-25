@@ -9,9 +9,83 @@ import { cidrLast, parseCidr, type ParsedCidr } from './network';
  * validator). Read-only: NexoraDC never announces or changes routes.
  */
 export const asnSchema = z.number().int().min(1).max(4294967295);
-export const bgpAsnSchema = z.object({ asn: asnSchema, name: z.string().trim().max(120).nullable().optional(), notes: z.string().trim().max(1000).nullable().optional() });
+/** An IRR set name such as AS-EXAMPLE or AS152565:AS-JOYSVC (RPSL hierarchical names allowed). */
+export const asSetSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .max(100)
+  .regex(/^((AS\d+|AS-[A-Z0-9_-]+):)*AS-[A-Z0-9_-]+(:(AS\d+|AS-[A-Z0-9_-]+))*$/, 'Use an AS-SET name such as AS-EXAMPLE or AS65000:AS-CUSTOMERS');
+export const bgpAsnSchema = z.object({
+  asn: asnSchema,
+  name: z.string().trim().max(120).nullable().optional(),
+  /** Your own AS-SET (what upstreams and IX peers expand to build filters), if you have one. */
+  asSet: asSetSchema.nullable().optional(),
+  notes: z.string().trim().max(1000).nullable().optional(),
+});
 export type BgpAsnInput = z.infer<typeof bgpAsnSchema>;
-export const routingCheckRequestSchema = z.object({ prefixId: z.string().uuid().optional(), asnId: z.string().uuid().optional() });
+
+export const UPSTREAM_KINDS = ['ix_peering', 'transit', 'other'] as const;
+export type UpstreamKind = (typeof UPSTREAM_KINDS)[number];
+export const UPSTREAM_KIND_LABELS: Record<UpstreamKind, string> = { ix_peering: 'IX peering service', transit: 'IP transit', other: 'Other BGP neighbour' };
+/** A network your routes go through: an IX peering service (a provider re-announcing them at exchanges) or a transit provider. */
+export const bgpUpstreamSchema = z.object({
+  asn: asnSchema,
+  name: z.string().trim().min(1).max(120),
+  kind: z.enum(UPSTREAM_KINDS).default('ix_peering'),
+  /** The provider's customer AS-SET that must contain your ASN (or your AS-SET), e.g. AS152565:AS-JOYSVC. */
+  asSet: asSetSchema.nullable().optional(),
+  notes: z.string().trim().max(1000).nullable().optional(),
+});
+export type BgpUpstreamInput = z.infer<typeof bgpUpstreamSchema>;
+export const routingCheckRequestSchema = z.object({ prefixId: z.string().uuid().optional(), asnId: z.string().uuid().optional(), upstreamId: z.string().uuid().optional() });
+
+/** What the worker reads for one upstream (IRR, your routers). Findings are worked out when shown, with the latest prefix checks. */
+export interface UpstreamCheckData {
+  irr: {
+    server: string;
+    asSet: string | null;
+    /** null: no AS-SET entered. */
+    found: boolean | null;
+    /** ASNs in the set, fully expanded. */
+    size: number | null;
+    ourAsns: { asn: number; inSet: boolean; direct: boolean }[];
+    /** Your own AS-SETs listed directly in the provider's set. */
+    ourSetsListed: string[];
+    error: string | null;
+  };
+  /** Route objects (route / route6) registered with each of your ASNs as origin, in any IRR the server mirrors. */
+  routeObjects: { asn: number; prefixes: string[]; error: string | null }[];
+  /** MikroTik routers with credentials that were read (or tried). */
+  routersRead: number;
+  routers: {
+    deviceId: string;
+    name: string;
+    readAt: string;
+    sessions: { name: string | null; peer: string; state: string; uptimeSeconds: number | null; prefixesReceived: number | null }[];
+    /** Prefixes the router sends to this provider; null when the router does not report them. */
+    advertised: string[] | null;
+    error: string | null;
+    warnings: string[];
+  }[];
+}
+
+export interface UpstreamPrefixStatus {
+  prefixId: string;
+  prefix: string;
+  description: string | null;
+  /** exact: a route object for this prefix and your ASN; covering: only for a larger prefix; none. null: not looked up. */
+  routeObject: 'exact' | 'covering' | 'none' | null;
+  coveringObject: string | null;
+  /** Sent to the provider by one of your routers; null when unknown. */
+  advertised: boolean | null;
+  /** RIS peers that see the prefix through this provider (AS path … provider, your ASN). */
+  seenVia: number;
+  announced: boolean | null;
+  rpki: RpkiStatus | null;
+  level: RoutingLevel;
+  notes: string[];
+}
 
 export type RoutingLevel = 'ok' | 'warning' | 'critical';
 export interface RoutingFinding {

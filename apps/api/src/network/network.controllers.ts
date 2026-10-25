@@ -31,6 +31,7 @@ import {
   type CredentialInput,
   type CredentialKind,
   bgpAsnSchema,
+  bgpUpstreamSchema,
   routingCheckRequestSchema,
 } from '@crapplet/shared';
 import { ApiZodBody, ApiZodQuery, ZodPipe } from '../common/zod';
@@ -421,6 +422,31 @@ export class IpamController {
   @ApiZodBody(bgpAsnSchema)
   updateAsn(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(bgpAsnSchema)) b: Infer<typeof bgpAsnSchema>, @ReqMeta() m: RequestMeta) {
     return this.routing.updateAsn(p, id, b, m);
+  }
+
+  @Post('routing/upstreams')
+  @StaffOnly()
+  @RequirePermissions('ipam.write')
+  @ApiZodBody(bgpUpstreamSchema)
+  @ApiOperation({ summary: 'Add an upstream or IX peering service (its ASN and customer AS-SET) to check how your prefixes go out through it. Read-only checks.' })
+  addUpstream(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(bgpUpstreamSchema)) b: Infer<typeof bgpUpstreamSchema>, @ReqMeta() m: RequestMeta) {
+    return this.routing.addUpstream(p, b, m);
+  }
+
+  @Put('routing/upstreams/:id')
+  @StaffOnly()
+  @RequirePermissions('ipam.write')
+  @ApiZodBody(bgpUpstreamSchema)
+  updateUpstream(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(bgpUpstreamSchema)) b: Infer<typeof bgpUpstreamSchema>, @ReqMeta() m: RequestMeta) {
+    return this.routing.updateUpstream(p, id, b, m);
+  }
+
+  @Delete('routing/upstreams/:id')
+  @HttpCode(204)
+  @StaffOnly()
+  @RequirePermissions('ipam.write')
+  async removeUpstream(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    await this.routing.removeUpstream(p, id, m);
   }
 
   @Delete('routing/asns/:id')

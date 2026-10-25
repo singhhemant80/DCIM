@@ -263,6 +263,7 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 * What leaves the server: the organization's ASNs and its public prefixes in the global table (IPv4 up to /24, IPv6 up to /48), and only after an ASN has been entered. Private, CGNAT, documentation, reserved, multicast and non-global-unicast ranges, VRF prefixes and longer prefixes are never sent (`ROUTING_CANDIDATE` in SQL, `routingSkipReason` in code). No credentials are involved. Public BGP data is public by nature; the queries do reveal to RIPE which prefixes an operator is interested in.
 * Results describe what RIPE's route collectors see; a network that does not peer with them can see something else. "Not announced" can also mean a very recent change (RIS state is published every 8 hours).
 * `CDCIM_ROUTING_CHECK=false` turns the checks off (for a worker without internet access).
+* Upstream / IX peering check: the worker queries an IRRd 4 server's HTTP whois interface (`CDCIM_IRR_URL`, default `https://rr.ntt.net`) with `!i` (AS-SET expansion), `!g` / `!6` (route objects by origin) for the provider's AS-SET and your ASNs only. On your MikroTik routers in service (at most 10, with a RouterOS credential) it reads `/routing/bgp/session` (or `/routing/bgp/peer` on RouterOS 6) and `/routing/bgp/advertisements` with GET (REST) or `print` (API, whose client refuses any other command). It never changes a BGP session, filter or route; errors are stored with the credential redacted.
 
 ## Dependency advisories
 

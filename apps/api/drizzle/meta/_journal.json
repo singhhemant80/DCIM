@@ -232,6 +232,13 @@
       "when": 1792946838648,
       "tag": "0032_bgp_routing",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1792948720085,
+      "tag": "0033_bgp_upstreams",
+      "breakpoints": true
     }
   ]
 }

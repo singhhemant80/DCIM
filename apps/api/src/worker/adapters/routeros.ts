@@ -1,5 +1,5 @@
 import type { InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import type { Adapter, AdapterTarget, BgpReadout, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
 import { DeviceHttpError, basicAuth, bool, counter, deviceRequest, int, normalizeMac, speed, str } from './http';
 
 /**
@@ -43,6 +43,24 @@ export function routerosUptime(v: unknown): number | null {
   const clock = s.match(/(\d+):(\d+):(\d+)$/);
   if (clock) total += Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3]);
   return total || (s === '0s' ? 0 : null);
+}
+
+/** BGP sessions from RouterOS 7 `/routing/bgp/session` or RouterOS 6 `/routing/bgp/peer`. */
+export function bgpPeersFromRouterOs(rows: Row[]): DiscoveredBgpPeer[] {
+  return rows.map((b) => ({
+    peer: (str(b['remote.address']) ?? str(b['remote-address']) ?? '').split('/')[0]!,
+    remoteAs: int(b['remote.as']) ?? int(b['remote-as']),
+    state: bool(b.established) || str(b.state) === 'established' ? 'established' : (str(b.state) ?? 'not established'),
+    uptimeSeconds: routerosUptime(b.uptime),
+    prefixesReceived: int(b['prefix-count']),
+    vrf: str(b.vrf) ?? str(b['routing-table']),
+    description: str(b.name),
+  }));
+}
+
+/** Prefixes sent per peer from RouterOS 7 `/routing/bgp/advertisements` (filled when the connection keeps sent attributes). */
+export function advertisementsFromRouterOs(rows: Row[]): { peer: string; prefix: string }[] {
+  return rows.map((r) => ({ peer: str(r.peer) ?? str(r['peer-name']) ?? str(r.session) ?? '', prefix: str(r.prefix) ?? str(r.dst) ?? str(r['dst-address']) ?? '' })).filter((r) => r.peer && r.prefix);
 }
 
 export function parseRouterOs(
@@ -94,15 +112,7 @@ export function parseRouterOs(
       remotePlatform: [str(n.platform), str(n.board), str(n.version)].filter(Boolean).join(' ') || null,
     });
   }
-  const bgp: DiscoveredBgpPeer[] = data.bgp.map((b) => ({
-    peer: (str(b['remote.address']) ?? str(b['remote-address']) ?? '').split('/')[0]!,
-    remoteAs: int(b['remote.as']) ?? int(b['remote-as']),
-    state: bool(b.established) ? 'established' : (str(b.state) ?? 'not established'),
-    uptimeSeconds: routerosUptime(b.uptime),
-    prefixesReceived: int(b['prefix-count']),
-    vrf: str(b.vrf) ?? str(b['routing-table']),
-    description: str(b.name),
-  }));
+  const bgp = bgpPeersFromRouterOs(data.bgp);
   if (!data.bgp.length) warnings.push('No BGP sessions reported');
   const res = data.resource ?? {};
   return {
@@ -238,6 +248,27 @@ export function routerOsAdapter(): Adapter {
       const r = parseRouterOsPower(await get(t, '/system/health'));
       if (!r) throw new Error('This RouterOS device reports no power-consumption in /system/health');
       return r;
+    },
+    async bgp(t): Promise<BgpReadout> {
+      const warnings: string[] = [];
+      const auth = (e: unknown) => e instanceof DeviceHttpError && (e.status === 401 || e.status === 403);
+      let rows: Row[] = [];
+      try {
+        rows = (await get(t, '/routing/bgp/session')) as Row[];
+      } catch (e) {
+        if (auth(e)) throw e;
+        // RouterOS 6.
+        rows = (await get(t, '/routing/bgp/peer')) as Row[];
+      }
+      let advertisements: { peer: string; prefix: string }[] | null = null;
+      try {
+        const adv = await get(t, '/routing/bgp/advertisements');
+        advertisements = Array.isArray(adv) ? advertisementsFromRouterOs(adv as Row[]) : null;
+      } catch (e) {
+        if (auth(e)) throw e;
+        warnings.push(`Sent prefixes: ${(e as Error).message}`.slice(0, 200));
+      }
+      return { sessions: bgpPeersFromRouterOs(Array.isArray(rows) ? rows : []), advertisements, warnings };
     },
     async counters(t): Promise<CounterSnapshot> {
       const resource = (await get(t, '/system/resource')) as Row;

@@ -26,11 +26,26 @@ import { ROUTEROS_FIXTURE, startRouterOs } from './http-devices';
 import { createHash } from 'node:crypto';
 import { ROUTEROS_HEALTH, startRedfish } from './power-devices';
 import { startRipeStat } from './ripestat';
+import { startIrrd } from './irrd';
 import { startControlRedfish, startFileServer, startProxmox, startVirtualizor } from './provisioning-devices';
 
 void (async () => {
   const agent = await startSnmpAgent(16161, undefined, { community: 'demo-public-ro', counters: 'hc', health: { cpu: [22, 41, 9, 30], ramKiB: [612_000, 1_048_576], tempTenths: 448, voltTenths: 241 } });
-  const ros = await startRouterOs('dcim-ro', 'demo-pass', { ...ROUTEROS_FIXTURE, '/rest/system/health': ROUTEROS_HEALTH });
+  const ros = await startRouterOs('dcim-ro', 'demo-pass', {
+    ...ROUTEROS_FIXTURE,
+    '/rest/system/health': ROUTEROS_HEALTH,
+    // An IX peering service (AS152565) next to the transit session, with the prefixes sent to it.
+    '/rest/routing/bgp/session': [
+      ...(ROUTEROS_FIXTURE['/rest/routing/bgp/session'] as object[]),
+      { name: 'joy-mum-1', 'remote.address': '103.27.171.230', 'remote.as': '152565', established: 'true', uptime: '3d4h12m', 'prefix-count': '11840' },
+      { name: 'joy-del-1', 'remote.address': '103.162.77.5', 'remote.as': '152565', established: 'false', state: 'active' },
+    ],
+    '/rest/routing/bgp/advertisements': [
+      { peer: 'joy-mum-1', prefix: '45.10.20.0/22' },
+      { peer: 'joy-mum-1', prefix: '2a0e:1000::/32' },
+      { peer: 'transit-1', prefix: '45.10.30.0/24' },
+    ],
+  });
   const bmc = await startRedfish('root', 'demo-bmc-pass', { watts: 300, port: 18080 });
   const outletW = [180, 172, 95, 0, 240, 236, 60, 0];
   const pdu = await startSnmpAgent(16162, undefined, {
@@ -75,6 +90,8 @@ void (async () => {
   await startVirtualizor('DEMOKEY-VZ-2026', 'demo-vz-pass', 14085);
   // RIPEstat stand-in for the routing check (CDCIM_RIPESTAT_URL=http://127.0.0.1:18100).
   await startRipeStat(18100);
+  // IRRd stand-in (CDCIM_IRR_URL=http://127.0.0.1:18101).
+  await startIrrd(18101);
   const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
   const started = Date.now();
   // Base load per port in bit/s (ether1 is a 1 Gbit/s uplink in the simulator).

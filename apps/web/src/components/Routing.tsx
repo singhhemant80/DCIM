@@ -5,6 +5,7 @@ import { RPKI_LABELS, type AsnRoutingData, type PrefixRoutingData, type RoutingF
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { relativeTime } from '../lib/format';
+import { UpstreamCard, UpstreamDialog, type UpstreamT } from './Upstreams';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, Panel, Select, Table, cx } from './ui';
 
 /**
@@ -34,6 +35,7 @@ interface AsnT {
   id: string;
   asn: number;
   name: string | null;
+  asSet: string | null;
   notes: string | null;
   checkedAt: string | null;
   running: boolean;
@@ -45,6 +47,7 @@ interface OverviewT {
   enabled: boolean;
   source: string;
   asns: AsnT[];
+  upstreams: UpstreamT[];
   totals: { prefixes: number; ok: number; warning: number; critical: number; pending: number };
   items: RoutingItemT[];
 }
@@ -83,7 +86,7 @@ export function RoutingChip({ level, error, summary, small }: { level: string | 
   );
 }
 
-function CheckNow({ body, label = 'Check now' }: { body: { prefixId?: string; asnId?: string }; label?: string }) {
+export function CheckNow({ body, label = 'Check now' }: { body: { prefixId?: string; asnId?: string; upstreamId?: string }; label?: string }) {
   const qc = useQueryClient();
   const m = useMutation({ mutationFn: () => api.post('/ipam/routing/check', body), onSuccess: () => setTimeout(() => void qc.invalidateQueries({ queryKey: ['ipam'] }), 4000) });
   return (
@@ -237,10 +240,10 @@ export function PrefixRoutingPanel({ prefixId, prefix }: { prefixId: string; pre
 
 function AsnDialog({ asn, onClose }: { asn?: AsnT; onClose: () => void }) {
   const qc = useQueryClient();
-  const [f, setF] = useState({ asn: asn ? String(asn.asn) : '', name: asn?.name ?? '', notes: asn?.notes ?? '' });
+  const [f, setF] = useState({ asn: asn ? String(asn.asn) : '', name: asn?.name ?? '', asSet: asn?.asSet ?? '', notes: asn?.notes ?? '' });
   const m = useMutation({
     mutationFn: () => {
-      const body = { asn: Number(f.asn.replace(/^AS/i, '')), name: f.name.trim() || null, notes: f.notes.trim() || null };
+      const body = { asn: Number(f.asn.trim().replace(/^AS/i, '')), name: f.name.trim() || null, asSet: f.asSet.trim() || null, notes: f.notes.trim() || null };
       return asn ? api.put(`/ipam/routing/asns/${asn.id}`, body) : api.post('/ipam/routing/asns', body);
     },
     onSuccess: async () => {
@@ -264,6 +267,9 @@ function AsnDialog({ asn, onClose }: { asn?: AsnT; onClose: () => void }) {
       >
         <Field label="ASN">{(id) => <Input id={id} required inputMode="numeric" className="font-mono" value={f.asn} onChange={(e) => setF((x) => ({ ...x, asn: e.target.value }))} placeholder="e.g. 141995" />}</Field>
         <Field label="Name (optional)">{(id) => <Input id={id} value={f.name} onChange={(e) => setF((x) => ({ ...x, name: e.target.value }))} />}</Field>
+        <Field label="Your AS-SET (optional)" hint="If you have one, e.g. AS141995:AS-CUSTOMERS. Upstreams may list it in their set instead of your ASN.">
+          {(id, d) => <Input id={id} aria-describedby={d} className="font-mono uppercase" value={f.asSet} onChange={(e) => setF((x) => ({ ...x, asSet: e.target.value }))} />}
+        </Field>
         <ErrorNote error={m.error} />
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onClose}>
@@ -289,6 +295,7 @@ function AsnCard({ a, writable, onEdit }: { a: AsnT; writable: boolean; onEdit: 
         <div>
           <div className="text-[16px] font-semibold">{asLink(a.asn)}</div>
           <div className="text-ink-2">{[a.name, d?.holder].filter(Boolean).join(' · ') || '—'}</div>
+          {a.asSet && <div className="font-mono text-[12px] text-ink-3">{a.asSet}</div>}
         </div>
         <div className="flex gap-1">
           <CheckNow body={{ asnId: a.id }} />
@@ -340,6 +347,7 @@ export function RoutingTab() {
   const writable = can('ipam.write');
   const q = useQuery({ queryKey: ['ipam', 'routing'], queryFn: () => api.get<OverviewT>('/ipam/routing'), refetchInterval: 30_000 });
   const [dialog, setDialog] = useState<AsnT | 'new' | null>(null);
+  const [upDialog, setUpDialog] = useState<UpstreamT | 'new' | null>(null);
   const [filter, setFilter] = useState<'all' | 'critical' | 'warning' | 'ok' | 'unchecked'>('all');
   const [open, setOpen] = useState<string | null>(null);
   if (q.isLoading) return <Loading />;
@@ -381,6 +389,33 @@ export function RoutingTab() {
           </div>
         )}
       </section>
+
+      {o.asns.length > 0 && (
+        <section>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-[15px] font-semibold">Upstreams and IX peering</h2>
+              <p className="text-[12.5px] text-ink-3">Are your prefixes going out properly through each provider: AS-SET, route objects, BGP session, prefixes sent, RPKI.</p>
+            </div>
+            {writable && (
+              <Button size="sm" onClick={() => setUpDialog('new')}>
+                Add upstream
+              </Button>
+            )}
+          </div>
+          {o.upstreams.length ? (
+            <div className="grid gap-4">
+              {o.upstreams.map((u) => (
+                <UpstreamCard key={u.id} u={u} writable={writable} onEdit={() => setUpDialog(u)} />
+              ))}
+            </div>
+          ) : (
+            <div className="glass rounded-2xl px-4 py-5 text-[13px] text-ink-2">
+              Add the network that carries your prefixes to IXs or the internet — for example an IX peering service with its ASN and customer AS-SET (from its PeeringDB page) — to check that your prefixes are announced properly through it.
+            </div>
+          )}
+        </section>
+      )}
 
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {(
@@ -500,6 +535,7 @@ export function RoutingTab() {
         </p>
       </Panel>
       {dialog && <AsnDialog asn={dialog === 'new' ? undefined : dialog} onClose={() => setDialog(null)} />}
+      {upDialog && <UpstreamDialog upstream={upDialog === 'new' ? undefined : upDialog} onClose={() => setUpDialog(null)} />}
     </div>
   );
 }

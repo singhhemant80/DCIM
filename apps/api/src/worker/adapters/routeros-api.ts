@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import tls from 'node:tls';
-import type { Adapter, AdapterTarget, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
-import { parseRouterOs, parseRouterOsCounters, parseRouterOsHealth, parseRouterOsPower, routerosUptime } from './routeros';
+import type { Adapter, AdapterTarget, BgpReadout, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import { advertisementsFromRouterOs, bgpPeersFromRouterOs, parseRouterOs, parseRouterOsCounters, parseRouterOsHealth, parseRouterOsPower, routerosUptime } from './routeros';
 import { str } from './http';
 
 /**
@@ -291,6 +291,27 @@ export function routerOsApiAdapter(): Adapter {
     return c;
   };
   return {
+    async bgp(t): Promise<BgpReadout> {
+      const c = await open(t);
+      const warnings: string[] = [];
+      try {
+        let rows: Row[];
+        try {
+          rows = await c.print('/routing/bgp/session');
+        } catch {
+          rows = await c.print('/routing/bgp/peer');
+        }
+        let advertisements: { peer: string; prefix: string }[] | null = null;
+        try {
+          advertisements = advertisementsFromRouterOs(await c.print('/routing/bgp/advertisements'));
+        } catch (e) {
+          warnings.push(`Sent prefixes: ${(e as Error).message}`.slice(0, 200));
+        }
+        return { sessions: bgpPeersFromRouterOs(rows), advertisements, warnings };
+      } finally {
+        c.close();
+      }
+    },
     async test(t): Promise<TestResult> {
       const started = Date.now();
       const c = await open(t);

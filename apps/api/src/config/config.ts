@@ -94,6 +94,8 @@ const envSchema = z.object({
   CDCIM_ROUTING_CHECK: z.enum(['true', 'false']).default('true'),
   /** RIPEstat Data API base address. */
   CDCIM_RIPESTAT_URL: z.string().url().default('https://stat.ripe.net'),
+  /** IRRd 4 server used for AS-SET and route-object lookups (HTTP whois interface). NTT's mirrors the major registries. */
+  CDCIM_IRR_URL: z.string().url().default('https://rr.ntt.net'),
   /** The iPXE binaries shipped with NexoraDC (built with the NexoraDC boot script, see deploy/pxe/README.md). */
   CDCIM_IPXE_DIR: z.string().default('../../deploy/pxe/ipxe'),
 });
