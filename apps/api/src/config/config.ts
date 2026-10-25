@@ -90,14 +90,15 @@ const envSchema = z.object({
   CDCIM_GEOIP_DIR: z.string().default('./.data/geoip'),
   /** Download DB-IP Lite (CC BY 4.0) monthly from download.db-ip.com. Set false to manage the files yourself. */
   CDCIM_GEOIP_DOWNLOAD: z.enum(['true', 'false']).default('true'),
+  /** Check the organization's public prefixes in the global routing table through RIPEstat (read-only). Set false where the worker has no internet access. */
+  CDCIM_ROUTING_CHECK: z.enum(['true', 'false']).default('true'),
+  /** RIPEstat Data API base address. */
+  CDCIM_RIPESTAT_URL: z.string().url().default('https://stat.ripe.net'),
   /** The iPXE binaries shipped with NexoraDC (built with the NexoraDC boot script, see deploy/pxe/README.md). */
   CDCIM_IPXE_DIR: z.string().default('../../deploy/pxe/ipxe'),
 });
 
-export type AppConfig = Omit<z.infer<typeof envSchema>, 'COOKIE_SECURE' | 'ENABLE_SWAGGER' | 'ALLOW_INSECURE_HTTP'> & {
-  COOKIE_SECURE: boolean;
-  ENABLE_SWAGGER: boolean;
-};
+export type AppConfig = Omit<z.infer<typeof envSchema>, 'COOKIE_SECURE' | 'ENABLE_SWAGGER' | 'ALLOW_INSECURE_HTTP'> & { COOKIE_SECURE: boolean; ENABLE_SWAGGER: boolean };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.safeParse(env);

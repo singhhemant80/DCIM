@@ -425,6 +425,10 @@ export const prefixSchema = z.object({
   description: optText(300),
   /** Ping the prefix's addresses every few minutes (read-only ICMP from the worker). Left unchanged when omitted. */
   pingSweep: z.boolean().optional(),
+  /** The AS expected to announce this prefix (e.g. a customer's own ASN); null = the organization's ASNs. Left unchanged when omitted. */
+  originAsn: z.number().int().min(1).max(4294967295).nullable().optional(),
+  /** Check the prefix in the global routing table (public prefixes). Left unchanged when omitted. */
+  routingCheck: z.boolean().optional(),
 });
 
 export const prefixUpdateSchema = prefixSchema.omit({ prefix: true, vrfId: true });

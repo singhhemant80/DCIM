@@ -30,6 +30,8 @@ import {
   vrfSchema,
   type CredentialInput,
   type CredentialKind,
+  bgpAsnSchema,
+  routingCheckRequestSchema,
 } from '@crapplet/shared';
 import { ApiZodBody, ApiZodQuery, ZodPipe } from '../common/zod';
 import { CurrentPrincipal, ReqMeta, RequirePermissions, StaffOnly } from '../auth/decorators';
@@ -37,6 +39,7 @@ import type { Principal, RequestMeta } from '../auth/principal';
 import { InterfacesService } from './interfaces.service';
 import { NetworkInventoryService } from './inventory.service';
 import { IpamService } from './ipam.service';
+import { RoutingService } from './routing.service';
 import { CredentialsService } from './credentials.service';
 import { DiscoveryService } from './discovery/discovery.service';
 import { DnsService } from './dns/dns.service';
@@ -375,7 +378,58 @@ export class DiscoveryController {
 @ApiCookieAuth()
 @Controller({ path: 'ipam', version: '1' })
 export class IpamController {
-  constructor(private readonly ipam: IpamService) {}
+  constructor(
+    private readonly ipam: IpamService,
+    private readonly routing: RoutingService,
+  ) {}
+
+  @Get('routing')
+  @StaffOnly()
+  @RequirePermissions('ipam.read')
+  @ApiOperation({ summary: "Global routing (BGP) check: the organization's ASNs and each public prefix's visibility, origin AS, upstreams, RPKI and IRR status, read through RIPEstat. Read-only." })
+  routingOverview(@CurrentPrincipal() p: Principal) {
+    return this.routing.overview(p);
+  }
+
+  @Get('routing/prefixes/:id')
+  @StaffOnly()
+  @RequirePermissions('ipam.read')
+  routingPrefix(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.routing.prefix(p, id);
+  }
+
+  @Post('routing/check')
+  @StaffOnly()
+  @RequirePermissions('ipam.read')
+  @ApiZodBody(routingCheckRequestSchema)
+  @ApiOperation({ summary: 'Check again now (one prefix, one ASN, or everything). Read-only.' })
+  routingCheck(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(routingCheckRequestSchema)) b: Infer<typeof routingCheckRequestSchema>) {
+    return this.routing.checkNow(p, b);
+  }
+
+  @Post('routing/asns')
+  @StaffOnly()
+  @RequirePermissions('ipam.write')
+  @ApiZodBody(bgpAsnSchema)
+  addAsn(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(bgpAsnSchema)) b: Infer<typeof bgpAsnSchema>, @ReqMeta() m: RequestMeta) {
+    return this.routing.addAsn(p, b, m);
+  }
+
+  @Put('routing/asns/:id')
+  @StaffOnly()
+  @RequirePermissions('ipam.write')
+  @ApiZodBody(bgpAsnSchema)
+  updateAsn(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(bgpAsnSchema)) b: Infer<typeof bgpAsnSchema>, @ReqMeta() m: RequestMeta) {
+    return this.routing.updateAsn(p, id, b, m);
+  }
+
+  @Delete('routing/asns/:id')
+  @HttpCode(204)
+  @StaffOnly()
+  @RequirePermissions('ipam.write')
+  async removeAsn(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @ReqMeta() m: RequestMeta) {
+    await this.routing.removeAsn(p, id, m);
+  }
 
   @Get('summary')
   @StaffOnly()

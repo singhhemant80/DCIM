@@ -79,6 +79,7 @@ export class IpamService {
     const res = await this.db.execute(sql`
       select x.*, v.name as vrf_name, dc.code as datacenter_code, vl.vid as vlan_vid, vl.name as vlan_name, cu.name as customer_name,
              (select count(*)::int from prefixes c where c.org_id = x.org_id and ${sameVrf('c', 'x')} and c.prefix << x.prefix) as descendant_count,
+             pr.level as routing_level, pr.checked_at as routing_checked_at, pr.last_error as routing_error, pr.data->'findings'->0->>'text' as routing_summary, pr.data->'effective'->'origins' as routing_origins,
              (select count(*)::int from prefixes c where c.org_id = x.org_id and ${sameVrf('c', 'x')} and c.prefix >> x.prefix) as depth,
              (select count(*)::int from ip_addresses a where a.org_id = x.org_id and ${sameVrf('a', 'x')} and a.address <<= x.prefix and ${HOLDS}
                 ${p.userType === 'staff' ? sql`` : sql`and a.customer_id = ${p.customerId}`}) as used
@@ -87,6 +88,7 @@ export class IpamService {
       left join datacenters dc on dc.id = x.datacenter_id
       left join vlans vl on vl.id = x.vlan_id
       left join customers cu on cu.id = x.customer_id
+      left join prefix_routing pr on pr.prefix_id = x.id
       where ${sql.join(conds, sql` and `)}
       order by v.name nulls first, family(x.prefix), x.prefix`);
     const rows = res.rows as Record<string, unknown>[];
@@ -130,8 +132,21 @@ export class IpamService {
       pingSweep: !!r.ping_sweep,
       pingCheckedAt: (r.ping_checked_at as string | null) ?? null,
       pingError: (r.ping_error as string | null) ?? null,
+      originAsn: r.origin_asn === null || r.origin_asn === undefined ? null : Number(r.origin_asn),
+      routingCheck: r.routing_check !== false,
+      /** Last global routing (BGP) check; null when the prefix is not checked. */
+      routing:
+        r.routing_checked_at || r.routing_error
+          ? {
+              level: (r.routing_level as string | null) ?? null,
+              checkedAt: (r.routing_checked_at as string | null) ?? null,
+              summary: (r.routing_summary as string | null) ?? null,
+              origins: ((r.routing_origins as number[] | null) ?? []).map(Number),
+              error: (r.routing_error as string | null) ?? null,
+            }
+          : null,
     };
-    return p.userType === 'staff' ? base : { ...base, description: null, datacenterId: null, datacenterCode: null, depth: 0, childCount: 0, pingError: null };
+    return p.userType === 'staff' ? base : { ...base, description: null, datacenterId: null, datacenterCode: null, depth: 0, childCount: 0, pingError: null, originAsn: null, routing: null };
   }
 
   async getPrefix(p: Principal, id: string) {
@@ -181,8 +196,26 @@ export class IpamService {
     }
     try {
       return await this.db.transaction(async (tx) => {
-        const [row] = await tx.update(prefixes).set(this.prefixCols({ ...input, prefix: String(before.prefix) })).where(eq(prefixes.id, id)).returning();
-        await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: row!.customerId, action: 'prefix.update', target: { type: 'prefix', id }, outcome: 'success', meta, metadata: { prefix: String(before.prefix), before: { status: before.status, customerId: before.customerId }, after: { status: row!.status, customerId: row!.customerId } } }, tx);
+        const [row] = await tx
+          .update(prefixes)
+          .set(this.prefixCols({ ...input, prefix: String(before.prefix) }))
+          .where(eq(prefixes.id, id))
+          .returning();
+        // A new expected origin is checked again right away.
+        if (input.originAsn !== undefined || input.routingCheck !== undefined) await tx.execute(sql`update prefix_routing set next_at = now() where prefix_id = ${id}`);
+        await this.audit.record(
+          {
+            orgId: p.orgId,
+            actor: actorFrom(p),
+            customerId: row!.customerId,
+            action: 'prefix.update',
+            target: { type: 'prefix', id },
+            outcome: 'success',
+            meta,
+            metadata: { prefix: String(before.prefix), before: { status: before.status, customerId: before.customerId }, after: { status: row!.status, customerId: row!.customerId } },
+          },
+          tx,
+        );
         return row!;
       });
     } catch (err) {
@@ -216,6 +249,8 @@ export class IpamService {
       gateway: i.gateway ?? null,
       description: i.description ?? null,
       ...(i.pingSweep !== undefined ? { pingSweep: i.pingSweep } : {}),
+      ...(i.originAsn !== undefined ? { originAsn: i.originAsn } : {}),
+      ...(i.routingCheck !== undefined ? { routingCheck: i.routingCheck } : {}),
     };
   }
 
@@ -265,7 +300,7 @@ export class IpamService {
     for (const [a, b] of blocked) {
       if (b < cursor) continue;
       if (a > range.last) break;
-      if (a > cursor) out.push(this.rangeView(c.family, cursor, (a - 1n < range.last ? a - 1n : range.last)));
+      if (a > cursor) out.push(this.rangeView(c.family, cursor, a - 1n < range.last ? a - 1n : range.last));
       cursor = b + 1n > cursor ? b + 1n : cursor;
       if (out.length >= limit) return out;
     }
@@ -532,11 +567,12 @@ export class IpamService {
           .set({ ...this.assignmentCols(a), status: input.status })
           .where(eq(ipAddresses.id, id))
           .returning();
-        const changed = (['status', 'customerId', 'deviceId', 'interfaceId', 'dnsName', 'reverseDns', 'role', 'serviceRef', 'reservedUntil', 'prefixLength'] as const).filter(
-          (k) => JSON.stringify(before[k]) !== JSON.stringify(after![k]),
-        );
+        const changed = (['status', 'customerId', 'deviceId', 'interfaceId', 'dnsName', 'reverseDns', 'role', 'serviceRef', 'reservedUntil', 'prefixLength'] as const).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after![k]));
         if (changed.length) await this.event(tx, p, id, 'updated', `Changed ${changed.join(', ')}`, { before: Object.fromEntries(changed.map((k) => [k, before[k]])), after: Object.fromEntries(changed.map((k) => [k, after![k]])) });
-        await this.audit.record({ orgId: p.orgId, actor: actorFrom(p), customerId: after!.customerId ?? before.customerId, action: 'ip.update', target: { type: 'ip_address', id }, outcome: 'success', meta, metadata: { address: ip, fields: changed } }, tx);
+        await this.audit.record(
+          { orgId: p.orgId, actor: actorFrom(p), customerId: after!.customerId ?? before.customerId, action: 'ip.update', target: { type: 'ip_address', id }, outcome: 'success', meta, metadata: { address: ip, fields: changed } },
+          tx,
+        );
       });
     } catch (err) {
       rethrowDbError(err);
@@ -672,7 +708,20 @@ export class IpamService {
              x.prefix::text as prefix, x.is_pool, x.customer_id as prefix_customer, cu.name as prefix_customer_name, au.name as address_customer_name
       from a left join prefixes x on x.id = a.px
       left join customers cu on cu.id = x.customer_id left join customers au on au.id = a.customer_id`);
-    type Row = { id: string; ip: string; status: string; device_name: string | null; prefix_length: number | null; reserved_until: string | null; customer_id: string | null; prefix: string | null; is_pool: boolean | null; prefix_customer: string | null; prefix_customer_name: string | null; address_customer_name: string | null };
+    type Row = {
+      id: string;
+      ip: string;
+      status: string;
+      device_name: string | null;
+      prefix_length: number | null;
+      reserved_until: string | null;
+      customer_id: string | null;
+      prefix: string | null;
+      is_pool: boolean | null;
+      prefix_customer: string | null;
+      prefix_customer_name: string | null;
+      address_customer_name: string | null;
+    };
     const issues: { kind: string; severity: 'warning' | 'error'; addressId: string; address: string; message: string }[] = [];
     for (const r of res.rows as Row[]) {
       const ip = parseIp(r.ip)!;

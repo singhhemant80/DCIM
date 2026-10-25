@@ -41,6 +41,7 @@ import { DnsService } from './network/dns/dns.service';
 import { InterfacesService } from './network/interfaces.service';
 import { NetworkInventoryService } from './network/inventory.service';
 import { IpamService } from './network/ipam.service';
+import { RoutingService } from './network/routing.service';
 import { CredentialsService } from './network/credentials.service';
 import { DiscoveryService } from './network/discovery/discovery.service';
 import { DiscoveryQueue } from './network/discovery/queue';
@@ -173,6 +174,7 @@ export class AppModule {
         InterfacesService,
         NetworkInventoryService,
         IpamService,
+        RoutingService,
         CredentialsService,
         DiscoveryQueue,
         DiscoveryService,

@@ -10,6 +10,7 @@ import { deviceLabel, useVlans, useVrfs, type InterfaceT, type NetworkDeviceT } 
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Stat, Table, Textarea, cx } from '../components/ui';
 import { useCustomerOptions } from './Racks';
 import { Tabs } from './Network';
+import { PrefixRoutingPanel, RoutingChip, RoutingTab } from '../components/Routing';
 import { AddressDns, DnsTab } from './IpamDns';
 
 export interface PrefixT {
@@ -37,6 +38,9 @@ export interface PrefixT {
   pingSweep: boolean;
   pingCheckedAt: string | null;
   pingError: string | null;
+  originAsn: number | null;
+  routingCheck: boolean;
+  routing: { level: string | null; checkedAt: string | null; summary: string | null; origins: number[]; error: string | null } | null;
 }
 interface PrefixDetailT extends PrefixT {
   parents: PrefixT[];
@@ -117,6 +121,7 @@ const TABS = [
   { key: 'conflicts', label: 'Conflicts' },
   { key: 'import', label: 'Import / export' },
   { key: 'dns', label: 'DNS' },
+  { key: 'routing', label: 'BGP & routing' },
 ] as const;
 
 export function IpamPage() {
@@ -136,6 +141,7 @@ export function IpamPage() {
       {tab === 'conflicts' && <ConflictsTab />}
       {tab === 'import' && <ImportTab />}
       {tab === 'dns' && <DnsTab />}
+      {tab === 'routing' && <RoutingTab />}
     </>
   );
 }
@@ -164,21 +170,8 @@ function PrefixesTab() {
   const [family, setFamily] = useState('');
   const [q, setQ] = useState('');
   const [add, setAdd] = useState(false);
-  const list = useQuery({
-    queryKey: ['ipam', 'prefixes', vrf, family, q],
-    queryFn: () => api.get<PrefixT[]>(`/ipam/prefixes${qs({ vrfId: vrf || undefined, family, q })}`),
-    placeholderData: keepPreviousData,
-  });
-  const summary = useQuery({
-    queryKey: ['ipam', 'summary'],
-    queryFn: () =>
-      api.get<{
-        prefixes: number;
-        allocated: number;
-        reserved: number;
-        ipv4: { usable: number; used: number; utilization: number };
-      }>('/ipam/summary'),
-  });
+  const list = useQuery({ queryKey: ['ipam', 'prefixes', vrf, family, q], queryFn: () => api.get<PrefixT[]>(`/ipam/prefixes${qs({ vrfId: vrf || undefined, family, q })}`), placeholderData: keepPreviousData });
+  const summary = useQuery({ queryKey: ['ipam', 'summary'], queryFn: () => api.get<{ prefixes: number; allocated: number; reserved: number; ipv4: { usable: number; used: number; utilization: number } }>('/ipam/summary') });
   return (
     <div className="grid gap-5">
       {summary.data && (
@@ -265,6 +258,11 @@ function PrefixTable({ rows, showVrf }: { rows: PrefixT[]; showVrf?: boolean }) 
                   {p.prefix}
                 </Link>
                 {p.isPool && <Chip tone="accent">pool</Chip>}
+                {p.routing && (
+                  <span className="ml-1.5 align-middle">
+                    <RoutingChip level={p.routing.level} error={p.routing.error} summary={p.routing.summary} small />
+                  </span>
+                )}
               </td>
               {showVrf && <td>{p.vrfName ?? 'Global'}</td>}
               <td>
@@ -308,6 +306,8 @@ function PrefixForm({ prefix, onClose }: { prefix?: PrefixT; onClose: (id?: stri
     gateway: s(prefix?.gateway),
     description: s(prefix?.description),
     pingSweep: prefix?.pingSweep ?? false,
+    originAsn: s(prefix?.originAsn),
+    routingCheck: prefix?.routingCheck ?? true,
   });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((x) => ({ ...x, [k]: e.target.value }));
   const body = () => ({
@@ -319,16 +319,11 @@ function PrefixForm({ prefix, onClose }: { prefix?: PrefixT; onClose: (id?: stri
     gateway: t(f.gateway),
     description: t(f.description),
     pingSweep: f.pingSweep,
+    originAsn: f.originAsn.trim() ? Number(f.originAsn.trim().replace(/^AS/i, '')) : null,
+    routingCheck: f.routingCheck,
   });
   const m = useMutation({
-    mutationFn: () =>
-      prefix
-        ? api.put<{ id: string }>(`/ipam/prefixes/${prefix.id}`, body())
-        : api.post<{ id: string }>('/ipam/prefixes', {
-            ...body(),
-            prefix: f.prefix,
-            vrfId: t(f.vrfId),
-          }),
+    mutationFn: () => (prefix ? api.put<{ id: string }>(`/ipam/prefixes/${prefix.id}`, body()) : api.post<{ id: string }>('/ipam/prefixes', { ...body(), prefix: f.prefix, vrfId: t(f.vrfId) })),
     onSuccess: async (r) => {
       await qc.invalidateQueries({ queryKey: ['ipam'] });
       onClose(r.id);
@@ -416,6 +411,16 @@ function PrefixForm({ prefix, onClose }: { prefix?: PrefixT; onClose: (id?: stri
         <label className="flex items-center gap-2 text-[13px]">
           <input type="checkbox" checked={f.pingSweep} onChange={(e) => setF((x) => ({ ...x, pingSweep: e.target.checked }))} /> Check reachability: ping {'every address (IPv4 up to /22; otherwise the recorded ones)'} every 5 minutes
         </label>
+        {!f.vrfId && (
+          <div className="grid gap-3 rounded-xl border border-rule p-3 sm:col-span-2 sm:grid-cols-2">
+            <label className="flex items-center gap-2 self-end pb-2 text-[13px]">
+              <input type="checkbox" checked={f.routingCheck} onChange={(e) => setF((x) => ({ ...x, routingCheck: e.target.checked }))} /> Check in the global routing table (BGP, RPKI, IRR) — public prefixes up to /24 or /48
+            </label>
+            <Field label="Expected origin ASN" hint="Empty: your ASNs (IPAM → BGP & routing). Set it for a prefix a customer announces from their own ASN.">
+              {(id, d) => <Input id={id} aria-describedby={d} inputMode="numeric" className="font-mono" value={f.originAsn} onChange={set('originAsn')} placeholder="e.g. 65010" />}
+            </Field>
+          </div>
+        )}
         <ErrorNote error={m.error} className="sm:col-span-2" />
         <div className="flex justify-end gap-2 sm:col-span-2">
           <Button type="button" variant="ghost" onClick={() => onClose()}>
@@ -525,6 +530,7 @@ export function PrefixDetailPage() {
             <p className="mt-2 text-[12.5px] text-ink-3">Reverse DNS zone: {p.ptrZone}</p>
           </Panel>
         )}
+        {staff && !p.vrfId && <PrefixRoutingPanel prefixId={p.id} prefix={p.prefix} />}
         {staff && p.pingSweep && (
           <Panel title="Reachability">
             <p className="text-[13px] text-ink-2">
@@ -694,19 +700,7 @@ function AddressesTab() {
   return <AddressList />;
 }
 
-type AssignForm = {
-  status: string;
-  prefixLength: string;
-  role: string;
-  dnsName: string;
-  reverseDns: string;
-  customerId: string;
-  deviceId: string;
-  interfaceId: string;
-  serviceRef: string;
-  reservedUntil: string;
-  notes: string;
-};
+type AssignForm = { status: string; prefixLength: string; role: string; dnsName: string; reverseDns: string; customerId: string; deviceId: string; interfaceId: string; serviceRef: string; reservedUntil: string; notes: string };
 const emptyAssign = (a?: AddressT): AssignForm => ({
   status: a?.status === 'released' ? 'allocated' : (a?.status ?? 'allocated'),
   prefixLength: s(a?.prefixLength),
@@ -905,42 +899,14 @@ function AddressModal({ address, onClose }: { address: AddressT; onClose: () => 
   const [f, setF] = useState<AssignForm>(emptyAssign(address));
   const [reason, setReason] = useState('');
   const [releasing, setReleasing] = useState(false);
-  const history = useQuery({
-    queryKey: ['ipam', 'history', address.id],
-    queryFn: () =>
-      api.get<
-        {
-          id: number;
-          occurredAt: string;
-          actorLabel: string | null;
-          action: string;
-          summary: string;
-        }[]
-      >(`/ipam/addresses/${address.id}/history`),
-  });
+  const history = useQuery({ queryKey: ['ipam', 'history', address.id], queryFn: () => api.get<{ id: number; occurredAt: string; actorLabel: string | null; action: string; summary: string }[]>(`/ipam/addresses/${address.id}/history`) });
   const done = async () => {
     await qc.invalidateQueries({ queryKey: ['ipam'] });
     onClose();
   };
   const released = address.status === 'released';
-  const save = useMutation({
-    mutationFn: () =>
-      released
-        ? api.post('/ipam/addresses', {
-            ...assignBody(f),
-            address: address.address,
-            vrfId: address.vrfId,
-          })
-        : api.patch(`/ipam/addresses/${address.id}`, assignBody(f)),
-    onSuccess: done,
-  });
-  const rel = useMutation({
-    mutationFn: () =>
-      api.post(`/ipam/addresses/${address.id}/release`, {
-        reason: t(reason) ?? undefined,
-      }),
-    onSuccess: done,
-  });
+  const save = useMutation({ mutationFn: () => (released ? api.post('/ipam/addresses', { ...assignBody(f), address: address.address, vrfId: address.vrfId }) : api.patch(`/ipam/addresses/${address.id}`, assignBody(f))), onSuccess: done });
+  const rel = useMutation({ mutationFn: () => api.post(`/ipam/addresses/${address.id}/release`, { reason: t(reason) ?? undefined }), onSuccess: done });
   const writable = can('ipam.write');
   return (
     <Modal
@@ -1015,20 +981,7 @@ function AddressModal({ address, onClose }: { address: AddressT; onClose: () => 
 /* ------------------------------------------------------------------ conflicts */
 
 function ConflictsTab() {
-  const q = useQuery({
-    queryKey: ['ipam', 'conflicts'],
-    queryFn: () =>
-      api.get<{
-        checkedAt: string;
-        issues: {
-          kind: string;
-          severity: 'warning' | 'error';
-          addressId: string;
-          address: string;
-          message: string;
-        }[];
-      }>('/ipam/conflicts'),
-  });
+  const q = useQuery({ queryKey: ['ipam', 'conflicts'], queryFn: () => api.get<{ checkedAt: string; issues: { kind: string; severity: 'warning' | 'error'; addressId: string; address: string; message: string }[] }>('/ipam/conflicts') });
   return (
     <Panel flush title="Consistency check" actions={q.data && <span className="text-[12.5px] text-ink-3">Checked {formatDateTime(q.data.checkedAt)}</span>}>
       <p className="border-b border-rule px-4 py-3 text-[13px] text-ink-2">Records that need attention. Nothing here is changed automatically; open the address to fix it.</p>

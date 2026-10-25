@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import type { HardwareInventory, ServerHealth } from '@crapplet/shared';
+import type { AsnRoutingData, HardwareInventory, PrefixRoutingData, ServerHealth } from '@crapplet/shared';
 import {
   bigint,
   bigserial,
@@ -910,6 +910,10 @@ export const prefixes = pgTable(
     pingSweep: boolean('ping_sweep').notNull().default(false),
     pingCheckedAt: ts('ping_checked_at'),
     pingError: text('ping_error'),
+    /** The AS expected to announce the prefix; null = the organization's ASNs (bgp_asns). */
+    originAsn: bigint('origin_asn', { mode: 'number' }),
+    /** Check the prefix in the global routing table (public prefixes in the global table only). */
+    routingCheck: boolean('routing_check').notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -919,6 +923,50 @@ export const prefixes = pgTable(
     index('prefixes_customer_idx').on(t.customerId),
     check('prefixes_gateway_ck', sql`${t.gateway} is null or (${t.gateway} <<= ${t.prefix} and masklen(${t.gateway}) = case family(${t.gateway}) when 4 then 32 else 128 end)`),
   ],
+);
+
+/** The organization's own autonomous systems: expected origins of its prefixes, checked in the global routing table. */
+export const bgpAsns = pgTable(
+  'bgp_asns',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    asn: bigint('asn', { mode: 'number' }).notNull(),
+    name: text('name'),
+    notes: text('notes'),
+    /** idle | running */
+    status: text('status').notNull().default('idle'),
+    startedAt: ts('started_at'),
+    checkedAt: ts('checked_at'),
+    nextAt: ts('next_at'),
+    data: jsonb('data').$type<AsnRoutingData>(),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('bgp_asns_org_asn_uq').on(t.orgId, t.asn), index('bgp_asns_next_idx').on(t.nextAt)],
+);
+
+/** The last global routing check of a prefix (RIPEstat: RIS collectors, RPKI, IRR). */
+export const prefixRouting = pgTable(
+  'prefix_routing',
+  {
+    prefixId: uuid('prefix_id')
+      .primaryKey()
+      .references(() => prefixes.id, { onDelete: 'cascade' }),
+    orgId: orgRef(),
+    /** idle | running */
+    status: text('status').notNull().default('idle'),
+    startedAt: ts('started_at'),
+    checkedAt: ts('checked_at'),
+    nextAt: ts('next_at'),
+    /** ok | warning | critical, from the last successful check. */
+    level: text('level'),
+    data: jsonb('data').$type<PrefixRoutingData>(),
+    lastError: text('last_error'),
+    lastAttemptAt: ts('last_attempt_at'),
+  },
+  (t) => [index('prefix_routing_org_idx').on(t.orgId), index('prefix_routing_next_idx').on(t.nextAt)],
 );
 
 export const ipAddresses = pgTable(

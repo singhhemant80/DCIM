@@ -257,6 +257,13 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 - **Nothing on routers is changed.** Relay or next-server settings on a router are shown as commands for the operator.
 - **Interactive installs** are completed by an operator ("Mark finished", audited) and recorded as not verified by NexoraDC.
 
+## Global routing (BGP) check
+
+* Read-only: the worker sends GET requests to the RIPEstat Data API (`CDCIM_RIPESTAT_URL`, default `https://stat.ripe.net`) for `routing-status`, `rpki-validation`, `looking-glass`, `announced-prefixes` and `as-overview`. NexoraDC never announces, withdraws or changes a route, and no alert or finding triggers any router change.
+* What leaves the server: the organization's ASNs and its public prefixes in the global table (IPv4 up to /24, IPv6 up to /48), and only after an ASN has been entered. Private, CGNAT, documentation, reserved, multicast and non-global-unicast ranges, VRF prefixes and longer prefixes are never sent (`ROUTING_CANDIDATE` in SQL, `routingSkipReason` in code). No credentials are involved. Public BGP data is public by nature; the queries do reveal to RIPE which prefixes an operator is interested in.
+* Results describe what RIPE's route collectors see; a network that does not peer with them can see something else. "Not announced" can also mean a very recent change (RIS state is published every 8 hours).
+* `CDCIM_ROUTING_CHECK=false` turns the checks off (for a worker without internet access).
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.

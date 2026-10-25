@@ -25,6 +25,7 @@ import { DEFAULT_SIM, startSnmpAgent } from './snmp-agent';
 import { ROUTEROS_FIXTURE, startRouterOs } from './http-devices';
 import { createHash } from 'node:crypto';
 import { ROUTEROS_HEALTH, startRedfish } from './power-devices';
+import { startRipeStat } from './ripestat';
 import { startControlRedfish, startFileServer, startProxmox, startVirtualizor } from './provisioning-devices';
 
 void (async () => {
@@ -72,6 +73,8 @@ void (async () => {
   await startFileServer({ '/demo.iso': iso, '/vmlinuz': kernel, '/initrd.img': initrd }, 18090);
   await startProxmox({ id: 'dcim@pve!read', secret: 'demo-pve-read' }, { id: 'dcim@pve!ops', secret: 'demo-pve-ops' }, { actionDelayMs: 4000, port: 18006 });
   await startVirtualizor('DEMOKEY-VZ-2026', 'demo-vz-pass', 14085);
+  // RIPEstat stand-in for the routing check (CDCIM_RIPESTAT_URL=http://127.0.0.1:18100).
+  await startRipeStat(18100);
   const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
   const started = Date.now();
   // Base load per port in bit/s (ether1 is a 1 Gbit/s uplink in the simulator).
