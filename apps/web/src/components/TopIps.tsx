@@ -230,6 +230,12 @@ interface ExporterT {
   badPackets: number;
   lastError: string | null;
   receiving: boolean;
+  /** How far the per-IP numbers from this router can be trusted (from its records and its uplink counters). */
+  accuracy: {
+    level: 'ok' | 'warning' | 'critical' | 'unknown';
+    findings: { level: 'ok' | 'info' | 'warning' | 'critical'; code: string; text: string; fix?: string[]; causes?: string[] }[];
+    coverage: { from: string; to: string; interfaceName: string; counterDownBytes: number; flowDownBytes: number; counterUpBytes: number; flowUpBytes: number; download: number | null; upload: number | null } | null;
+  };
 }
 interface ExportersT {
   collector: { listening: boolean; port: number; error: string | null; at: string; unknownSources: { address: string; packets: number; lastAt: string }[] } | null;
@@ -471,6 +477,69 @@ function ExporterForm({ exporter, preset, onClose }: { exporter?: ExporterT; pre
 }
 
 /** Routers sending flows, what arrived from each, and the RouterOS commands to turn exporting on. */
+const ACC_CLS = { critical: ['text-crit', '●'], warning: ['text-warn', '▲'], ok: ['text-ok', '✓'], info: ['text-ink-2', '·'] } as const;
+
+/** Staff: why the numbers may be wrong, per router, with the fix. Shown when something needs attention. */
+function FlowAccuracy() {
+  const q = useQuery({ queryKey: ['flows', 'exporters'], queryFn: () => api.get<ExportersT>('/monitoring/flows/exporters'), refetchInterval: 15_000 });
+  const [copied, setCopied] = useState<string | null>(null);
+  const shown = (q.data?.exporters ?? []).filter((e) => e.enabled && e.accuracy.findings.length);
+  if (!shown.length) return null;
+  const worst = shown.some((e) => e.accuracy.level === 'critical') ? 'critical' : shown.some((e) => e.accuracy.level === 'warning') ? 'warning' : 'ok';
+  return (
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          Flow accuracy <Chip tone={worst === 'critical' ? 'crit' : worst === 'warning' ? 'warn' : 'ok'}>{worst === 'ok' ? 'Numbers look right' : worst === 'warning' ? 'Check' : 'Numbers too low or incomplete'}</Chip>
+        </span>
+      }
+    >
+      <div className="grid gap-4 text-[13px]">
+        {shown.map((e) => (
+          <div key={e.id}>
+            {shown.length > 1 && <div className="mb-1 font-medium">{e.name}</div>}
+            <ul className="flex flex-col gap-2">
+              {e.accuracy.findings.map((f) => (
+                <li key={f.code} className={cx('flex gap-2', ACC_CLS[f.level][0])}>
+                  <span aria-hidden className="w-3 shrink-0 text-center">
+                    {ACC_CLS[f.level][1]}
+                  </span>
+                  <div className="min-w-0">
+                    <div>{f.text}</div>
+                    {f.causes && (
+                      <ul className="mt-1 list-disc pl-5 text-ink-2">
+                        {f.causes.map((c) => (
+                          <li key={c}>{c}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {f.fix && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        <code className="rounded-md border border-rule bg-sunken px-2 py-1 font-mono text-[12.5px] text-ink">{f.fix.join('\n')}</code>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            void navigator.clipboard?.writeText(f.fix!.join('\n'));
+                            setCopied(f.code + e.id);
+                          }}
+                        >
+                          {copied === f.code + e.id ? 'Copied' : 'Copy'}
+                        </Button>
+                        <span className="text-[12px] text-ink-3">Run on the router (MikroTik). DCIM never changes router settings.</span>
+                      </div>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 function FlowSources() {
   const { can } = useAuth();
   const qc = useQueryClient();
@@ -754,6 +823,7 @@ export function TopIps({ customerId: fixedCustomer }: { customerId?: string } = 
           </dl>
         )}
       </Panel>
+      {staff && <FlowAccuracy />}
       {selected && (
         <IpHistory key={selected.ip} ip={selected} range={isLive ? { period: '1h', from: '', to: '' } : range} samples={isLive ? (samples.get(selected.ip) ?? []) : undefined} realtime={isLive && realtime} onClose={() => setOpen(null)} />
       )}

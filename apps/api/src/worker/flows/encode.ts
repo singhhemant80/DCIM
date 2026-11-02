@@ -124,7 +124,7 @@ function templateBody(id: number, fields: [number, number][]) {
 }
 
 /** A templated packet (v9 or IPFIX); with `withTemplate`, the templates are included first. */
-export function encodeTemplated(version: 9 | 10, flows: SimFlow[], opts: { sysUptimeMs: number; nowMs: number; domain?: number; withTemplate?: boolean; sequence?: number; sampling?: number }) {
+export function encodeTemplated(version: 9 | 10, flows: SimFlow[], opts: { sysUptimeMs: number; nowMs: number; domain?: number; withTemplate?: boolean; sequence?: number; sampling?: number; sysInit?: boolean }) {
   const ipv6 = (f: SimFlow) => f.src.includes(':');
   const sets: Buffer[] = [];
   if (opts.withTemplate !== false) {
@@ -158,6 +158,22 @@ export function encodeTemplated(version: 9 | 10, flows: SimFlow[], opts: { sysUp
       d.writeUInt32BE(opts.sampling, 4);
       sets.push(set(258, d));
     }
+  }
+  if (opts.sysInit && version === 10) {
+    // IPFIX options record with the exporter's boot time (systemInitTimeMilliseconds), as some routers send it.
+    const t = Buffer.alloc(14);
+    t.writeUInt16BE(259, 0);
+    t.writeUInt16BE(2, 2);
+    t.writeUInt16BE(1, 4);
+    t.writeUInt16BE(149, 6); // observationDomainId
+    t.writeUInt16BE(4, 8);
+    t.writeUInt16BE(160, 10); // systemInitTimeMilliseconds
+    t.writeUInt16BE(8, 12);
+    sets.push(set(3, t));
+    const d = Buffer.alloc(12);
+    d.writeUInt32BE(opts.domain ?? 0, 0);
+    d.writeBigUInt64BE(BigInt(opts.nowMs - opts.sysUptimeMs), 4);
+    sets.push(set(259, d));
   }
   const four = flows.filter((f) => !ipv6(f));
   const six = flows.filter(ipv6);

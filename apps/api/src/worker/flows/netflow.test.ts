@@ -51,6 +51,20 @@ describe('flow decoding', () => {
     expect(r.records.every((x) => x.sampling === 64)).toBe(true);
   });
 
+  it('IPFIX with uptime-relative times (MikroTik): the boot time from an options record gives exact times; without it the duration is kept and the flow ends at export', () => {
+    const long: SimFlow = { src: '8.8.8.8', dst: '103.150.120.10', bytes: 5000, packets: 5, start: now - 1_800_000, end: now - 4000 };
+    const exact = decodeFlowPacket(encodeTemplated(10, [long], { sysUptimeMs: up, nowMs: now, sysInit: true }), '10.0.0.7', new TemplateCache()).records[0]!;
+    expect(exact).toMatchObject({ start: now - 1_800_000, end: now - 4000 });
+    const cache = new TemplateCache();
+    const approx = decodeFlowPacket(encodeTemplated(10, [long], { sysUptimeMs: up, nowMs: now }), '10.0.0.8', cache).records[0]!;
+    const exportMs = Math.floor(now / 1000) * 1000;
+    expect(approx.end).toBe(exportMs);
+    expect(approx.end! - approx.start!).toBe(1_800_000 - 4000);
+    // Learned once, used for later packets without the options record.
+    decodeFlowPacket(encodeTemplated(10, [], { sysUptimeMs: up, nowMs: now, sysInit: true, withTemplate: false }), '10.0.0.8', cache);
+    expect(decodeFlowPacket(encodeTemplated(10, [long], { sysUptimeMs: up, nowMs: now, withTemplate: false }), '10.0.0.8', cache).records[0]).toMatchObject({ start: now - 1_800_000, end: now - 4000 });
+  });
+
   it('rejects malformed and unknown packets', () => {
     const cache = new TemplateCache();
     expect(() => decodeFlowPacket(Buffer.from([0, 5, 0]), 'x', cache)).toThrow(FlowDecodeError);

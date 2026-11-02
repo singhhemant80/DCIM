@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
 import type { Db } from '../../db/db';
 import { FlowDecodeError, TemplateCache, decodeFlowPacket, type FlowRecord } from './netflow';
+import { FlowProfile } from './diagnostics';
 
 /**
  * UDP collector for flow records (NetFlow v5/v9, IPFIX) from registered
@@ -388,6 +389,7 @@ export async function startFlowCollector(deps: { db: Db; logger: Logger; onLive?
   let exporters = new Map<string, Exporter>();
   let own = new Map<string, BlockList>();
   const stats = new Map<string, Stats>();
+  const profiles = new Map<string, FlowProfile>();
   const unknown = new Map<string, { packets: number; lastAt: number }>();
   const status: FlowCollectorStatus = { listening: false, port: opts.port, error: null, unknownSources: [], templates: 0, droppedKeys: 0 };
 
@@ -418,11 +420,15 @@ export async function startFlowCollector(deps: { db: Db; logger: Logger; onLive?
       st.version = version;
       const list = own.get(exp.orgId);
       const now = Date.now();
+      let profile = profiles.get(exp.id);
+      if (!profile) profiles.set(exp.id, (profile = new FlowProfile()));
       for (const r of records) {
         st.records++;
         // Sampling announced by the router wins; otherwise the rate set on the exporter.
         const mult = r.sampling > 1 ? r.sampling : exp.samplingRate;
-        if (!list || !agg.add(exp.orgId, list, r, mult, now)) st.unmatched++;
+        const matched = !!list && agg.add(exp.orgId, list, r, mult, now);
+        if (!matched) st.unmatched++;
+        profile.add(r, r.bytes * mult, mult, matched, now);
       }
     } catch (e) {
       st.bad++;
@@ -431,6 +437,7 @@ export async function startFlowCollector(deps: { db: Db; logger: Logger; onLive?
   };
 
   let peersAt = 0;
+  let profilesAt = 0;
   const flush = async (force = false) => {
     const pending = agg.take();
     const n = await flushTraffic(db, pending);
@@ -448,6 +455,11 @@ export async function startFlowCollector(deps: { db: Db; logger: Logger; onLive?
          where id = ${id}`);
     }
     stats.clear();
+    // How far the numbers can be trusted, per exporter (every minute).
+    if (force || Date.now() - profilesAt >= 60_000) {
+      profilesAt = Date.now();
+      for (const [id, profile] of profiles) await db.execute(sql`update flow_exporters set diagnostics = ${JSON.stringify(profile.snapshot())}::jsonb, diagnostics_at = now() where id = ${id}`);
+    }
     status.templates = cache.count();
     status.droppedKeys += agg.droppedKeys;
     agg.droppedKeys = 0;

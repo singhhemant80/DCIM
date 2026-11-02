@@ -1438,6 +1438,9 @@ export const flowExporters = pgTable(
     unmatchedRecords: bigint('unmatched_records', { mode: 'number' }).notNull().default(0),
     badPackets: bigint('bad_packets', { mode: 'number' }).notNull().default(0),
     lastError: text('last_error'),
+    /** The last 15 minutes of records: durations, bytes outside IPAM, IPv6, sampling (worker/flows/diagnostics.ts). */
+    diagnostics: jsonb('diagnostics').$type<import('../worker/flows/diagnostics').FlowDiagnostics>(),
+    diagnosticsAt: ts('diagnostics_at'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

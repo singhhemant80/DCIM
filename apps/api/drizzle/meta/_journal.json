@@ -246,6 +246,13 @@
       "when": 1793635660806,
       "tag": "0034_ip_assigned_at",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1793638388684,
+      "tag": "0035_flow_diagnostics",
+      "breakpoints": true
     }
   ]
 }

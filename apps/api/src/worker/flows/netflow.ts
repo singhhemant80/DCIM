@@ -40,6 +40,8 @@ const TEMPLATE_TTL_MS = 6 * 3600_000;
 export class TemplateCache {
   private templates = new Map<string, Template>();
   private sampling = new Map<string, number>();
+  /** The exporter's boot time (IPFIX systemInitTimeMilliseconds), when it sends it in an options record. */
+  private init = new Map<string, number>();
 
   get(key: string) {
     const t = this.templates.get(key);
@@ -63,6 +65,12 @@ export class TemplateCache {
   samplingOf(exporter: string) {
     return this.sampling.get(exporter) ?? 1;
   }
+  setInit(exporter: string, ms: number) {
+    if (Number.isFinite(ms) && ms > 946684800000) this.init.set(exporter, ms);
+  }
+  initOf(exporter: string) {
+    return this.init.get(exporter) ?? null;
+  }
   count() {
     return this.templates.size;
   }
@@ -82,7 +90,7 @@ function ipv6(b: Buffer, o: number) {
     }
     let j = i;
     while (j < 8 && parts[j] === '0') j++;
-    if (j - i > bestLen && j - i > 1) (best = i), (bestLen = j - i);
+    if (j - i > bestLen && j - i > 1) ((best = i), (bestLen = j - i));
     i = j;
   }
   if (best < 0) return parts.join(':');
@@ -305,11 +313,13 @@ function readData(b: Buffer, start: number, end: number, t: Template, ctx: { exp
       o += len;
     }
     if (t.options) {
-      // Exporter settings: 1-in-N sampling (interval, or packet interval + space).
+      // Exporter settings: 1-in-N sampling (interval, or packet interval + space), and its boot time.
       const n = space !== null && sampling > 0 ? (sampling + space) / sampling : sampling;
       if (n >= 1) ctx.cache.setSampling(ctx.exporter, n);
+      if (initMs !== null) ctx.cache.setInit(ctx.exporter, initMs);
       continue;
     }
+    initMs ??= ctx.cache.initOf(ctx.exporter);
     if (!src || !dst) continue;
     const by = bytes ?? outBytes;
     if (by === null) continue;
@@ -322,6 +332,12 @@ function readData(b: Buffer, start: number, end: number, t: Template, ctx: { exp
     if (e === null && last !== null) {
       if (initMs !== null) e = initMs + last;
       else if (ctx.sysUptime !== null) e = ctx.exportMs - (ctx.sysUptime - last);
+    }
+    // IPFIX with uptime-relative times but no boot time known yet: the duration is still exact; the
+    // flow is taken to end when it was exported (routers export at the end or at the active timeout).
+    if (s === null && e === null && first !== null && last !== null && last >= first && last - first < 86_400_000) {
+      e = ctx.exportMs;
+      s = e - (last - first);
     }
     out.push({ src, dst, bytes: by, packets: packets ?? outPackets ?? 0, start: s, end: e, sampling });
   }

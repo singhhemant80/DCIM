@@ -1,3 +1,5 @@
+import { flowAccuracy, type FlowCoverage } from './flow-accuracy';
+import type { FlowDiagnostics } from '../worker/flows/diagnostics';
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { isIP } from 'node:net';
@@ -65,7 +67,7 @@ export class FlowsService {
     const r = await this.db.execute<Record<string, unknown>>(sql`
       select e.id, e.name, host(e.address) as address, e.device_id, coalesce(d.hostname, d.asset_tag) as device_name, e.enabled, e.sampling_rate, e.live_interface, e.live_direction,
              exists (select 1 from device_credentials c where c.device_id = e.device_id and c.kind = 'routeros_api') as has_api,
-             e.last_packet_at, e.last_version, e.packets, e.records, e.unmatched_records, e.bad_packets, e.last_error, e.created_at
+             e.last_packet_at, e.last_version, e.packets, e.records, e.unmatched_records, e.bad_packets, e.last_error, e.created_at, e.diagnostics, e.diagnostics_at
         from flow_exporters e left join devices d on d.id = e.device_id
        where e.org_id = ${p.orgId} order by e.name`);
     let collector: unknown = null;
@@ -80,9 +82,21 @@ export class FlowsService {
     const c = collector as { unknownSources?: { address: string }[] } | null;
     // Sources that send flows but are not registered here: shown so a typo in the address is easy to spot.
     if (c?.unknownSources) c.unknownSources = c.unknownSources.filter((u) => !known.has(u.address));
+    const accuracy = new Map<string, ReturnType<typeof flowAccuracy> & { coverage: FlowCoverage | null }>();
+    for (const x of r.rows) {
+      const fresh = x.diagnostics_at && Date.now() - new Date(x.diagnostics_at as string).getTime() < 10 * 60_000;
+      const { coverage, note } = await this.coverage(p, x);
+      accuracy.set(String(x.id), {
+        ...flowAccuracy({ name: String(x.name), liveInterface: (x.live_interface as string | null) ?? null, exportersInOrg: r.rows.length, coverageNote: note }, fresh ? (x.diagnostics as FlowDiagnostics) : null, coverage),
+        coverage,
+      });
+    }
     return {
       collector,
       exporters: r.rows.map((x) => ({
+        /** How far the per-IP numbers from this exporter can be trusted, with fixes. */
+        accuracy: accuracy.get(String(x.id))!,
+        diagnostics: (x.diagnostics as FlowDiagnostics | null) ?? null,
         id: x.id,
         name: x.name,
         address: x.address,
@@ -103,6 +117,57 @@ export class FlowsService {
         lastError: x.last_error ?? null,
         receiving: !!x.last_packet_at && Date.now() - new Date(x.last_packet_at as string).getTime() < 5 * 60_000,
       })),
+    };
+  }
+
+  /**
+   * Flow totals against the uplink interface's counters over 30 minutes ending
+   * 35 minutes ago (so flows held back by a 30-minute active timeout have arrived).
+   */
+  private async coverage(p: Principal, x: Record<string, unknown>): Promise<{ coverage: FlowCoverage | null; note: string | null }> {
+    if (!x.device_id || !x.live_interface) return { coverage: null, note: null };
+    const [iface] = (await this.db.execute<{ id: string }>(sql`select id from interfaces where device_id = ${x.device_id as string} and name = ${x.live_interface as string} limit 1`)).rows;
+    if (!iface) return { coverage: null, note: `Interface ${String(x.live_interface)} is not recorded on ${String(x.device_name ?? 'the linked device')}; run discovery on it to compare flows with its counters.` };
+    const to = new Date(Math.floor((Date.now() - 35 * 60_000) / 60_000) * 60_000);
+    const from = new Date(to.getTime() - 30 * 60_000);
+    const [c] = (
+      await this.db.execute<{ in_b: number | null; out_b: number | null; secs: number | null }>(sql`
+        select sum(in_bps * seconds) / 8 as in_b, sum(out_bps * seconds) / 8 as out_b, sum(seconds) as secs
+          from interface_rates where interface_id = ${iface.id} and at > ${from.toISOString()}::timestamptz and at <= ${to.toISOString()}::timestamptz`)
+    ).rows;
+    if (!c || Number(c.secs ?? 0) < 0.7 * 1800)
+      return {
+        coverage: null,
+        note: `${String(x.live_interface)} on ${String(x.device_name ?? 'the linked device')} is not monitored (or was not polled 35–65 minutes ago); turn on monitoring for the device to compare flows with its counters.`,
+      };
+    const [t] = (
+      await this.db.execute<{ in_b: number | null; out_b: number | null }>(sql`
+        select sum(in_bytes) as in_b, sum(out_bytes) as out_b from ip_traffic_1m where org_id = ${p.orgId} and bucket >= ${from.toISOString()}::timestamptz and bucket < ${to.toISOString()}::timestamptz`)
+    ).rows;
+    const scale = 1800 / Number(c.secs);
+    const rx = Number(c.in_b ?? 0) * scale;
+    const tx = Number(c.out_b ?? 0) * scale;
+    const uplink = x.live_direction !== 'downlink';
+    const counterDown = uplink ? rx : tx;
+    const counterUp = uplink ? tx : rx;
+    const flowDown = Number(t?.in_b ?? 0);
+    const flowUp = Number(t?.out_b ?? 0);
+    // Below ~1 Mbit/s on average there is too little to compare.
+    const ratio = (f: number, k: number) => (k < (1e6 / 8) * 1800 ? null : f / k);
+    return {
+      coverage: {
+        from: from.toISOString(),
+        to: to.toISOString(),
+        interfaceName: String(x.live_interface),
+        deviceName: (x.device_name as string | null) ?? null,
+        counterDownBytes: counterDown,
+        counterUpBytes: counterUp,
+        flowDownBytes: flowDown,
+        flowUpBytes: flowUp,
+        download: ratio(flowDown, counterDown),
+        upload: ratio(flowUp, counterUp),
+      },
+      note: null,
     };
   }
 

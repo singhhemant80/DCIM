@@ -26,6 +26,13 @@ function tick() {
     flows.push({ src: r, dst: a, bytes: Math.round(((rates[i]!.down * 1e6) / 8) * 5 * jitter), packets: 4000, start: now - 5000, end: now });
     flows.push({ src: a, dst: r, bytes: Math.round(((rates[i]!.up * 1e6) / 8) * 5 * jitter), packets: 1500, start: now - 5000, end: now });
   });
+  // FLOW_SIM_ACTIVE_TIMEOUT_MIN=30 imitates a router left at MikroTik's default 30-minute active timeout:
+  // besides the short flows, a long download is reported only when its timeout expires.
+  const timeoutMin = Number(process.env.FLOW_SIM_ACTIVE_TIMEOUT_MIN ?? 0);
+  if (timeoutMin > 1) {
+    const a = addrs[n % addrs.length]!;
+    flows.push({ src: remote[n % remote.length]!, dst: a, bytes: Math.round(((150 * 1e6) / 8) * timeoutMin * 60 * 0.05), packets: 100000, start: now - timeoutMin * 60_000, end: now });
+  }
   // Transit between two internet addresses: counted as "not your addresses".
   flows.push({ src: '8.8.8.8', dst: '1.1.1.1', bytes: 5000, packets: 4, start: now - 5000, end: now });
   const pkt = encodeTemplated(10, flows, { sysUptimeMs: now - boot, nowMs: now, sequence: seq++, withTemplate: n % 6 === 0 });
