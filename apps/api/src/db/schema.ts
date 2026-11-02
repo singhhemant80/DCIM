@@ -1024,6 +1024,8 @@ export const ipAddresses = pgTable(
     /** 'manual' (entered or imported by a person) or 'hypervisor' (recorded by a Proxmox/Virtualizor sync). */
     source: text('source').notNull().default('manual'),
     reservedUntil: ts('reserved_until'),
+    /** When the address was given to its current customer; set and cleared by a trigger whenever customer_id changes (migration 0034). */
+    assignedAt: ts('assigned_at'),
     notes: text('notes'),
     /** DNS records this address should have in managed zones, and whether they were pushed. */
     dnsStatus: dnsSyncStatusEnum('dns_status').notNull().default('none'),

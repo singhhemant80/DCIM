@@ -415,6 +415,8 @@ export class IpamService {
       interfaceName: r.interface_name as string | null,
       serviceRef: r.service_ref as string | null,
       reservedUntil: r.reserved_until as string | null,
+      /** When the address was given to its current customer (null: the organization's own). */
+      assignedAt: (r.assigned_at as string | null) ?? null,
       prefixId: r.prefix_id as string | null,
       prefix: r.prefix as string | null,
       updatedAt: r.updated_at as string,

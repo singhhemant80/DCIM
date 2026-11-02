@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { IP_ROLES, IP_STATUS_LABELS, PREFIX_STATUSES, PREFIX_STATUS_LABELS, type IpStatus } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { formatDateTime } from '../lib/format';
+import { formatDate, formatDateTime } from '../lib/format';
 import { useTree } from '../lib/dcim';
 import { deviceLabel, useVlans, useVrfs, type InterfaceT, type NetworkDeviceT } from '../lib/network';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Stat, Table, Textarea, cx } from '../components/ui';
@@ -75,6 +75,8 @@ export interface AddressT {
   notes?: string | null;
   dns?: { status: string; error: string | null; syncedAt: string | null; records: { name: string; type: string; content: string }[] };
   updatedAt: string;
+  /** When the address was given to its current customer. */
+  assignedAt: string | null;
   ownerName: string;
   source: 'manual' | 'hypervisor';
   guestId: string | null;
@@ -630,6 +632,7 @@ function AddressList({ prefixId }: { prefixId?: string }) {
                 <th>DNS name</th>
                 <th>Assigned to</th>
                 <th>Owner</th>
+                <th>Assigned on</th>
                 {staff && <th>Service</th>}
                 {!prefixId && <th>Prefix</th>}
                 <th>Updated</th>
@@ -681,6 +684,9 @@ function AddressList({ prefixId }: { prefixId?: string }) {
                     {!a.deviceName && !a.guestName && '—'}
                   </td>
                   <td className="text-[13px]">{a.customerName ?? <span className="text-ink-2">{a.ownerName}</span>}</td>
+                  <td className="text-[13px] whitespace-nowrap" title={a.assignedAt ? formatDateTime(a.assignedAt) : undefined}>
+                    {a.assignedAt ? formatDate(a.assignedAt) : <span className="text-ink-3">—</span>}
+                  </td>
                   {staff && <td className="text-[13px]">{a.serviceRef ?? '—'}</td>}
                   {!prefixId && <td className="font-mono text-[12.5px]">{a.prefix ?? <Chip tone="crit">no prefix</Chip>}</td>}
                   <td className="text-[12.5px] whitespace-nowrap text-ink-3">{formatDateTime(a.updatedAt)}</td>

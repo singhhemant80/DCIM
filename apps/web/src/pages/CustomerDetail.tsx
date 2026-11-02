@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { formatDateTime } from '../lib/format';
+import { formatDate, formatDateTime } from '../lib/format';
 import type { Customer, UserRow } from '../lib/types';
 import { watts, type AllocationT, type CrossConnectT, type ServiceT, type TicketT } from '../lib/colocation';
 import type { PortRateT } from '../lib/monitoring';
@@ -132,7 +132,15 @@ export function CustomerDetailPage() {
           {tiles.map(([k, v, note, href]) => (
             <div key={k} className="bg-panel px-4 py-3">
               <p className="text-[12.5px] text-ink-2">{k}</p>
-              <p className="text-[21px] font-semibold tracking-[-0.01em]">{href ? <a href={href} className="text-accent hover:underline">{v}</a> : v}</p>
+              <p className="text-[21px] font-semibold tracking-[-0.01em]">
+                {href ? (
+                  <a href={href} className="text-accent hover:underline">
+                    {v}
+                  </a>
+                ) : (
+                  v
+                )}
+              </p>
               {note && <p className="text-[12px] text-ink-3">{note}</p>}
             </div>
           ))}
@@ -144,8 +152,22 @@ export function CustomerDetailPage() {
           <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
             {(
               [
-                ['Contact email', cu.contactEmail ? <a href={`mailto:${cu.contactEmail}`} className="text-accent hover:underline">{cu.contactEmail}</a> : null],
-                ['Phone', cu.phone ? <a href={`tel:${cu.phone}`} className="text-accent hover:underline">{cu.phone}</a> : null],
+                [
+                  'Contact email',
+                  cu.contactEmail ? (
+                    <a href={`mailto:${cu.contactEmail}`} className="text-accent hover:underline">
+                      {cu.contactEmail}
+                    </a>
+                  ) : null,
+                ],
+                [
+                  'Phone',
+                  cu.phone ? (
+                    <a href={`tel:${cu.phone}`} className="text-accent hover:underline">
+                      {cu.phone}
+                    </a>
+                  ) : null,
+                ],
                 ['Billing reference', cu.billingReference],
                 ['Last changed', formatDateTime(cu.updatedAt)],
               ] as [string, ReactNode][]
@@ -171,7 +193,13 @@ export function CustomerDetailPage() {
             title="Network ports and bandwidth"
             q={ports}
             empty="No monitored ports are cabled to this customer's equipment."
-            more={ports.data?.length ? <span className="text-[13px] text-ink-2">Now: in {formatBps(inTraffic)} · out {formatBps(outTraffic)}</span> : undefined}
+            more={
+              ports.data?.length ? (
+                <span className="text-[13px] text-ink-2">
+                  Now: in {formatBps(inTraffic)} · out {formatBps(outTraffic)}
+                </span>
+              ) : undefined
+            }
           >
             {(rows) => (
               <Table label="Ports">
@@ -220,7 +248,13 @@ export function CustomerDetailPage() {
               title="IP addresses"
               q={ips}
               empty="No IP addresses are assigned to this customer."
-              more={(ips.data?.length ?? 0) > 12 && <button className="text-[13px] text-accent hover:underline" onClick={() => setAllIps((v) => !v)}>{allIps ? 'Show fewer' : `Show all ${ips.data?.length}`}</button>}
+              more={
+                (ips.data?.length ?? 0) > 12 && (
+                  <button className="text-[13px] text-accent hover:underline" onClick={() => setAllIps((v) => !v)}>
+                    {allIps ? 'Show fewer' : `Show all ${ips.data?.length}`}
+                  </button>
+                )
+              }
             >
               {(rows) => (
                 <Table label="IP addresses">
@@ -230,6 +264,7 @@ export function CustomerDetailPage() {
                       <th>Device</th>
                       <th>DNS name</th>
                       <th>Status</th>
+                      <th>Assigned on</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -240,10 +275,21 @@ export function CustomerDetailPage() {
                           {a.prefixLength !== null && <span className="text-ink-3">/{a.prefixLength}</span>}
                           {a.role && <span className="ml-2 font-sans text-[12px] text-ink-3">{label(a.role)}</span>}
                         </td>
-                        <td>{a.deviceId ? <Link to={`/hardware/${a.deviceId}`} className="text-accent hover:underline">{a.deviceName}</Link> : none}</td>
+                        <td>
+                          {a.deviceId ? (
+                            <Link to={`/hardware/${a.deviceId}`} className="text-accent hover:underline">
+                              {a.deviceName}
+                            </Link>
+                          ) : (
+                            none
+                          )}
+                        </td>
                         <td className="text-[13px] text-ink-2">{a.dnsName ?? none}</td>
                         <td>
                           <Chip tone={a.status === 'allocated' ? 'ok' : a.status === 'reserved' ? 'accent' : 'neutral'}>{label(a.status)}</Chip>
+                        </td>
+                        <td className="text-[13px] whitespace-nowrap" title={a.assignedAt ? formatDateTime(a.assignedAt) : undefined}>
+                          {a.assignedAt ? formatDate(a.assignedAt) : none}
                         </td>
                       </tr>
                     ))}

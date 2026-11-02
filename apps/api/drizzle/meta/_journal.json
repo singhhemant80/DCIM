@@ -239,6 +239,13 @@
       "when": 1792948720085,
       "tag": "0033_bgp_upstreams",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793635660806,
+      "tag": "0034_ip_assigned_at",
+      "breakpoints": true
     }
   ]
 }

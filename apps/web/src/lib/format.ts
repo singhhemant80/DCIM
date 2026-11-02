@@ -4,6 +4,12 @@ export function formatDateTime(iso: string | null | undefined, timeZone?: string
   return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(d);
 }
 
+/** A date without the time, e.g. "2 Nov 2026". */
+export function formatDate(iso: string | null | undefined, timeZone?: string): string {
+  if (!iso) return '—';
+  return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeZone }).format(new Date(iso));
+}
+
 export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return 'never';
   const s = Math.round((now - new Date(iso).getTime()) / 1000);
