@@ -10,6 +10,7 @@ import { watts, type AllocationT, type CrossConnectT, type ServiceT, type Ticket
 import type { PortRateT } from '../lib/monitoring';
 import { formatBps } from '../lib/network';
 import type { AddressT, PrefixT } from './Ipam';
+import { AddressHolder } from '../components/AddressHolder';
 import { CustomerEquipment } from './Hardware';
 import { CustomerForm } from './Customers';
 import { TopIps } from '../components/TopIps';
@@ -261,7 +262,7 @@ export function CustomerDetailPage() {
                   <thead>
                     <tr>
                       <th>Address</th>
-                      <th>Device</th>
+                      <th>Used by</th>
                       <th>DNS name</th>
                       <th>Status</th>
                       <th>Assigned on</th>
@@ -275,14 +276,8 @@ export function CustomerDetailPage() {
                           {a.prefixLength !== null && <span className="text-ink-3">/{a.prefixLength}</span>}
                           {a.role && <span className="ml-2 font-sans text-[12px] text-ink-3">{label(a.role)}</span>}
                         </td>
-                        <td>
-                          {a.deviceId ? (
-                            <Link to={`/hardware/${a.deviceId}`} className="text-accent hover:underline">
-                              {a.deviceName}
-                            </Link>
-                          ) : (
-                            none
-                          )}
+                        <td className="max-w-[30ch]">
+                          <AddressHolder a={a} staff />
                         </td>
                         <td className="text-[13px] text-ink-2">{a.dnsName ?? none}</td>
                         <td>

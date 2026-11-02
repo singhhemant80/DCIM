@@ -265,6 +265,12 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 * `CDCIM_ROUTING_CHECK=false` turns the checks off (for a worker without internet access).
 * Upstream / IX peering check: the worker queries an IRRd 4 server's HTTP whois interface (`CDCIM_IRR_URL`, default `https://rr.ntt.net`) with `!i` (AS-SET expansion), `!g` / `!6` (route objects by origin) for the provider's AS-SET and your ASNs only. On your MikroTik routers in service (at most 10, with a RouterOS credential) it reads `/routing/bgp/session` (or `/routing/bgp/peer` on RouterOS 6) and `/routing/bgp/advertisements` with GET (REST) or `print` (API, whose client refuses any other command). It never changes a BGP session, filter or route; errors are stored with the credential redacted.
 
+## Who uses each IP (ARP, DHCP, reverse DNS)
+
+* Every 10 minutes the worker reads `/ip/arp`, `/ipv6/neighbor` and `/ip/dhcp-server/lease` from MikroTik routers in service that have a RouterOS credential (GET over REST, `print` over the API, whose client refuses anything else). It keeps the MAC, MAC vendor, DHCP host name, router and interface only for addresses inside the organization's IPAM prefixes (global table); failed ARP entries and link-local IPv6 are dropped. Reverse-DNS names are looked up through the server's resolver for recorded and observed addresses, at most once a day each.
+* These observations, BMC addresses and hypervisor node names are staff-only. Customers see their own server's hostname, brand and model, their VM's OS and size, and public reverse-DNS names.
+* MAC vendors come from the IEEE OUI registry bundled in the `oui-data` npm package (data only, no install scripts, pinned version).
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.

@@ -40,6 +40,14 @@ void (async () => {
       { name: 'joy-mum-1', 'remote.address': '103.27.171.230', 'remote.as': '152565', established: 'true', uptime: '3d4h12m', 'prefix-count': '11840' },
       { name: 'joy-del-1', 'remote.address': '103.162.77.5', 'remote.as': '152565', established: 'false', state: 'active' },
     ],
+    // Who is on the server VLAN: ARP and DHCP leases (MAC vendors resolve to Dell, Supermicro, QEMU).
+    '/rest/ip/arp': [
+      { address: '103.150.120.2', 'mac-address': 'B8:2A:72:10:20:30', interface: 'vlan100', complete: 'true' },
+      { address: '103.150.120.40', 'mac-address': 'AC:1F:6B:44:55:66', interface: 'vlan100', complete: 'true' },
+      { address: '103.150.120.41', 'mac-address': '52:54:00:12:34:56', interface: 'vlan100', complete: 'true' },
+      { address: '103.150.120.42', 'mac-address': 'F8:BC:12:AA:00:01', interface: 'vlan100', complete: 'true' },
+    ],
+    '/rest/ip/dhcp-server/lease': [{ address: '103.150.120.42', 'mac-address': 'F8:BC:12:AA:00:01', 'host-name': 'noc-desktop-3', server: 'dhcp-mgmt', status: 'bound' }],
     '/rest/routing/bgp/advertisements': [
       { peer: 'joy-mum-1', prefix: '45.10.20.0/22' },
       { peer: 'joy-mum-1', prefix: '2a0e:1000::/32' },

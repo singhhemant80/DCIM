@@ -167,6 +167,21 @@ export interface Adapter {
   serverHealth?(t: AdapterTarget): Promise<ServerHealth>;
   /** Read-only BGP state of a router: sessions and, where the router reports them, the prefixes sent to each peer. */
   bgp?(t: AdapterTarget): Promise<BgpReadout>;
+  /** Read-only: who is on the router's networks — ARP and IPv6 neighbour tables and DHCP leases. */
+  neighbors?(t: AdapterTarget): Promise<NeighborReadout>;
+}
+
+export interface NeighborEntry {
+  address: string;
+  mac: string | null;
+  interface: string | null;
+  /** DHCP lease host name, when the address has a lease. */
+  hostName: string | null;
+  source: 'arp' | 'ipv6' | 'dhcp';
+}
+export interface NeighborReadout {
+  entries: NeighborEntry[];
+  warnings: string[];
 }
 
 export interface BgpReadout {

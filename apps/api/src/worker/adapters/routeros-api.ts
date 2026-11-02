@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import net from 'node:net';
 import tls from 'node:tls';
-import type { Adapter, AdapterTarget, BgpReadout, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
-import { advertisementsFromRouterOs, bgpPeersFromRouterOs, parseRouterOs, parseRouterOsCounters, parseRouterOsHealth, parseRouterOsPower, routerosUptime } from './routeros';
+import type { Adapter, AdapterTarget, BgpReadout, NeighborReadout, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import { advertisementsFromRouterOs, bgpPeersFromRouterOs, neighborsFromRouterOs, parseRouterOs, parseRouterOsCounters, parseRouterOsHealth, parseRouterOsPower, routerosUptime } from './routeros';
 import { str } from './http';
 
 /**
@@ -291,6 +291,26 @@ export function routerOsApiAdapter(): Adapter {
     return c;
   };
   return {
+    async neighbors(t): Promise<NeighborReadout> {
+      const c = await open(t);
+      const warnings: string[] = [];
+      const list = async (path: string, label: string) => {
+        try {
+          return await c.print(path);
+        } catch (e) {
+          warnings.push(`${label}: ${(e as Error).message}`.slice(0, 200));
+          return [] as Row[];
+        }
+      };
+      try {
+        const arp = await list('/ip/arp', 'ARP');
+        const v6 = await list('/ipv6/neighbor', 'IPv6 neighbours');
+        const leases = await list('/ip/dhcp-server/lease', 'DHCP leases');
+        return { entries: neighborsFromRouterOs(arp, v6, leases), warnings };
+      } finally {
+        c.close();
+      }
+    },
     async bgp(t): Promise<BgpReadout> {
       const c = await open(t);
       const warnings: string[] = [];

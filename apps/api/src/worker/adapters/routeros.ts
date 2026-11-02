@@ -1,5 +1,19 @@
 import type { InterfaceKind } from '@crapplet/shared';
-import type { Adapter, AdapterTarget, BgpReadout, CounterSnapshot, HealthSnapshot, PowerSnapshot, DiscoveredBgpPeer, DiscoveredInterface, DiscoveredNeighbor, DiscoveryResult, TestResult } from '../../network/discovery/types';
+import type {
+  Adapter,
+  AdapterTarget,
+  BgpReadout,
+  NeighborEntry,
+  NeighborReadout,
+  CounterSnapshot,
+  HealthSnapshot,
+  PowerSnapshot,
+  DiscoveredBgpPeer,
+  DiscoveredInterface,
+  DiscoveredNeighbor,
+  DiscoveryResult,
+  TestResult,
+} from '../../network/discovery/types';
 import { DeviceHttpError, basicAuth, bool, counter, deviceRequest, int, normalizeMac, speed, str } from './http';
 
 /**
@@ -56,6 +70,31 @@ export function bgpPeersFromRouterOs(rows: Row[]): DiscoveredBgpPeer[] {
     vrf: str(b.vrf) ?? str(b['routing-table']),
     description: str(b.name),
   }));
+}
+
+/** ARP, IPv6 neighbours and DHCP leases as neighbour entries (incomplete / failed entries left out). */
+export function neighborsFromRouterOs(arp: Row[], v6: Row[], leases: Row[]): NeighborEntry[] {
+  const mac = (v: unknown) => {
+    const m = normalizeMac(str(v) ?? '');
+    return m && m !== '00:00:00:00:00:00' ? m : null;
+  };
+  const out: NeighborEntry[] = [];
+  for (const r of arp) {
+    const address = str(r.address);
+    if (!address || str(r.complete) === 'false' || /failed|incomplete/.test(str(r.status) ?? '')) continue;
+    out.push({ address, mac: mac(r['mac-address']), interface: str(r.interface), hostName: null, source: 'arp' });
+  }
+  for (const r of v6) {
+    const address = str(r.address);
+    if (!address || /^fe80:/i.test(address) || /failed|incomplete|noarp/.test(str(r.status) ?? '')) continue;
+    out.push({ address, mac: mac(r['mac-address']), interface: str(r.interface), hostName: null, source: 'ipv6' });
+  }
+  for (const r of leases) {
+    const address = str(r['active-address']) ?? str(r.address);
+    if (!address || !/^\d+\.\d+\.\d+\.\d+$/.test(address)) continue;
+    out.push({ address, mac: mac(r['active-mac-address'] ?? r['mac-address']), interface: str(r.server), hostName: str(r['host-name']) ?? str(r.comment), source: 'dhcp' });
+  }
+  return out;
 }
 
 /** Prefixes sent per peer from RouterOS 7 `/routing/bgp/advertisements` (filled when the connection keeps sent attributes). */
@@ -248,6 +287,23 @@ export function routerOsAdapter(): Adapter {
       const r = parseRouterOsPower(await get(t, '/system/health'));
       if (!r) throw new Error('This RouterOS device reports no power-consumption in /system/health');
       return r;
+    },
+    async neighbors(t): Promise<NeighborReadout> {
+      const warnings: string[] = [];
+      const list = async (path: string, label: string): Promise<Row[]> => {
+        try {
+          const r = await get(t, path);
+          return Array.isArray(r) ? (r as Row[]) : [];
+        } catch (e) {
+          if (e instanceof DeviceHttpError && (e.status === 401 || e.status === 403)) throw e;
+          warnings.push(`${label}: ${(e as Error).message}`.slice(0, 200));
+          return [];
+        }
+      };
+      const arp = await list('/ip/arp', 'ARP');
+      const v6 = await list('/ipv6/neighbor', 'IPv6 neighbours');
+      const leases = await list('/ip/dhcp-server/lease', 'DHCP leases');
+      return { entries: neighborsFromRouterOs(arp, v6, leases), warnings };
     },
     async bgp(t): Promise<BgpReadout> {
       const warnings: string[] = [];

@@ -4,12 +4,13 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { IP_ROLES, IP_STATUS_LABELS, PREFIX_STATUSES, PREFIX_STATUS_LABELS, type IpStatus } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { formatDate, formatDateTime } from '../lib/format';
+import { formatDate, formatDateTime, relativeTime } from '../lib/format';
 import { useTree } from '../lib/dcim';
 import { deviceLabel, useVlans, useVrfs, type InterfaceT, type NetworkDeviceT } from '../lib/network';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Stat, Table, Textarea, cx } from '../components/ui';
 import { useCustomerOptions } from './Racks';
 import { Tabs } from './Network';
+import { AddressHolder, type AddressDetailsT } from '../components/AddressHolder';
 import { PrefixRoutingPanel, RoutingChip, RoutingTab } from '../components/Routing';
 import { AddressDns, DnsTab } from './IpamDns';
 
@@ -48,7 +49,7 @@ interface PrefixDetailT extends PrefixT {
   available: { first: string; last: string; count: string }[];
   ptrZone: string;
   /** Answer ping but are not recorded in IPAM. */
-  unrecorded: { address: string; rttMs: number | null; lastSeenAt: string }[];
+  unrecorded: { address: string; rttMs: number | null; lastSeenAt: string | null; pings: boolean; mac: string | null; vendor: string | null; dhcpHostName: string | null; ptr: string | null; router: string | null }[];
 }
 export interface AddressT {
   id: string;
@@ -81,6 +82,7 @@ export interface AddressT {
   source: 'manual' | 'hypervisor';
   guestId: string | null;
   guestName: string | null;
+  details?: AddressDetailsT;
   reachability: { reachable: boolean; rttMs: number | null; lastSeenAt: string | null; checkedAt: string } | null;
 }
 
@@ -533,35 +535,76 @@ export function PrefixDetailPage() {
           </Panel>
         )}
         {staff && !p.vrfId && <PrefixRoutingPanel prefixId={p.id} prefix={p.prefix} />}
-        {staff && p.pingSweep && (
-          <Panel title="Reachability">
-            <p className="text-[13px] text-ink-2">
-              {p.pingError ? (
-                <span className="text-crit">Last check failed: {p.pingError}</span>
-              ) : p.pingCheckedAt ? (
-                <>Pinged {formatDateTime(p.pingCheckedAt)} from the NexoraDC worker; checked again every 5 minutes. A device that blocks ping shows “no reply” even when it is up.</>
-              ) : (
-                'Waiting for the first check (within a minute).'
-              )}
-            </p>
+        {staff && (p.pingSweep || p.unrecorded.length > 0) && (
+          <Panel title="Reachability and unrecorded users">
+            {p.pingSweep ? (
+              <p className="text-[13px] text-ink-2">
+                {p.pingError ? (
+                  <span className="text-crit">Last check failed: {p.pingError}</span>
+                ) : p.pingCheckedAt ? (
+                  <>Pinged {formatDateTime(p.pingCheckedAt)} from the NexoraDC worker; checked again every 5 minutes. A device that blocks ping shows “no reply” even when it is up.</>
+                ) : (
+                  'Waiting for the first check (within a minute).'
+                )}
+              </p>
+            ) : (
+              <p className="text-[13px] text-ink-2">Ping checks are off for this prefix; the addresses below were seen in your routers' ARP / neighbour tables or DHCP leases.</p>
+            )}
             {p.unrecorded.length > 0 && (
               <div className="mt-3">
-                <div className="mb-1.5 text-[13px] font-medium">Answer ping but are not recorded ({p.unrecorded.length})</div>
-                <ul className="flex flex-wrap gap-2 font-mono text-[12.5px]">
-                  {p.unrecorded.map((x) => (
-                    <li key={x.address}>
-                      <button
-                        className="rounded-lg border border-warn/40 bg-warn-soft px-2 py-1 hover:border-warn"
-                        title="Record this address"
-                        onClick={() => (setPreset(x.address), setAlloc('specific'))}
-                      >
-                        {x.address}
-                        {x.rttMs !== null && <span className="ml-1 font-sans text-ink-3">{x.rttMs < 10 ? x.rttMs.toFixed(1) : Math.round(x.rttMs)} ms</span>}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-2 text-[12.5px] text-ink-3">Something is using these addresses without an IPAM record. Click one to record it.</p>
+                <div className="mb-1.5 text-[13px] font-medium">In use but not recorded ({p.unrecorded.length})</div>
+                <Table label="Addresses in use without an IPAM record">
+                  <thead>
+                    <tr>
+                      <th>Address</th>
+                      <th>Ping</th>
+                      <th>Name</th>
+                      <th>MAC · vendor</th>
+                      <th>Seen on</th>
+                      <th>
+                        <span className="sr-only">Record</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {p.unrecorded.map((x) => (
+                      <tr key={x.address}>
+                        <td className="font-mono text-[13px]">{x.address}</td>
+                        <td className="text-[12.5px] whitespace-nowrap">
+                          {x.pings ? <span className="text-ok">{x.rttMs !== null ? `${x.rttMs < 10 ? x.rttMs.toFixed(1) : Math.round(x.rttMs)} ms` : 'answers'}</span> : <span className="text-ink-3">no reply / not checked</span>}
+                        </td>
+                        <td className="text-[13px]">
+                          {x.dhcpHostName && (
+                            <span className="block">
+                              {x.dhcpHostName} <span className="text-[12px] text-ink-3">(DHCP)</span>
+                            </span>
+                          )}
+                          {x.ptr && <span className="block text-[12px] text-ink-2">rDNS {x.ptr}</span>}
+                          {!x.dhcpHostName && !x.ptr && <span className="text-ink-3">—</span>}
+                        </td>
+                        <td className="text-[12.5px]">
+                          {x.mac ? (
+                            <>
+                              <span className="font-mono">{x.mac}</span>
+                              {x.vendor && <span className="block text-ink-2">{x.vendor}</span>}
+                            </>
+                          ) : (
+                            <span className="text-ink-3">—</span>
+                          )}
+                        </td>
+                        <td className="text-[12.5px] text-ink-3">{x.router ? `${x.router}${x.lastSeenAt ? `, ${relativeTime(x.lastSeenAt)}` : ''}` : x.lastSeenAt ? relativeTime(x.lastSeenAt) : '—'}</td>
+                        <td className="text-right">
+                          {writable && (
+                            <Button size="sm" onClick={() => (setPreset(x.address), setAlloc('specific'))}>
+                              Record
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+                <p className="mt-2 text-[12.5px] text-ink-3">Something is using these addresses without an IPAM record. MAC vendor from the IEEE registry; names from DHCP leases and reverse DNS.</p>
               </div>
             )}
           </Panel>
@@ -664,24 +707,8 @@ function AddressList({ prefixId }: { prefixId?: string }) {
                     {a.dns?.status === 'pending' && <Chip tone="est">DNS pending</Chip>}
                     {a.dns?.status === 'synced' && <Chip tone="ok">in DNS</Chip>}
                   </td>
-                  <td className="text-[13px]">
-                    {a.deviceName ? (
-                      staff ? (
-                        <Link to={`/hardware/${a.deviceId}`} onClick={(e) => e.stopPropagation()} className="text-accent hover:underline">
-                          {a.deviceName}
-                        </Link>
-                      ) : (
-                        a.deviceName
-                      )
-                    ) : null}
-                    {a.interfaceName && <span className="font-mono"> {a.interfaceName}</span>}
-                    {a.guestName && (
-                      <div>
-                        VM <span className="font-medium">{a.guestName}</span>
-                        {a.source === 'hypervisor' && <span className="ml-1 text-[11.5px] text-ink-3">(from hypervisor sync)</span>}
-                      </div>
-                    )}
-                    {!a.deviceName && !a.guestName && '—'}
+                  <td className="max-w-[30ch]">
+                    <AddressHolder a={a} staff={!!staff} />
                   </td>
                   <td className="text-[13px]">{a.customerName ?? <span className="text-ink-2">{a.ownerName}</span>}</td>
                   <td className="text-[13px] whitespace-nowrap" title={a.assignedAt ? formatDateTime(a.assignedAt) : undefined}>

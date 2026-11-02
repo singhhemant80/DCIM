@@ -1001,6 +1001,32 @@ export const prefixRouting = pgTable(
   (t) => [index('prefix_routing_org_idx').on(t.orgId), index('prefix_routing_next_idx').on(t.nextAt)],
 );
 
+/**
+ * What is seen at an address inside your prefixes, whether or not IPAM records
+ * it: MAC address and its vendor from your routers' ARP / IPv6 neighbour
+ * tables, the DHCP lease host name, and the reverse-DNS name. Read-only
+ * observations; never changes anything on the routers.
+ */
+export const ipObservations = pgTable(
+  'ip_observations',
+  {
+    orgId: orgRef(),
+    address: inetCol('address').notNull(),
+    mac: text('mac'),
+    /** Vendor of the MAC address (IEEE OUI registry). */
+    vendor: text('vendor'),
+    dhcpHostName: text('dhcp_host_name'),
+    /** Router and interface where the address was seen. */
+    routerDeviceId: uuid('router_device_id').references(() => devices.id, { onDelete: 'set null' }),
+    interfaceName: text('interface_name'),
+    seenAt: ts('seen_at'),
+    /** Reverse-DNS (PTR) name, looked up by the worker. */
+    ptr: text('ptr'),
+    ptrAt: ts('ptr_at'),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.address] }), index('ip_observations_seen_idx').on(t.seenAt)],
+);
+
 export const ipAddresses = pgTable(
   'ip_addresses',
   {

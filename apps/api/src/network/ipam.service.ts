@@ -162,12 +162,19 @@ export class IpamService {
     const unrecorded =
       p.userType === 'staff'
         ? (
-            await this.db.execute<{ ip: string; rtt_ms: number | null; last_seen_at: string }>(sql`
-              select host(r.address) as ip, r.rtt_ms, r.last_seen_at from ip_reachability r
-               where r.org_id = ${p.orgId} and r.reachable and r.address <<= ${String(pre.prefix)}::cidr
-                 and not exists (select 1 from ip_addresses a where a.org_id = r.org_id and a.address = r.address and coalesce(a.vrf_id, ${ZERO_UUID}) = coalesce(${pre.vrfId}::uuid, ${ZERO_UUID}) and a.status <> 'released')
-               order by r.address limit 500`)
-          ).rows.map((x) => ({ address: x.ip, rttMs: x.rtt_ms === null ? null : Number(x.rtt_ms), lastSeenAt: x.last_seen_at }))
+            await this.db.execute<{ ip: string; rtt_ms: number | null; last_seen_at: string | null; mac: string | null; vendor: string | null; dhcp: string | null; ptr: string | null; router: string | null; pings: boolean }>(sql`
+              select host(x.address) as ip, r.rtt_ms, coalesce(r.last_seen_at, o.seen_at) as last_seen_at, coalesce(r.reachable, false) as pings,
+                     o.mac, o.vendor, o.dhcp_host_name as dhcp, o.ptr, coalesce(od.hostname, od.asset_tag) as router
+                from (select r.address from ip_reachability r where r.org_id = ${p.orgId} and r.reachable and r.address <<= ${String(pre.prefix)}::cidr
+                      union
+                      -- Seen in a router's ARP / neighbour table or DHCP leases in the last day (global table only).
+                      select o.address from ip_observations o where o.org_id = ${p.orgId} and ${pre.vrfId}::uuid is null and o.mac is not null and o.seen_at > now() - interval '1 day' and o.address <<= ${String(pre.prefix)}::cidr) x
+                left join ip_reachability r on r.org_id = ${p.orgId} and r.address = x.address
+                left join ip_observations o on o.org_id = ${p.orgId} and o.address = x.address
+                left join devices od on od.id = o.router_device_id
+               where not exists (select 1 from ip_addresses a where a.org_id = ${p.orgId} and a.address = x.address and coalesce(a.vrf_id, ${ZERO_UUID}) = coalesce(${pre.vrfId}::uuid, ${ZERO_UUID}) and a.status <> 'released')
+               order by x.address limit 500`)
+          ).rows.map((x) => ({ address: x.ip, rttMs: x.rtt_ms === null ? null : Number(x.rtt_ms), lastSeenAt: x.last_seen_at, pings: !!x.pings, mac: x.mac, vendor: x.vendor, dhcpHostName: x.dhcp, ptr: x.ptr, router: x.router }))
         : [];
     return { ...self, parents, children, available: p.userType === 'staff' ? await this.availableRanges(this.db, pre, c, 20) : [], ptrZone: reverseZone(c), unrecorded };
   }
@@ -378,6 +385,13 @@ export class IpamService {
     return sql`
       select a.*, host(a.address) as ip, v.name as vrf_name, cu.name as customer_name, coalesce(d.hostname, d.asset_tag) as device_name, i.name as interface_name,
              d.customer_id as device_customer_id, o.name as org_name, g.name as guest_name,
+             d.hostname as device_hostname, d.asset_tag as device_asset_tag, d.category::text as device_category, d.mgmt_type::text as device_mgmt_type, d.mgmt_address as device_mgmt_address,
+             dm.name as device_model, dmf.name as device_brand,
+             g.os_name as guest_os, g.virt_type as guest_virt_type, g.status as guest_status, g.cpus as guest_cpus, g.mem_bytes as guest_mem,
+             vh.name as guest_node, vh.device_id as guest_node_device_id, coalesce(vhd.hostname, vhd.asset_tag) as guest_node_device_name, vi.kind::text as guest_platform,
+             bmc.id as bmc_device_id, bmc.name as bmc_device_name, bmc.mgmt_type as bmc_type, bmc.brand as bmc_brand, bmc.model as bmc_model,
+             ob.mac as obs_mac, ob.vendor as obs_vendor, ob.dhcp_host_name as obs_dhcp, ob.ptr as obs_ptr, ob.interface_name as obs_interface, ob.seen_at as obs_seen_at,
+             coalesce(obr.hostname, obr.asset_tag) as obs_router,
              rr.reachable as ping_reachable, rr.rtt_ms as ping_rtt_ms, rr.last_seen_at as ping_last_seen_at, rr.checked_at as ping_checked_at,
              (select x.customer_id from prefixes x where x.org_id = a.org_id and ${sameVrf('x', 'a')} and a.address <<= x.prefix order by masklen(x.prefix) desc limit 1) as prefix_customer_id,
              (select x.id from prefixes x where x.org_id = a.org_id and ${sameVrf('x', 'a')} and a.address <<= x.prefix order by masklen(x.prefix) desc limit 1) as prefix_id,
@@ -389,6 +403,22 @@ export class IpamService {
       left join interfaces i on i.id = a.interface_id
       left join organizations o on o.id = a.org_id
       left join virt_guests g on g.id = a.guest_id
+      left join device_models dm on dm.id = d.model_id
+      left join manufacturers dmf on dmf.id = dm.manufacturer_id
+      left join virt_hosts vh on vh.id = g.host_id
+      left join devices vhd on vhd.id = vh.device_id
+      left join virt_integrations vi on vi.id = g.integration_id
+      left join ip_observations ob on ob.org_id = a.org_id and ob.address = a.address
+      left join devices obr on obr.id = ob.router_device_id
+      -- The address is a server's BMC (iDRAC / iLO / iRMC): its management address or a BMC credential's host.
+      left join lateral (
+        select b.id, coalesce(b.hostname, b.asset_tag) as name, b.mgmt_type::text as mgmt_type, bm.name as model, bmf.name as brand
+          from devices b join device_models bm on bm.id = b.model_id join manufacturers bmf on bmf.id = bm.manufacturer_id
+         where b.org_id = a.org_id and a.vrf_id is null
+           and (b.mgmt_address = host(a.address)
+                or exists (select 1 from device_credentials c where c.device_id = b.id and c.kind in ('redfish', 'ipmi') and c.host = host(a.address))
+                or exists (select 1 from control_credentials cc where cc.device_id = b.id and cc.host = host(a.address)))
+         limit 1) bmc on true
       left join ip_reachability rr on rr.org_id = a.org_id and rr.address = a.address`;
   }
 
@@ -425,6 +455,47 @@ export class IpamService {
       source: (r.source as string) ?? 'manual',
       guestId: (r.guest_id as string | null) ?? null,
       guestName: (r.guest_name as string | null) ?? null,
+      /** Who uses the address: the server or device (brand, model, BMC), the VM (OS, node), the server whose BMC it is, and what the routers and DNS show. */
+      details: {
+        device: r.device_id
+          ? {
+              hostname: (r.device_hostname as string | null) ?? null,
+              assetTag: (r.device_asset_tag as string | null) ?? null,
+              category: (r.device_category as string | null) ?? null,
+              brand: (r.device_brand as string | null) ?? null,
+              model: (r.device_model as string | null) ?? null,
+              bmc: r.device_mgmt_type || r.device_mgmt_address ? { type: (r.device_mgmt_type as string | null) ?? null, address: (r.device_mgmt_address as string | null) ?? null } : null,
+            }
+          : null,
+        vm: r.guest_id
+          ? {
+              os: (r.guest_os as string | null) ?? null,
+              status: (r.guest_status as string | null) ?? null,
+              virtType: (r.guest_virt_type as string | null) ?? null,
+              platform: (r.guest_platform as string | null) ?? null,
+              cpus: r.guest_cpus === null || r.guest_cpus === undefined ? null : Number(r.guest_cpus),
+              memBytes: r.guest_mem === null || r.guest_mem === undefined ? null : Number(r.guest_mem),
+              node: (r.guest_node as string | null) ?? null,
+              nodeDeviceId: (r.guest_node_device_id as string | null) ?? null,
+              nodeDeviceName: (r.guest_node_device_name as string | null) ?? null,
+            }
+          : null,
+        bmcOf: r.bmc_device_id
+          ? { deviceId: r.bmc_device_id as string, name: r.bmc_device_name as string, type: (r.bmc_type as string | null) ?? null, brand: (r.bmc_brand as string | null) ?? null, model: (r.bmc_model as string | null) ?? null }
+          : null,
+        observed:
+          r.obs_mac || r.obs_ptr || r.obs_dhcp
+            ? {
+                mac: (r.obs_mac as string | null) ?? null,
+                vendor: (r.obs_vendor as string | null) ?? null,
+                dhcpHostName: (r.obs_dhcp as string | null) ?? null,
+                ptr: (r.obs_ptr as string | null) ?? null,
+                router: (r.obs_router as string | null) ?? null,
+                interface: (r.obs_interface as string | null) ?? null,
+                seenAt: (r.obs_seen_at as string | null) ?? null,
+              }
+            : null,
+      },
       /** Last ping from the worker (only for prefixes with reachability checks on). */
       reachability:
         r.ping_checked_at === null || r.ping_checked_at === undefined
@@ -449,6 +520,13 @@ export class IpamService {
       deviceName: ownDevice ? base.deviceName : null,
       interfaceId: ownDevice ? base.interfaceId : null,
       interfaceName: ownDevice ? base.interfaceName : null,
+      // Their own server's name and model, and their VM's OS and size; never management addresses, hypervisor nodes or router data.
+      details: {
+        device: ownDevice && base.details.device ? { ...base.details.device, assetTag: null, bmc: base.details.device.bmc ? { type: base.details.device.bmc.type, address: null } : null } : null,
+        vm: base.details.vm ? { ...base.details.vm, platform: null, node: null, nodeDeviceId: null, nodeDeviceName: null } : null,
+        bmcOf: null,
+        observed: base.details.observed?.ptr ? { mac: null, vendor: null, dhcpHostName: null, ptr: base.details.observed.ptr, router: null, interface: null, seenAt: null } : null,
+      },
     };
   }
 
