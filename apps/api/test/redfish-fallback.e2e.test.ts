@@ -2,6 +2,7 @@ import http from 'node:http';
 import net, { type AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { deviceRequest } from '../src/worker/adapters/http';
+import { powerTarget } from '../src/worker/power/poller';
 import { redfishAdapter } from '../src/worker/adapters/redfish';
 import { deviceErrorText } from '../src/worker/adapters/http';
 import { startRedfish } from './simulators/power-devices';
@@ -249,6 +250,42 @@ describe('Redfish when the BMC fails on its system list', () => {
     } finally {
       await sim.close();
     }
+  });
+
+  it('Fujitsu iRMC power: average-only or per-PSU readings, a failing extra chassis, a slow Power resource', async () => {
+    for (const [opts, watts, detail] of [
+      [{ powerReading: 'average' }, 141, /\/redfish\/v1\/Chassis\/0\/Power$/],
+      [{ powerReading: 'psu' }, 141, /sum of power supply input/],
+      [{ brokenFirstChassis: true }, 141, /Chassis\/0\/Power$/],
+      [{ powerDelayMs: 600 }, 141, /Chassis\/0\/Power$/],
+    ] as const) {
+      const sim = await startRedfish('root', 'pw', { fujitsu: true, watts: 141, ...opts });
+      try {
+        const snap = await redfishAdapter().power!({ ...(target(sim.port) as object), params: { scheme: 'http', timeoutMs: 2000 } } as never);
+        expect(snap.watts).toBe(watts);
+        expect(snap.detail).toMatch(detail);
+      } finally {
+        await sim.close();
+      }
+    }
+    // Too slow for the request timeout: the Redfish error alone (no Dell WS-Man fallback on an iRMC).
+    const slow = await startRedfish('root', 'pw', { fujitsu: true, watts: 141, powerDelayMs: 800 });
+    try {
+      const err = await redfishAdapter().power!({ ...(target(slow.port) as object), params: { scheme: 'http', timeoutMs: 300 } } as never).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message).toMatch(/No power reading found/);
+      expect(err?.message).not.toMatch(/WS-Man/);
+    } finally {
+      await slow.close();
+    }
+  });
+
+  it('the power poller gives BMCs at least 25 s per request', () => {
+    const t = powerTarget({ host: '10.0.0.11', port: null, username: 'admin', params: { scheme: 'https', timeoutMs: 10_000 }, kind: 'redfish' }, { password: 'x' });
+    expect(t.params.timeoutMs).toBe(25_000);
+    expect(powerTarget({ host: 'r', port: null, username: null, params: { timeoutMs: 3000 }, kind: 'snmp_v2c' }, {}).params.timeoutMs).toBe(3000);
   });
 
   it('Fujitsu iRMC whose system list fails: the system is read at /Systems/0', async () => {

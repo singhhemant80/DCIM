@@ -32,7 +32,39 @@ export function parseRedfishPower(doc: Row | null): number | null {
   }
   const pw = doc.PowerWatts as Row | undefined;
   if (pw && typeof pw.Reading === 'number' && Number.isFinite(pw.Reading) && pw.Reading >= 0) return pw.Reading;
+  // Some firmware (e.g. Fujitsu iRMC, some Supermicro) fills only the average of the last interval.
+  for (const c of pc) {
+    const w = (c.PowerMetrics as Row | undefined)?.AverageConsumedWatts;
+    if (typeof w === 'number' && Number.isFinite(w) && w > 0) return w;
+  }
   return null;
+}
+
+/** Input power of the power supplies added up (measured at the PSU input), when the BMC reports no system consumption. */
+export function psuInputWatts(doc: Row | null): number | null {
+  const psus = Array.isArray(doc?.PowerSupplies) ? (doc!.PowerSupplies as Row[]) : [];
+  const vals = psus.filter((p) => !/absent/i.test(String((p.Status as Row | undefined)?.State ?? ''))).map((p) => p.PowerInputWatts);
+  if (!vals.length || vals.some((v) => typeof v !== 'number' || !Number.isFinite(v) || v < 0)) return null;
+  const sum = (vals as number[]).reduce((a, b) => a + b, 0);
+  return sum > 0 ? sum : null;
+}
+
+/** A power reading from a Power or EnvironmentMetrics resource, and how it was taken. */
+function readPower(doc: Row | null, link: string): PowerSnapshot | null {
+  const w = parseRedfishPower(doc);
+  if (w !== null) return { watts: w, source: 'redfish', detail: link };
+  const psu = psuInputWatts(doc);
+  return psu !== null ? { watts: psu, source: 'redfish', detail: `${link} (sum of power supply input)` } : null;
+}
+
+/** Power could not be read; `dellLike` says whether the Dell WS-Man fallback is worth trying. */
+class PowerReadError extends Error {
+  constructor(
+    message: string,
+    readonly dellLike: boolean,
+  ) {
+    super(message);
+  }
 }
 
 /** Where common BMCs put their (single) system: Dell iDRAC, HPE iLO / Supermicro / Lenovo XClarity, Fujitsu iRMC, AMI-based BMCs. */
@@ -260,6 +292,8 @@ export function redfishAdapter(): Adapter {
         return await redfishPower(t);
       } catch (e) {
         if (isAuth(e)) throw e;
+        // Only Dell iDRACs have the WS-Man sensor; on other BMCs (Fujitsu iRMC, HPE iLO…) report the Redfish error alone.
+        if (e instanceof PowerReadError && !e.dellLike) throw e;
         // Older Dell iDRAC firmware: the power sensor over WS-Man.
         let why: string;
         try {
@@ -281,8 +315,8 @@ export function redfishAdapter(): Adapter {
     const known = powerLinks.get(key);
     if (known) {
       try {
-        const w = parseRedfishPower(await get(t, known));
-        if (w !== null) return { watts: w, source: 'redfish', detail: known };
+        const snap = readPower(await get(t, known.split(' (')[0]!), known.split(' (')[0]!);
+        if (snap) return snap;
       } catch (e) {
         if (isAuth(e)) throw e;
       }
@@ -291,7 +325,7 @@ export function redfishAdapter(): Adapter {
     const snap = await walkPower(t);
     if (snap.detail) {
       if (powerLinks.size > 5000) powerLinks.clear();
-      powerLinks.set(key, snap.detail);
+      powerLinks.set(key, snap.detail.split(' (')[0]!);
     }
     return snap;
   }
@@ -309,12 +343,14 @@ export function redfishAdapter(): Adapter {
       if (!chassis.length) chassis = ['/redfish/v1/Chassis/System.Embedded.1', '/redfish/v1/Chassis/1', '/redfish/v1/Chassis/0', '/redfish/v1/Chassis/Self'];
       const listed = !listErr && chassis[0] !== '/redfish/v1/Chassis/System.Embedded.1';
       const tried: string[] = [];
+      const dellLike = !listed || chassis.some((c) => /System\.Embedded/.test(c));
       for (const c of chassis) {
         let doc: Row;
         try {
           doc = await get(t, c);
         } catch (e) {
-          if (isAuth(e) || listed) throw e;
+          if (isAuth(e)) throw e;
+          // A listed chassis that fails (e.g. a storage enclosure, or a slow BMC): try the others.
           tried.push(`${c}: ${(e as Error).message}`);
           continue;
         }
@@ -328,13 +364,13 @@ export function redfishAdapter(): Adapter {
             tried.push(`${link}: ${(e as Error).message}`);
             continue;
           }
-          const w = parseRedfishPower(res);
-          if (w !== null) return { watts: w, source: 'redfish', detail: link };
-          tried.push(`${link}: no reading`);
+          const snap = readPower(res, link);
+          if (snap) return snap;
+          tried.push(`${link}: no PowerConsumedWatts, PowerMetrics or power supply input reading`);
         }
       }
-      if (!listed) throw new Error(`The BMC lists no chassis${listErr ? ` (${listErr.message})` : ''} and none answers at the usual paths${tried.length ? ` (${tried.slice(0, 2).join('; ')})` : ''}`.slice(0, 400));
-      throw new Error(`No power reading found in ${chassis.length} chassis${tried.length ? ` (${tried.slice(0, 3).join('; ')})` : ''}`);
+      if (!listed) throw new PowerReadError(`The BMC lists no chassis${listErr ? ` (${listErr.message})` : ''} and none answers at the usual paths${tried.length ? ` (${tried.slice(0, 2).join('; ')})` : ''}`.slice(0, 400), dellLike);
+      throw new PowerReadError(`No power reading found in ${chassis.length} chassis${tried.length ? ` (${tried.slice(0, 3).join('; ')})` : ''}`.slice(0, 480), dellLike);
     }
   }
 }

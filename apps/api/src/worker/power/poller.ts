@@ -83,8 +83,8 @@ export async function pollPowerDevice(deps: PowerPollerDeps, m: PowerMonitoring)
     }
     const adapter = (deps.adapters ?? defaultAdapters())[m.credentialKind];
     if (!adapter?.power) return await fail(`${m.credentialKind} cannot read power`);
-    const target: AdapterTarget = { host: cred.host, port: cred.port, username: cred.username, params: cred.params, secret: secret as AdapterTarget['secret'] };
-    const limit = Math.min(45_000, Math.max(5_000, m.intervalSeconds * 800));
+    const target = powerTarget(cred, secret);
+    const limit = Math.min(55_000, Math.max(5_000, m.intervalSeconds * 900));
     let timer: NodeJS.Timeout | undefined;
     let snap: PowerSnapshot;
     try {
@@ -169,4 +169,15 @@ export function createPowerPollLoop(deps: PowerPollerDeps, concurrency: number):
         .finally(() => inflight--);
     }
   };
+}
+
+/**
+ * BMCs answer the Power resource slowly (Fujitsu iRMC often takes well over
+ * 10 seconds), so each request gets at least 25 s, as the hardware and health
+ * readers do. The whole poll is still bounded by the poller's own limit.
+ */
+export function powerTarget(cred: { host: string | null; port: number | null; username: string | null; params: AdapterTarget['params']; kind: string }, secret: Record<string, unknown>): AdapterTarget {
+  const slow = cred.kind === 'redfish' || cred.kind === 'ipmi';
+  const params = slow ? { ...cred.params, timeoutMs: Math.max(cred.params.timeoutMs ?? 25_000, 25_000) } : cred.params;
+  return { host: cred.host!, port: cred.port, username: cred.username, params, secret: secret as AdapterTarget['secret'] };
 }

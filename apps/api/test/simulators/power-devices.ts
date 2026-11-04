@@ -35,6 +35,9 @@ export async function startRedfish(
     /** Answer the /Systems collection with this error status (as a stuck iDRAC web service does), while the system itself still works. */ systemsError?: number;
     /** Redirect /redfish/v1/Systems to /redfish/v1/Systems/ (same host), or to HTTPS (another scheme). */ redirectSystems?: 'slash' | 'https';
     /** Give member links as absolute URLs. */ absoluteLinks?: boolean;
+    /** How the Power resource reports consumption: standard PowerConsumedWatts, only PowerMetrics.AverageConsumedWatts, or only per-PSU input watts (as some iRMC firmware does). */ powerReading?: 'consumed' | 'average' | 'psu';
+    /** Delay before answering the Power resource (iRMC can take well over 10 s). */ powerDelayMs?: number;
+    /** List a second chassis first that answers 500 (e.g. a storage enclosure). */ brokenFirstChassis?: boolean;
   } = {},
 ): Promise<MockRedfish> {
   let watts: number | null = opts.watts ?? 312;
@@ -289,6 +292,28 @@ export async function startRedfish(
     if (req.method !== 'GET') return send(405, { error: 'Method not allowed' });
     if (req.headers.authorization !== expected) return send(401, { error: 'Unauthorized' });
     const all = docs();
+    const powerPath = (all['/redfish/v1/Chassis/0'] ? '/redfish/v1/Chassis/0' : '/redfish/v1/Chassis/System.Embedded.1') + '/Power';
+    if (opts.brokenFirstChassis) {
+      const list = all['/redfish/v1/Chassis'] as { Members: { '@odata.id': string }[] };
+      all['/redfish/v1/Chassis'] = { Members: [{ '@odata.id': '/redfish/v1/Chassis/Enclosure.1' }, ...list.Members] };
+      if (req.url === '/redfish/v1/Chassis/Enclosure.1') return send(500, { error: 'internal error' });
+    }
+    if (opts.powerReading && opts.powerReading !== 'consumed' && all[powerPath]) {
+      const p = all[powerPath] as { PowerControl: Record<string, unknown>[]; PowerSupplies: Record<string, unknown>[] };
+      all[powerPath] = {
+        ...p,
+        PowerControl: p.PowerControl.map(({ PowerConsumedWatts: _w, ...c }) => (opts.powerReading === 'average' ? { ...c, PowerMetrics: { IntervalInMin: 1, AverageConsumedWatts: watts } } : c)),
+        PowerSupplies: opts.powerReading === 'psu' ? p.PowerSupplies.map((x, i) => ({ ...x, PowerInputWatts: i === 0 ? (watts ?? 0) - 40 : 40 })) : p.PowerSupplies,
+      };
+    }
+    if (opts.powerDelayMs && req.url === powerPath) {
+      setTimeout(() => {
+        inFlight--;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(all[powerPath]));
+      }, opts.powerDelayMs);
+      return;
+    }
     // iDRAC 9 style $expand: collection members are returned in full.
     if (opts.expand && /\?\$expand=/.test(req.url!)) {
       const c = all[req.url!.split('?')[0]!] as { Members?: { '@odata.id': string }[] } | undefined;

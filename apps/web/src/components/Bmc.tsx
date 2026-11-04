@@ -254,6 +254,12 @@ export function BmcPanel({ deviceId, canWrite }: { deviceId: string; canWrite: b
             {[s.console.sol && 'Serial', s.console.vnc && 'Graphical'].filter(Boolean).join(' + ') || 'Web interface link only'}
           </Row>
           {(s.health?.error || s.hardware?.error) && <p className="mt-1 text-[12.5px] break-words text-warn">{s.health?.error ?? s.hardware?.error}</p>}
+          {s.power?.enabled && s.power.lastError && (
+            <p className="mt-1 text-[12.5px] break-words text-warn">
+              Power readings: {s.power.lastError}
+              {s.power.lastOkAt ? ` (last reading ${relativeTime(s.power.lastOkAt)})` : ''}
+            </p>
+          )}
         </div>
       )}
       {open && s && <SetupDialog deviceId={deviceId} status={s} onClose={() => setOpen(false)} />}
