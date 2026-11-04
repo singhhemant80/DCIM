@@ -49,16 +49,49 @@ export function psuInputWatts(doc: Row | null): number | null {
   return sum > 0 ? sum : null;
 }
 
+const POWER_KEY = /(PowerConsumption|ConsumedPower|PowerConsumed|CurrentPower|ActualPower|PresentPower|PowerReading|InputPower)/i;
+const NOT_NOW = /max|min|peak|aver|avg|limit|cap|threshold|budget|histor|rated|alloc|request|avail|output|percent|warning|critical/i;
+
+/** Numeric fields of a document as paths (for vendor extensions such as Oem.ts_fujitsu), at most a few levels deep. */
+export function numericFields(doc: unknown, path = '', depth = 0, out: [string, number][] = []): [string, number][] {
+  if (depth > 5 || out.length > 200 || !doc || typeof doc !== 'object') return out;
+  if (Array.isArray(doc)) doc.slice(0, 16).forEach((x, i) => numericFields(x, `${path}[${i}]`, depth + 1, out));
+  else
+    for (const [k, v] of Object.entries(doc as Row)) {
+      if (k.startsWith('@') || k.includes('@odata')) continue;
+      const p = path ? `${path}.${k}` : k;
+      if (typeof v === 'number' && Number.isFinite(v)) out.push([p, v]);
+      else if (v && typeof v === 'object') numericFields(v, p, depth + 1, out);
+    }
+  return out;
+}
+
+/** A current power-consumption value under a vendor (Oem) extension, e.g. Fujitsu iRMC's; preferring names with "Current". */
+export function oemPowerReading(doc: Row | null): { path: string; watts: number } | null {
+  const found = numericFields(doc?.Oem ?? null, 'Oem').filter(([p, v]) => {
+    const key = p
+      .split('.')
+      .pop()!
+      .replace(/\[\d+\]$/, '');
+    return POWER_KEY.test(key) && !NOT_NOW.test(key) && v > 0 && v < 100_000;
+  });
+  if (!found.length) return null;
+  const best = found.find(([p]) => /current/i.test(p)) ?? found[0]!;
+  return { path: best[0], watts: best[1] };
+}
+
 /** A power reading from a Power or EnvironmentMetrics resource, and how it was taken. */
 function readPower(doc: Row | null, link: string): PowerSnapshot | null {
   const w = parseRedfishPower(doc);
   if (w !== null) return { watts: w, source: 'redfish', detail: link };
+  const oem = oemPowerReading(doc);
+  if (oem) return { watts: oem.watts, source: 'redfish', detail: `${link} (${oem.path})` };
   const psu = psuInputWatts(doc);
   return psu !== null ? { watts: psu, source: 'redfish', detail: `${link} (sum of power supply input)` } : null;
 }
 
 /** Power could not be read; `dellLike` says whether the Dell WS-Man fallback is worth trying. */
-class PowerReadError extends Error {
+export class PowerReadError extends Error {
   constructor(
     message: string,
     readonly dellLike: boolean,
@@ -366,11 +399,16 @@ export function redfishAdapter(): Adapter {
           }
           const snap = readPower(res, link);
           if (snap) return snap;
-          tried.push(`${link}: no PowerConsumedWatts, PowerMetrics or power supply input reading`);
+          // Say which numbers the BMC did send, so a vendor field can be recognised (paths and values only).
+          const nums = numericFields(res)
+            .filter(([, v]) => v !== 0)
+            .slice(0, 6)
+            .map(([p, v]) => `${p}=${v}`);
+          tried.push(`${link}: no PowerConsumedWatts, PowerMetrics or power supply input reading${nums.length ? `; numbers it reports: ${nums.join(', ')}` : '; it reports no numbers (power monitoring may be off in the BMC)'}`);
         }
       }
       if (!listed) throw new PowerReadError(`The BMC lists no chassis${listErr ? ` (${listErr.message})` : ''} and none answers at the usual paths${tried.length ? ` (${tried.slice(0, 2).join('; ')})` : ''}`.slice(0, 400), dellLike);
-      throw new PowerReadError(`No power reading found in ${chassis.length} chassis${tried.length ? ` (${tried.slice(0, 3).join('; ')})` : ''}`.slice(0, 480), dellLike);
+      throw new PowerReadError(`No power reading found in ${chassis.length} chassis${tried.length ? ` (${tried.slice(0, 3).join('; ')})` : ''}`.slice(0, 900), dellLike);
     }
   }
 }

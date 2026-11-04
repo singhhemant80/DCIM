@@ -2,10 +2,11 @@ import http from 'node:http';
 import net, { type AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { deviceRequest } from '../src/worker/adapters/http';
-import { powerTarget } from '../src/worker/power/poller';
+import { powerTarget, readWithFallback } from '../src/worker/power/poller';
+import { ipmiAdapter } from '../src/worker/adapters/ipmi';
 import { redfishAdapter } from '../src/worker/adapters/redfish';
 import { deviceErrorText } from '../src/worker/adapters/http';
-import { startRedfish } from './simulators/power-devices';
+import { fakeIpmitool, startRedfish } from './simulators/power-devices';
 
 const target = (port: number, password = 'pw') => ({ host: '127.0.0.1', port, username: 'root', params: { scheme: 'http' as const }, secret: { password } }) as never;
 
@@ -279,6 +280,35 @@ describe('Redfish when the BMC fails on its system list', () => {
       expect(err?.message).not.toMatch(/WS-Man/);
     } finally {
       await slow.close();
+    }
+  });
+
+  it('Fujitsu iRMC power in a vendor (Oem) field; with no power value anywhere, the numbers it sends are listed and the same login is tried over IPMI DCMI', async () => {
+    const oem = await startRedfish('root', 'pw', { fujitsu: true, watts: 152, powerReading: 'oem' });
+    try {
+      const snap = await redfishAdapter().power!(target(oem.port));
+      expect(snap).toMatchObject({ watts: 152, detail: '/redfish/v1/Chassis/0/Power (Oem.ts_fujitsu.ChassisPowerConsumption.CurrentPowerConsumptionW)' });
+    } finally {
+      await oem.close();
+    }
+    const none = await startRedfish('root', 'pw', { fujitsu: true, watts: 152, powerReading: 'none' });
+    try {
+      const err = await redfishAdapter().power!(target(none.port)).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message).toMatch(/numbers it reports: PowerControl\[0\]\.PowerCapacityWatts=1400/);
+      expect(err?.message).not.toMatch(/WS-Man/);
+      // IPMI DCMI with the same login.
+      const fake = fakeIpmitool('pw', { watts: 163 });
+      const snap = await readWithFallback(redfishAdapter(), ipmiAdapter(fake.path), 'redfish', target(none.port));
+      expect(snap).toMatchObject({ watts: 163, source: 'ipmi' });
+      expect(snap.detail).toMatch(/^IPMI DCMI with the Redfish login/);
+      // Wrong password over IPMI: both errors are reported.
+      const wrong = fakeIpmitool('other');
+      await expect(readWithFallback(redfishAdapter(), ipmiAdapter(wrong.path), 'redfish', target(none.port))).rejects.toThrow(/No power reading found.*IPMI DCMI fallback/);
+    } finally {
+      await none.close();
     }
   });
 

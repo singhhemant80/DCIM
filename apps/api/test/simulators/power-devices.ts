@@ -35,7 +35,8 @@ export async function startRedfish(
     /** Answer the /Systems collection with this error status (as a stuck iDRAC web service does), while the system itself still works. */ systemsError?: number;
     /** Redirect /redfish/v1/Systems to /redfish/v1/Systems/ (same host), or to HTTPS (another scheme). */ redirectSystems?: 'slash' | 'https';
     /** Give member links as absolute URLs. */ absoluteLinks?: boolean;
-    /** How the Power resource reports consumption: standard PowerConsumedWatts, only PowerMetrics.AverageConsumedWatts, or only per-PSU input watts (as some iRMC firmware does). */ powerReading?: 'consumed' | 'average' | 'psu';
+    /** How the Power resource reports consumption: standard PowerConsumedWatts, only PowerMetrics.AverageConsumedWatts, or only per-PSU input watts (as some iRMC firmware does). */ powerReading?:
+      'consumed' | 'average' | 'psu' | 'oem' | 'none';
     /** Delay before answering the Power resource (iRMC can take well over 10 s). */ powerDelayMs?: number;
     /** List a second chassis first that answers 500 (e.g. a storage enclosure). */ brokenFirstChassis?: boolean;
   } = {},
@@ -303,7 +304,9 @@ export async function startRedfish(
       all[powerPath] = {
         ...p,
         PowerControl: p.PowerControl.map(({ PowerConsumedWatts: _w, ...c }) => (opts.powerReading === 'average' ? { ...c, PowerMetrics: { IntervalInMin: 1, AverageConsumedWatts: watts } } : c)),
-        PowerSupplies: opts.powerReading === 'psu' ? p.PowerSupplies.map((x, i) => ({ ...x, PowerInputWatts: i === 0 ? (watts ?? 0) - 40 : 40 })) : p.PowerSupplies,
+        PowerSupplies: opts.powerReading === 'psu' ? p.PowerSupplies.map((x, i) => ({ ...x, PowerInputWatts: i === 0 ? (watts ?? 0) - 40 : 40 })) : p.PowerSupplies.map(({ PowerInputWatts: _i, LastPowerOutputWatts: _o, ...x }) => x),
+        // Vendor extension carrying the reading (as iRMC firmware may), next to limits that are not readings.
+        ...(opts.powerReading === 'oem' ? { Oem: { ts_fujitsu: { ChassisPowerConsumption: { MaxPowerConsumptionW: 600, CurrentPowerConsumptionW: watts, PowerLimitW: 900 } } } } : {}),
       };
     }
     if (opts.powerDelayMs && req.url === powerPath) {

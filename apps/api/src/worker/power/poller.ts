@@ -88,7 +88,8 @@ export async function pollPowerDevice(deps: PowerPollerDeps, m: PowerMonitoring)
     let timer: NodeJS.Timeout | undefined;
     let snap: PowerSnapshot;
     try {
-      snap = await Promise.race([adapter.power(target), new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`No answer within ${Math.round(limit / 1000)} s`)), limit)))]);
+      const ipmi = (deps.adapters ?? defaultAdapters()).ipmi;
+      snap = await Promise.race([readWithFallback(adapter, ipmi, m.credentialKind, target), new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`No answer within ${Math.round(limit / 1000)} s`)), limit)))]);
     } catch (e) {
       return await fail(redact((e as Error)?.message || 'Unknown error', secret));
     } finally {
@@ -180,4 +181,26 @@ export function powerTarget(cred: { host: string | null; port: number | null; us
   const slow = cred.kind === 'redfish' || cred.kind === 'ipmi';
   const params = slow ? { ...cred.params, timeoutMs: Math.max(cred.params.timeoutMs ?? 25_000, 25_000) } : cred.params;
   return { host: cred.host!, port: cred.port, username: cred.username, params, secret: secret as AdapterTarget['secret'] };
+}
+
+/**
+ * Redfish first; when the BMC answers but its Redfish carries no power value
+ * (some Fujitsu iRMC firmware), the same login is tried over IPMI DCMI
+ * ("dcmi power reading", read-only). Timeouts and refused logins are not retried.
+ */
+export async function readWithFallback(adapter: Adapter, ipmi: Adapter | undefined, kind: string, target: AdapterTarget): Promise<PowerSnapshot> {
+  try {
+    return await adapter.power!(target);
+  } catch (e) {
+    const msg = (e as Error)?.message ?? '';
+    if (kind !== 'redfish' || !ipmi?.power || !/^(No power reading found|The BMC lists no chassis)/.test(msg)) throw e;
+    const password = String((target.secret as Record<string, unknown>).password ?? '');
+    if (!target.username || target.username.length > 16 || !password || password.length > 20) throw new Error(`${msg}. IPMI fallback not tried: the login is too long for IPMI (16 / 20 characters)`.slice(0, 900));
+    try {
+      const snap = await ipmi.power({ host: target.host, port: null, username: target.username, params: { ipmiPrivilege: 'USER', timeoutMs: 10_000, retries: 1 }, secret: target.secret });
+      return { ...snap, detail: `IPMI DCMI with the Redfish login${snap.detail ? ` (${snap.detail})` : ''}` };
+    } catch (w) {
+      throw new Error(`${msg}. IPMI DCMI fallback: ${(w as Error).message}`.slice(0, 900));
+    }
+  }
 }
