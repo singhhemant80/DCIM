@@ -332,7 +332,7 @@ export function redfishAdapter(): Adapter {
         try {
           const w = await dellPowerViaWsman(t);
           if (w) return { watts: w.watts, source: 'redfish', detail: w.detail };
-          why = 'no power sensor in its sensor list';
+          why = 'no power sensor in its sensor list (the iDRAC shows no power data: check Power / Thermal in its web interface; older iDRAC 8 firmware or a Basic license may not report it)';
         } catch (w) {
           if (isAuth(w)) throw w;
           why = (w as Error).message;

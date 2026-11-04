@@ -200,7 +200,12 @@ export async function readWithFallback(adapter: Adapter, ipmi: Adapter | undefin
       const snap = await ipmi.power({ host: target.host, port: null, username: target.username, params: { ipmiPrivilege: 'USER', timeoutMs: 10_000, retries: 1 }, secret: target.secret });
       return { ...snap, detail: `IPMI DCMI with the Redfish login${snap.detail ? ` (${snap.detail})` : ''}` };
     } catch (w) {
-      throw new Error(`${msg}. IPMI DCMI fallback: ${(w as Error).message}`.slice(0, 900));
+      const wm = (w as Error).message;
+      // A silent BMC on UDP 623 almost always means IPMI over LAN is switched off (the default on iDRAC 8).
+      const hint = /timed out|no answer|unable to establish/i.test(wm)
+        ? ' — IPMI over LAN looks switched off on the BMC (iDRAC: iDRAC Settings → Network → IPMI Settings → Enable IPMI Over LAN; or racadm set iDRAC.IPMILan.Enable 1), or UDP 623 is blocked'
+        : '';
+      throw new Error(`${msg}. IPMI DCMI fallback: ${wm}${hint}`.slice(0, 900));
     }
   }
 }

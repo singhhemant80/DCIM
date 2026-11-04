@@ -60,7 +60,7 @@ export function redact(message: string, secret: Record<string, unknown>): string
   for (const v of Object.values(secret)) {
     if (typeof v === 'string' && v.length >= 3) m = m.split(v).join('[redacted]');
   }
-  return m.slice(0, 500);
+  return m.slice(0, 1000);
 }
 
 /**
