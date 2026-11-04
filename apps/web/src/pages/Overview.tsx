@@ -5,7 +5,7 @@ import { useAuth } from '../lib/auth';
 import { formatDateTime } from '../lib/format';
 import type { Customer } from '../lib/types';
 import { Chip, ErrorNote, Loading, PageHeader, Panel, Stat } from '../components/ui';
-import { CATEGORY_LABELS, LIFECYCLE_LABELS, type LifecycleState } from '@crapplet/shared';
+import { LIFECYCLE_LABELS, type LifecycleState } from '@crapplet/shared';
 import { STATE_TONE, daysUntil } from '../lib/dcim';
 import { CustomerEquipment } from './Hardware';
 import { OccupancyBar } from './Racks';
@@ -18,6 +18,7 @@ import { formatKwh, formatWattsShort } from '@crapplet/shared';
 import type { EnergyT, PowerNowT } from '../lib/power';
 import type { AllocationT, OverviewT as ColoOverviewT, TicketT } from '../lib/colocation';
 import type { PrefixT } from './Ipam';
+import { DeviceTypesPanel } from '../components/DeviceTypes';
 import { HealthOverviewPanel, strained, type HealthT } from '../components/DeviceHealth';
 
 interface DcimSummary {
@@ -82,13 +83,6 @@ function PhysicalPanel() {
                 </li>
               ))}
           </ul>
-          <p className="mt-4 mb-2 text-[13px] font-semibold">By category</p>
-          <p className="text-[13px] text-ink-2">
-            {Object.entries(s.devicesByCategory)
-              .sort((a, b) => b[1] - a[1])
-              .map(([c, n]) => `${CATEGORY_LABELS[c as keyof typeof CATEGORY_LABELS] ?? c} ${n}`)
-              .join(', ') || '—'}
-          </p>
           {s.sparePartsLow > 0 && (
             <p className="mt-4 text-[13px]">
               <Link to="/hardware?tab=spares" className="text-warn hover:underline">
@@ -546,6 +540,11 @@ function StaffOverview() {
       <ErrorNote error={q.error} />
       {o && (
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+          {can('dcim.read') && (
+            <div className="xl:col-span-12">
+              <DeviceTypesPanel />
+            </div>
+          )}
           {/* Two columns that end level: the last panel of each takes up any difference. */}
           <div className="flex flex-col gap-5 xl:col-span-8 [&>*:last-child]:flex-1">
             {can('monitoring.read') && <BandwidthPanel />}

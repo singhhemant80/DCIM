@@ -17,7 +17,7 @@ export class DcimSummaryService {
   async summary(p: Principal) {
     const org = p.orgId;
     const one = <T>(rows: T[]) => rows[0]!;
-    const [counts, capacity, byState, byCategory, warranty, expiring, lowStock] = await Promise.all([
+    const [counts, capacity, byState, byCategory, warranty, expiring, lowStock, types, vms] = await Promise.all([
       this.db
         .execute(
           sql`select
@@ -66,6 +66,22 @@ export class DcimSummaryService {
         .from(spareParts)
         .where(and(eq(spareParts.orgId, org), sql`${spareParts.quantity} <= ${spareParts.minQuantity}`))
         .then(one),
+      // Per type: in service (racked, provisioning, active, maintenance) and the rest (planned, received, in stock, reserved).
+      this.db
+        .execute<{ category: string; total: number; in_service: number }>(
+          sql`select category::text as category, count(*)::int as total,
+                     count(*) filter (where lifecycle_state in ('racked', 'provisioning', 'active', 'maintenance'))::int as in_service
+                from devices where org_id = ${org} and lifecycle_state <> 'retired' group by category`,
+        )
+        .then((r) => r.rows),
+      // Virtual machines from the hypervisor syncs (still present on the hypervisor).
+      this.db
+        .execute<{ total: number; running: number; hosts: number }>(
+          sql`select (select count(*)::int from virt_guests where org_id = ${org} and missing_since is null) as total,
+                     (select count(*)::int from virt_guests where org_id = ${org} and missing_since is null and status in ('running', 'online')) as running,
+                     (select count(*)::int from virt_hosts where org_id = ${org} and missing_since is null) as hosts`,
+        )
+        .then((r) => one(r.rows)),
     ]);
     const states = Object.fromEntries(LIFECYCLE_STATES.map((s) => [s, byState.find((r) => r.state === s)?.n ?? 0])) as Record<LifecycleState, number>;
     return {
@@ -73,6 +89,9 @@ export class DcimSummaryService {
       capacity: { totalU: capacity.total_u, usedU: capacity.used_u, reservedU: capacity.reserved_u, freeU: Math.max(0, capacity.total_u - capacity.used_u) },
       devicesByState: states,
       devicesByCategory: Object.fromEntries(byCategory.map((r) => [r.category, r.n])),
+      /** Every device type with a count, largest first; retired devices are left out. */
+      deviceTypes: types.map((t) => ({ category: t.category, total: Number(t.total), inService: Number(t.in_service), notInService: Number(t.total) - Number(t.in_service) })).sort((a, b) => b.total - a.total),
+      virtualMachines: { total: Number(vms.total), running: Number(vms.running), hosts: Number(vms.hosts) },
       warranty: { expired: warranty.expired, within90Days: warranty.within90, soonest: expiring },
       sparePartsLow: lowStock.n,
     };

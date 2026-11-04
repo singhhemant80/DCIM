@@ -21,6 +21,7 @@ import { formatDateTime } from '../lib/format';
 import { daysUntil, STATE_TONE, useManufacturers, useModels, useTree, type DeviceReachabilityT, type DeviceT, type ModelT, type SparePartT } from '../lib/dcim';
 import { Button, Chip, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Pagination, Panel, Select, Table, Textarea, cx } from '../components/ui';
 import { useCustomerOptions } from './Racks';
+import { DeviceTypesPanel } from '../components/DeviceTypes';
 import { BmcLoginFields, BmcResults, bmcBody, emptyBmcLogin, isBmcType, putBmc, type BmcLoginT, type BmcResultT, type BmcStatusT } from '../components/Bmc';
 
 /* ------------------------------------------------------------------ device form */
@@ -1380,7 +1381,12 @@ export function HardwarePage() {
           </button>
         ))}
       </div>
-      {tab === 'devices' && <DevicesTab />}
+      {tab === 'devices' && (
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+          <DeviceTypesPanel />
+          <DevicesTab />
+        </div>
+      )}
       {tab === 'models' && <ModelsTab />}
       {tab === 'spares' && <SparesTab />}
     </>
