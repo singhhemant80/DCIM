@@ -82,24 +82,14 @@ export interface VirtClient {
   guestOs?(g: GuestRef): Promise<{ osId: string | null; osName: string | null; status: string }>;
 }
 
-export interface VirtStorage {
-  stid: string;
-  uuid: string | null;
-  name: string;
-  /** Server ids (serid) the storage is on; "-1" when Virtualizor marks it shared with all. */
-  servers: string[];
-  primary: boolean;
-  freeGb: number | null;
-}
-
 export interface VpsCreateInput {
   planId: string;
   plan: Pick<VirtPlan, 'virt' | 'ramMb' | 'diskGb' | 'cores' | 'bandwidthGb' | 'ips' | 'ips6'>;
   serverId: string | null;
   /** Notes for the job log (what was chosen and why). */
   log?: (message: string) => void;
-  /** When no server is chosen: the panel's servers that may take it (online, from the sync), with their free RAM. */
-  candidates?: { serverId: string; freeRamMb: number | null }[];
+  /** OS template name (Virtualizor's os_name), used if the panel does not take the osid. */
+  osName?: string | null;
   osid: string;
   hostname: string;
   password: string;
@@ -251,84 +241,6 @@ const VZ_ACTIONS: Partial<Record<GuestAction, string>> = { start: 'start', shutd
 export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey: string; apiPass: string; actionsEnabled: boolean }): VirtClient {
   // A master listing many slaves and VPSes can take a while to answer.
   const t = target(cfg.url, cfg.verifyTls, 60_000);
-  /**
-   * Storages (act=storage): uuid, server, primary flag, free GB. Shared storages can list several
-   * servers. Field names as the admin API returns them; read leniently.
-   */
-  const storages = async (): Promise<VirtStorage[]> => {
-    const r = await call({ act: 'storage', page: '1', reslen: '1000' });
-    const list = (r.storage && typeof r.storage === 'object' ? r.storage : {}) as Record<string, Row>;
-    // storage_servers keyed by storage id ({stid: [serid…]}); a list of {stid, serid} rows is read by the scan below.
-    const links = (r.storage_servers && typeof r.storage_servers === 'object' && !Array.isArray(r.storage_servers) ? r.storage_servers : {}) as Record<string, unknown>;
-    // Any rows elsewhere in the answer that pair a storage with a server ({stid, serid}), whatever the key is called.
-    const pairs = new Map<string, Set<string>>();
-    const scan = (v: unknown, depth: number) => {
-      if (!v || typeof v !== 'object' || depth > 4) return;
-      const o = v as Row;
-      if (o.stid !== undefined && o.serid !== undefined && !('st_uuid' in o)) {
-        const k = String(o.stid);
-        if (!pairs.has(k)) pairs.set(k, new Set());
-        String(o.serid)
-          .split(',')
-          .forEach((t) => t.trim() && pairs.get(k)!.add(t.trim()));
-      }
-      for (const [key, x] of Object.entries(o)) if (key !== 'storage') scan(x, depth + 1);
-    };
-    scan(r, 0);
-    return Object.entries(list).map(([key, x]) => {
-      const sv = new Set<string>();
-      const add = (v: unknown) => {
-        if (Array.isArray(v)) v.forEach(add);
-        else if (v && typeof v === 'object') Object.values(v as Row).forEach((y) => add(typeof y === 'object' && y ? ((y as Row).serid ?? null) : y));
-        else if (v !== null && v !== undefined && String(v).trim() !== '')
-          String(v)
-            .split(',')
-            .forEach((t) => sv.add(t.trim()));
-      };
-      add(x.serid);
-      add(x.servers);
-      add(x.serids);
-      const lk = links[s(x.stid) ?? key];
-      if (!(lk && typeof lk === 'object' && !Array.isArray(lk) && 'stid' in (lk as Row))) add(lk);
-      pairs.get(s(x.stid) ?? key)?.forEach((t) => sv.add(t));
-      return { stid: s(x.stid) ?? key, uuid: s(x.st_uuid), name: s(x.name) ?? s(x.path) ?? `storage ${key}`, servers: [...sv], primary: String(x.primary_storage ?? '0') === '1', freeGb: n(x.free) };
-    });
-  };
-  const describe = (all: VirtStorage[] | null) =>
-    all === null
-      ? 'storage list not readable'
-      : all.length
-        ? all.map((x) => `${x.name}${x.servers.length ? ` on ${x.servers.join('/')}` : ' (no server given)'}${x.primary ? ', primary' : ''}${x.freeGb !== null ? `, ${x.freeGb} GB free` : ''}`).join('; ')
-        : 'no storages listed';
-  /** Server and storage for a new VPS; null = leave it to Virtualizor (storages unreadable and no server chosen). */
-  /**
-   * Where a new VPS goes: the server (chosen, else the online one with the most free RAM that has room)
-   * and the storages to try on it, best first. Storage-to-server links are not always in the storage
-   * list, so storages not linked to any server are kept as later options.
-   */
-  const pickTarget = async (input: VpsCreateInput): Promise<{ serverId: string; linked: VirtStorage[]; unlinked: VirtStorage[] } | null> => {
-    let all: VirtStorage[] | null = null;
-    try {
-      all = await storages();
-    } catch {
-      all = null;
-    }
-    input.log?.(`Virtualizor storages: ${describe(all)}`);
-    const need = input.plan.diskGb ?? 0;
-    const order = (a: VirtStorage, b: VirtStorage) => Number(b.primary) - Number(a.primary) || (b.freeGb ?? 0) - (a.freeGb ?? 0);
-    const fits = (x: VirtStorage) => x.freeGb === null || x.freeGb >= need;
-    const linkedTo = (id: string) => (all ?? []).filter((x) => x.uuid && (x.servers.includes(id) || x.servers.includes('-1'))).sort(order);
-    const unlinked = (all ?? []).filter((x) => x.uuid && !x.servers.length && fits(x)).sort(order);
-    if (input.serverId) return { serverId: input.serverId, linked: linkedTo(input.serverId).filter(fits), unlinked };
-    if (!input.candidates?.length) return null;
-    const byRam = [...input.candidates].sort((a, b) => (b.freeRamMb ?? -1) - (a.freeRamMb ?? -1));
-    const withRoom = byRam.find((c) => linkedTo(c.serverId).some(fits));
-    const anyLinked = (all ?? []).some((x) => x.servers.length);
-    if (anyLinked && !withRoom) throw new VirtRefused(`No Virtualizor server has a storage with ${need} GB free for this plan (${describe(all)})`);
-    const c = withRoom ?? byRam[0]!;
-    return { serverId: c.serverId, linked: linkedTo(c.serverId).filter(fits), unlinked };
-  };
-
   const call = async (params: Record<string, string>, post?: Record<string, string>) => {
     const q = new URLSearchParams({ ...params, adminapikey: cfg.apiKey, adminapipass: cfg.apiPass, api: 'json', apikey: virtualizorApiKey(cfg.apiPass) });
     try {
@@ -531,84 +443,48 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
      */
     async createVps(input) {
       if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');
-      const p = input.plan;
-      // The disk goes on a storage of the target server (Virtualizor's space[0][st_uuid]); without it the
-      // panel looks for the primary storage of the server it assumes and may answer "The primary storage
-      // could not be found". When no server is chosen, the one with room on a storage and the most free RAM is used.
-      const target = await pickTarget(input);
-      // What Virtualizor's own Create VPS form offers for that server (GET act=addvs&serid=N): the storages it
-      // accepts there are the ones to send. Logged (names, uuids, which server the form is on) for diagnosis.
-      if (target) {
-        try {
-          const form = await call({ act: 'addvs', serid: target.serverId });
-          const found: VirtStorage[] = [];
-          const seen = new Set<string>();
-          const scan = (v: unknown, depth: number) => {
-            if (!v || typeof v !== 'object' || depth > 5) return;
-            const o = v as Row;
-            const uuid = s(o.st_uuid);
-            if (uuid && !seen.has(uuid)) {
-              seen.add(uuid);
-              found.push({ stid: s(o.stid) ?? '', uuid, name: s(o.name) ?? s(o.path) ?? uuid, servers: s(o.serid) ? [s(o.serid)!] : [], primary: String(o.primary_storage ?? '0') === '1', freeGb: n(o.free) });
-            }
-            for (const x of Object.values(o)) scan(x, depth + 1);
-          };
-          scan(form, 0);
-          const formServer = s((form as Row).serid) ?? s(((form as Row).globals as Row | undefined)?.serid) ?? null;
-          input.log?.(
-            `Virtualizor Create VPS form for server ${target.serverId}: answer keys ${Object.keys(form).slice(0, 40).join(', ')}${formServer !== null ? `; form is on server ${formServer}` : ''}; storages offered: ${found.length ? found.map((x) => `${x.name} (${x.uuid}${x.primary ? ', primary' : ''}${x.servers.length ? `, server ${x.servers[0]}` : ''})`).join('; ') : 'none found'}`,
-          );
-          const own = found.filter((x) => !x.servers.length || x.servers.includes(target.serverId)).sort((a, b) => Number(b.primary) - Number(a.primary));
-          if (own.length) target.linked = [...own, ...target.linked.filter((x) => !own.some((o) => o.uuid === x.uuid))];
-        } catch (e) {
-          input.log?.(`Could not read Virtualizor's Create VPS form for server ${target.serverId}: ${(e as Error).message}`);
-        }
-        input.log?.(`Sending to server ${target.serverId}; storages to try: ${target.linked.map((x) => `${x.name} (${x.uuid})`).join('; ') || 'none (Virtualizor picks the primary)'}`);
-      }
-      const base: Record<string, string> = {
+      const virt = (input.plan.virt ?? 'kvm').toLowerCase();
+      // As Virtualizor's own WHMCS module creates a VPS from a plan (modules/servers/virtualizor, the
+      // "new module" path): act=addvs&virt=<type> with addvps=1, node_select=1 and slave_server = the
+      // server id, or "auto" to let Virtualizor choose. The plan (plid) gives RAM, disk, storage, cores,
+      // bandwidth and IPs, so none of those are sent: sending them overrode the plan and sent the disk to
+      // the master's storage ("primary storage could not be found").
+      const post: Record<string, string> = {
         addvps: '1',
-        virt: p.virt ?? 'kvm',
+        node_select: '1',
+        slave_server: input.serverId || 'auto',
+        server_group: '',
+        virt,
         plid: input.planId,
         osid: input.osid,
         hostname: input.hostname,
         rootpass: input.password,
         user_email: input.userEmail,
         user_pass: input.userPass,
-        ...(target ? { slave_server: target.serverId, serid: target.serverId } : { node_select: '1' }),
-        // The plan's resources, for panels that don't apply them from plid alone.
-        ...(p.ramMb !== null ? { ram: String(p.ramMb) } : {}),
-        ...(p.cores !== null ? { cores: String(p.cores) } : {}),
-        ...(p.bandwidthGb !== null ? { bandwidth: String(p.bandwidthGb) } : {}),
-        num_ips: String(p.ips ?? 1),
-        ...(p.ips6 ? { num_ips6: String(p.ips6) } : {}),
       };
-      // Only a refusal about the storage moves to the next one: a refusal means nothing was created, so trying again is safe.
-      const disk = String(p.diskGb ?? 10);
-      // Straight onto the target server's own storage (primary first): the master's storage is never involved.
-      // Only when Virtualizor lists no storage for that server is the choice left to it (its primary storage).
-      const attempts: { label: string; post: Record<string, string> }[] = (target?.linked ?? [])
-        .slice(0, 5)
-        .map((st) => ({ label: `server ${target!.serverId}, storage ${st.name}`, post: { ...base, 'space[0][size]': disk, 'space[0][st_uuid]': st.uuid!, stid: st.stid } }));
-      if (!attempts.length) attempts.push({ label: target ? `server ${target.serverId}, its primary storage` : 'server and storage chosen by Virtualizor', post: { ...base, space: disk } });
-      let r: Row | null = null;
-      const refusals: string[] = [];
-      for (const a of attempts) {
+      const where = input.serverId ? `server ${input.serverId}` : 'server chosen by Virtualizor';
+      const attempt = async (body: Record<string, string>) => {
         try {
-          // The server also goes in the URL: Virtualizor's Create VPS page is per server (act=addvs&serid=N),
-          // and reads the server's storages, IPs and templates from it; in the POST body alone it was not used.
-          r = await call({ act: 'addvs', ...(target ? { serid: target.serverId } : {}) }, a.post);
-          if (refusals.length) input.log?.(`Created with ${a.label}`);
-          break;
+          return await call({ act: 'addvs', virt }, body);
         } catch (e) {
           const msg = (e as Error)?.message ?? '';
           // Only an answer from the panel proves nothing was created; a timeout or a dropped connection does not.
-          if (!/^Virtualizor(: | refused | did not accept | redirects )/.test(msg)) throw e;
-          refusals.push(`${a.label}: ${msg.replace(/^Virtualizor: /, '')}`);
-          input.log?.(`Virtualizor refused (${a.label}): ${msg.replace(/^Virtualizor: /, '')}`);
-          if (!/storage|space|disk/i.test(msg)) break;
+          if (/^Virtualizor(: | refused | did not accept | redirects )/.test(msg)) throw new VirtRefused(`${msg} (${where})`);
+          throw e;
         }
+      };
+      input.log?.(`Sending Create VPS: plan ${input.planId}, ${virt}, ${where}, OS ${input.osName ?? input.osid}`);
+      let r: Row;
+      try {
+        r = await attempt(post);
+      } catch (e) {
+        // The WHMCS module names the OS by template name (os_name); if the panel refused the OS id, try that once.
+        if (!(e instanceof VirtRefused) || !input.osName || !/\bos\b|template|osid/i.test(e.message)) throw e;
+        input.log?.(`Virtualizor refused the OS id; trying the template name ${input.osName}`);
+        const { osid: _drop, ...rest } = post;
+        void _drop;
+        r = await attempt({ ...rest, os_name: input.osName.toLowerCase() });
       }
-      if (!r) throw new VirtRefused(`Virtualizor: ${refusals.join(' · ')}`);
       const info = (r.newvs ?? r.vs_info ?? (r.done && typeof r.done === 'object' ? r.done : null) ?? {}) as Row;
       const vpsid = s(info.vpsid) ?? s(r.vpsid);
       if (!vpsid || !/^\d+$/.test(vpsid)) throw new PermanentError('Virtualizor did not return the new VPS id; check the VPS list in the panel before trying again');

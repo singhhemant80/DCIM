@@ -161,12 +161,10 @@ describe('orders', () => {
     expect(done.secretEnc).toBeNull();
     // Sent to Virtualizor as Create VPS: plan, OS, owner, password in the POST body only.
     const c = vz.creates.at(-1)!;
-    expect(c.body).toMatchObject({ addvps: '1', plid: '3', osid: '270', hostname: 'vps1.acme.example', rootpass: ROOT_PW, user_email: 'it@acme.example', virt: 'kvm', ram: '2048' });
-    // No server chosen: the synced server with room on a storage, and the disk on that storage.
-    // The server goes in the URL and the body, and the disk straight onto that server's own (primary) storage.
-    expect(c.body).toMatchObject({ slave_server: '0', serid: '0', 'space[0][size]': '40', 'space[0][st_uuid]': 'stuuidprimary01', stid: '1' });
-    expect(c.body.space).toBeUndefined();
-    expect(c.query).toMatchObject({ serid: '0' });
+    expect(c.body).toMatchObject({ addvps: '1', node_select: '1', slave_server: 'auto', plid: '3', osid: '270', hostname: 'vps1.acme.example', rootpass: ROOT_PW, user_email: 'it@acme.example', virt: 'kvm' });
+    expect(c.query).toMatchObject({ virt: 'kvm' });
+    // The plan gives the resources and storage: none are sent.
+    for (const k of ['ram', 'space', 'cores', 'bandwidth', 'num_ips', 'space[0][st_uuid]']) expect(c.body[k]).toBeUndefined();
     expect(JSON.stringify(c.query)).not.toContain(ROOT_PW);
     // The new VPS is in inventory, assigned to Acme, its address in IPAM for Acme.
     const [g] = await ctx.db.select().from(virtGuests).where(eq(virtGuests.id, done.guestId!));

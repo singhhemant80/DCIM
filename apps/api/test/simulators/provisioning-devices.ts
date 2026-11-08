@@ -388,21 +388,21 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
           { stid: '2', serid: '5' },
         ],
       });
-    // The Create VPS form for a server: what it offers there (storages with their uuid).
-    if (q.act === 'addvs' && req.method !== 'POST')
-      return send({ title: 'Create VPS', serid: rest.serid ?? '0', storages: { stuuidprimary01: { stid: '1', st_uuid: 'stuuidprimary01', name: 'local-lvm', primary_storage: '1', free: '900' } } });
     if (q.act === 'addvs') {
       mock.creates.push({ query: rest, body });
       // Like the panel: the disk needs a storage of the chosen server.
-      // Like the user's panel: the server comes from the URL (serid); with it, the primary storage is found.
-      if (rest.serid === undefined && body['space[0][st_uuid]'] !== 'stuuidprimary01' && !mock.storageOptional) return send({ error: { space: 'The primary storage could not be found' } });
+      // Like Virtualizor: without node_select the form's own server (the master) is used, whose storage
+      // isn't there; with node_select=1 the server is slave_server (or "auto").
+      if (body.node_select !== '1') return send({ error: { space: 'The primary storage could not be found' } });
+      if (body.slave_server !== 'auto' && body.slave_server !== '0') return send({ error: { slave_server: 'Invalid server' } });
+      if (!rest.virt || rest.virt !== body.virt) return send({ error: { virt: 'Invalid virtualization type' } });
       if (req.method !== 'POST' || body.addvps !== '1') return send({ error: { addvps: 'Invalid request' } });
       if (mock.failCreate) return send({ error: { ips: mock.failCreate } });
       if (!templates[body.osid ?? '']) return send({ error: { osid: 'The OS template was not found' } });
       if (!body.hostname || !body.rootpass || !body.user_email) return send({ error: { hostname: 'Missing fields' } });
       const id = String(Math.max(...[...vps.keys()].map(Number)) + 1);
       const ip = `203.0.113.${id}`;
-      vps.set(id, { serid: body.slave_server ?? '0', hostname: body.hostname, status: 1, suspended: 0, virt: body.virt ?? 'kvm', ips: [ip], osid: body.osid });
+      vps.set(id, { serid: body.slave_server === 'auto' ? '0' : (body.slave_server ?? '0'), hostname: body.hostname, status: 1, suspended: 0, virt: body.virt ?? 'kvm', ips: [ip], osid: body.osid });
       return send({ title: 'Create VPS', done: 1, newvs: { vpsid: id, ips: [ip] } });
     }
     if (q.act === 'rebuild') {
