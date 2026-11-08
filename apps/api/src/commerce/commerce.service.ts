@@ -43,6 +43,7 @@ import { jobContext } from '../provisioning/contexts';
 import type { Principal, RequestMeta } from '../auth/principal';
 import { InsufficientFunds, issueCreditNote, loadSettings, moveWallet, nextReceipt, taxFor } from './ledger';
 import { deliverOrder, refundOrder } from './delivery';
+import { chargeRenewal, unpaidTerms } from './renewal';
 
 type I<T extends z.ZodTypeAny> = z.infer<T>;
 const NF = (what: string) => new NotFoundException({ error: 'not_found', message: `${what} not found` });
@@ -110,6 +111,7 @@ export class CommerceService {
     this.staffWrite(p);
     const v = { ...input, gstin: input.gstin || null, pan: input.pan || null, email: input.email || null, phone: input.phone || null, bankDetails: input.bankDetails || null, invoiceNotes: input.invoiceNotes || null };
     if (v.gstin && v.gstin.slice(0, 2) !== v.stateCode) throw new BadRequestException({ error: 'invalid_state', message: `The GSTIN is registered in state ${v.gstin.slice(0, 2)}; choose that state` });
+    if (v.terminateDays > 0 && v.terminateDays <= v.graceDays) throw new BadRequestException({ error: 'invalid_terms', message: 'Termination must come after suspension (more days than the grace days), or 0 for never' });
     return this.db.transaction(async (tx) => {
       const [row] = await tx
         .insert(billingSettings)
@@ -382,6 +384,7 @@ export class CommerceService {
       balancePaise: c.walletBalancePaise,
       monthlyPaise: subs.filter((s) => s.status !== 'cancelled').reduce((a, s) => a + s.pricePaise, 0),
       graceDays: settings?.graceDays ?? null,
+      terminateDays: settings?.terminateDays ?? null,
       billingReady: !!settings,
       subscriptions: subs,
       transactions: txs.map((t) => ({
@@ -768,8 +771,10 @@ export class CommerceService {
       cancelledAt: r.s.cancelledAt,
       cancelAt: r.s.cancelAt,
       deleteVps: r.s.deleteVps,
+      autoRenew: r.s.autoRenew,
+      terminatesAt: unpaidTerms(r.s, settings).terminatesAt,
       pendingAction: r.s.pendingAction,
-      suspendsAt: r.s.status === 'overdue' && settings ? new Date((r.s.overdueSince ?? r.s.nextDueAt).getTime() + settings.graceDays * 86_400_000) : null,
+      suspendsAt: unpaidTerms(r.s, settings).suspendsAt,
       guestId: r.s.guestId,
       guestName: r.guestName,
       guestStatus: r.guestStatus,
@@ -911,15 +916,23 @@ export class CommerceService {
   /** Suspend or unsuspend a subscription's VPS by hand (staff), or withdraw a cancellation set for the end of the period. */
   async subscriptionAction(p: Principal, id: string, input: I<typeof subscriptionActionSchema>, meta: RequestMeta) {
     const staff = p.userType === 'staff';
+    const clientActions = ['keep', 'renew', 'auto_renew_on', 'auto_renew_off'];
     if (staff) this.staffWrite(p);
-    else if (!p.permissions.has('orders.place') || input.action !== 'keep') throw forbidden();
+    else if (!p.permissions.has('orders.place') || !clientActions.includes(input.action)) throw forbidden();
+    if (input.action === 'renew') return this.renewNow(p, id, meta);
     return this.db.transaction(async (tx) => {
       const locked = await tx.execute(sql`select id from subscriptions where id = ${id} and org_id = ${p.orgId} for update`);
       if (!locked.rows.length) throw NF('Subscription');
       const [s] = await tx.select().from(subscriptions).where(eq(subscriptions.id, id));
       const sub = s!;
       if (!staff && sub.customerId !== p.customerId) throw NF('Subscription');
-      if (input.action === 'keep') {
+      if (input.action === 'auto_renew_on' || input.action === 'auto_renew_off') {
+        if (sub.status === 'cancelled') throw new ConflictException({ error: 'cancelled', message: 'This subscription is cancelled' });
+        await tx
+          .update(subscriptions)
+          .set({ autoRenew: input.action === 'auto_renew_on' })
+          .where(eq(subscriptions.id, id));
+      } else if (input.action === 'keep') {
         if (sub.status === 'cancelled' || !sub.cancelAt) throw new ConflictException({ error: 'not_cancelling', message: 'There is no cancellation to withdraw' });
         await tx.update(subscriptions).set({ cancelAt: null, cancelReason: null, deleteVps: false }).where(eq(subscriptions.id, id));
       } else {
@@ -930,6 +943,40 @@ export class CommerceService {
       await this.rec(p, meta, `billing.subscription_${input.action}`, { type: 'subscription', id }, { name: sub.name }, sub.customerId, tx);
       return { ok: true };
     });
+  }
+
+  /**
+   * Renew one VPS now from the wallet (the client for their own, or staff): one month, GST invoice. An
+   * overdue one is paid up; a suspended one starts a fresh month today and is unsuspended within a minute;
+   * an active one is extended by a month. 402 when the wallet is short.
+   */
+  private async renewNow(p: Principal, id: string, meta: RequestMeta) {
+    const now = new Date();
+    try {
+      return await this.db.transaction(async (tx) => {
+        const locked = await tx.execute(sql`select id from subscriptions where id = ${id} and org_id = ${p.orgId} for update`);
+        if (!locked.rows.length) throw NF('Subscription');
+        const [s] = await tx.select().from(subscriptions).where(eq(subscriptions.id, id));
+        const sub = s!;
+        if (p.userType !== 'staff' && sub.customerId !== p.customerId) throw NF('Subscription');
+        if (sub.status === 'cancelled') throw new ConflictException({ error: 'cancelled', message: 'This subscription is cancelled; order a new VPS instead' });
+        if (sub.cancelAt) throw new ConflictException({ error: 'cancelling', message: 'This VPS is set to end; keep it first, then renew' });
+        const settings = await loadSettings(tx, p.orgId);
+        if (!settings) throw new ConflictException({ error: 'billing_not_set_up', message: 'Billing is not set up' });
+        const r = await chargeRenewal(tx, sub, settings, now, p.email);
+        if (r.unsuspend && sub.guestId) await tx.update(subscriptions).set({ pendingAction: 'unsuspend', pendingBy: p.email }).where(eq(subscriptions.id, id));
+        if (r.unsuspend && sub.serviceId) await tx.update(services).set({ status: 'active' }).where(eq(services.id, sub.serviceId));
+        await this.rec(p, meta, 'billing.renewed', { type: 'subscription', id }, { name: sub.name, invoice: r.invoice.number, total: r.invoice.totalPaise, byHand: true, wasSuspended: r.unsuspend }, sub.customerId, tx);
+        return { ok: true, invoice: { id: r.invoice.id, number: r.invoice.number, totalPaise: r.invoice.totalPaise } };
+      });
+    } catch (e) {
+      if (e instanceof InsufficientFunds)
+        throw new HttpException(
+          { error: 'insufficient_funds', message: `The wallet has ${formatInr(e.balancePaise)}; renewing needs ${formatInr(e.neededPaise)} (incl. GST). Add funds first.`, balancePaise: e.balancePaise, neededPaise: e.neededPaise },
+          HttpStatus.PAYMENT_REQUIRED,
+        );
+      throw e;
+    }
   }
 
   async creditNote(p: Principal, id: string) {

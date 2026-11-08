@@ -33,6 +33,8 @@ interface SubT {
   suspendsAt: string | null;
   cancelAt: string | null;
   deleteVps: boolean;
+  autoRenew: boolean;
+  terminatesAt: string | null;
   pendingAction: 'suspend' | 'unsuspend' | 'delete' | null;
   guestId: string | null;
   guestName: string | null;
@@ -99,6 +101,7 @@ interface AccountT {
   balancePaise: number;
   monthlyPaise: number;
   graceDays: number | null;
+  terminateDays: number | null;
   billingReady: boolean;
   subscriptions: SubT[];
   transactions: TxT[];
@@ -174,6 +177,7 @@ interface SettingsT {
   receiptPrefix: string;
   creditNotePrefix: string;
   graceDays: number;
+  terminateDays: number;
   email: string | null;
   phone: string | null;
   bankDetails: string | null;
@@ -624,6 +628,7 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
             <th className="text-right">Per month</th>
             <th>Status</th>
             <th>Next renewal</th>
+            <th>Auto-renew</th>
             {((staff && can('billing.write')) || (!staff && can('orders.place'))) && <th />}
           </tr>
         </thead>
@@ -654,8 +659,9 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
               </td>
               <td>
                 <Chip tone={SUB_TONE[s.status]}>{SUB_LABEL[s.status]}</Chip>
-                {s.status === 'overdue' && s.suspendsAt && <span className="block text-[12px] text-ink-3">suspends {formatDateTime(s.suspendsAt)} unless paid</span>}
-                {s.status === 'suspended' && <span className="block text-[12px] text-ink-3">since {formatDate(s.suspendedAt)}; resumes when the wallet covers a month</span>}
+                {s.status === 'overdue' && s.suspendsAt && <span className="block text-[12px] text-crit">suspends {formatDateTime(s.suspendsAt)} unless renewed</span>}
+                {s.status === 'suspended' && <span className="block text-[12px] text-ink-3">since {formatDate(s.suspendedAt)}; resumes when renewed</span>}
+                {s.terminatesAt && s.status !== 'cancelled' && <span className="block text-[12px] font-medium text-crit">terminated (deleted) {formatDateTime(s.terminatesAt)} unless renewed</span>}
                 {s.cancelAt && s.status !== 'cancelled' && (
                   <span className="block text-[12px] text-warn">
                     ends {formatDate(s.cancelAt)}, then the VPS is {s.deleteVps ? 'deleted' : 'suspended'}
@@ -667,22 +673,25 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
                 {s.lastError && <span className="block max-w-[40ch] text-[12px] text-crit">{s.lastError}</span>}
               </td>
               <td className="text-[13px] whitespace-nowrap">{s.status === 'cancelled' ? `cancelled ${formatDate(s.cancelledAt)}` : <DueDate iso={s.cancelAt ?? s.nextDueAt} label={s.cancelAt ? 'ends' : undefined} />}</td>
+              <td>{s.status === 'cancelled' || s.cancelAt ? <span className="text-ink-3">—</span> : <AutoRenewToggle sub={s} editable={staff ? can('billing.write') : can('orders.place')} />}</td>
               {staff && can('billing.write') && (
-                <td className="text-right">
+                <td className="text-right whitespace-nowrap">
+                  {s.status !== 'cancelled' && !s.cancelAt && <RenewButton sub={s} />}
                   {s.status !== 'cancelled' && (
-                    <Button size="sm" onClick={() => setEditing(s)}>
+                    <Button size="sm" className="ml-2" onClick={() => setEditing(s)}>
                       Manage
                     </Button>
                   )}
                 </td>
               )}
               {!staff && can('orders.place') && (
-                <td className="text-right">
+                <td className="text-right whitespace-nowrap">
+                  {s.status !== 'cancelled' && !s.cancelAt && <RenewButton sub={s} />}
                   {s.status !== 'cancelled' &&
                     (s.cancelAt ? (
                       <ClientKeep sub={s} />
                     ) : (
-                      <Button size="sm" onClick={() => setCancelling(s)}>
+                      <Button size="sm" className="ml-2" onClick={() => setCancelling(s)}>
                         Cancel
                       </Button>
                     ))}
@@ -876,6 +885,74 @@ function ClientCancelModal({ sub, onClose }: { sub: SubT; onClose: () => void })
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** Renew this VPS automatically from the wallet on its due date, or not (then it is renewed by hand). */
+function AutoRenewToggle({ sub, editable }: { sub: SubT; editable: boolean }) {
+  const qc = useQueryClient();
+  const m = useMutation({ mutationFn: (on: boolean) => api.post(`${B}/subscriptions/${sub.id}/actions`, { action: on ? 'auto_renew_on' : 'auto_renew_off' }), onSuccess: () => void qc.invalidateQueries({ queryKey: ['billing'] }) });
+  return (
+    <label
+      className={cx('inline-flex items-center gap-2 text-[13px]', editable ? 'cursor-pointer' : 'opacity-70')}
+      title={sub.autoRenew ? 'Paid from the wallet on the due date' : 'Not charged automatically: renew by hand before the due date'}
+    >
+      <input type="checkbox" role="switch" checked={sub.autoRenew} disabled={!editable || m.isPending} onChange={(e) => m.mutate(e.target.checked)} />
+      {sub.autoRenew ? 'On' : 'Off'}
+    </label>
+  );
+}
+
+/** Pay one month of this VPS now from the wallet (extends it, pays an overdue one, or brings a suspended one back). */
+function RenewButton({ sub }: { sub: SubT }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const m = useMutation({
+    mutationFn: () => api.post<{ invoice: { number: string; totalPaise: number } }>(`${B}/subscriptions/${sub.id}/actions`, { action: 'renew' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['billing'] }),
+  });
+  const urgent = sub.status !== 'active' || (daysUntil(sub.nextDueAt) ?? 99) <= 7;
+  return (
+    <>
+      <Button size="sm" variant={urgent ? 'primary' : 'secondary'} onClick={() => setOpen(true)}>
+        Renew now
+      </Button>
+      {open && (
+        <Modal open onOpenChange={(o) => !o && (setOpen(false), m.reset())} title={`Renew ${sub.guestName ?? sub.name}`}>
+          {m.data ? (
+            <div className="grid gap-3 text-[13.5px]">
+              <p>
+                Renewed. Invoice {m.data.invoice.number} for {inr(m.data.invoice.totalPaise)} was paid from the wallet.
+                {sub.status === 'suspended' ? ' The VPS is being unsuspended (within a minute).' : ''}
+              </p>
+              <div className="flex justify-end">
+                <Button variant="primary" onClick={() => (setOpen(false), m.reset())}>
+                  Done
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 text-[13.5px]">
+              <p>
+                One month for {inr(sub.pricePaise)} + GST is taken from the wallet now and a GST invoice is issued.{' '}
+                {sub.status === 'suspended'
+                  ? 'The new month starts today and the VPS is unsuspended.'
+                  : sub.status === 'overdue'
+                    ? `It pays the month that fell due on ${formatDate(sub.nextDueAt)}.`
+                    : `It then runs until ${formatDate(new Date(new Date(sub.nextDueAt).setMonth(new Date(sub.nextDueAt).getMonth() + 1)).toISOString())}.`}
+              </p>
+              <ErrorNote error={m.error} />
+              <div className="flex justify-end gap-2">
+                <Button onClick={() => setOpen(false)}>Cancel</Button>
+                <Button variant="primary" busy={m.isPending} onClick={() => m.mutate()}>
+                  Pay from wallet
+                </Button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+    </>
   );
 }
 
@@ -1217,6 +1294,7 @@ function SettingsForm({ initial, readOnly }: { initial: SettingsT | null; readOn
       receiptPrefix: 'RCPT',
       creditNotePrefix: 'CN',
       graceDays: 3,
+      terminateDays: 0,
       email: '',
       phone: '',
       bankDetails: '',
@@ -1282,8 +1360,15 @@ function SettingsForm({ initial, readOnly }: { initial: SettingsT | null; readOn
         </Field>
         <Field label="Receipt number prefix">{(id) => <Input id={id} value={f.receiptPrefix} onChange={(e) => setF({ ...f, receiptPrefix: e.target.value.toUpperCase() })} />}</Field>
         <Field label="Credit note number prefix">{(id) => <Input id={id} value={f.creditNotePrefix ?? 'CN'} onChange={(e) => setF({ ...f, creditNotePrefix: e.target.value.toUpperCase() })} />}</Field>
-        <Field label="Grace days before suspension" hint="After a renewal falls due and the wallet is short, the VPS is suspended in Virtualizor after this many days.">
+        <Field label="Suspend after (days unpaid)" hint="When a renewal is not paid (wallet short, or auto-renew off and not renewed by hand), the VPS is suspended in Virtualizor this many days after its due date.">
           {(id) => <Input id={id} type="number" min={0} max={60} value={f.graceDays} onChange={(e) => setF({ ...f, graceDays: Number(e.target.value) })} />}
+        </Field>
+        <Field
+          label="Terminate after (days unpaid)"
+          hint="Still unpaid this many days after the due date: the subscription ends and the VPS is deleted in Virtualizor (data gone). 0 = never terminate, stay suspended."
+          error={f.terminateDays > 0 && f.terminateDays <= f.graceDays ? 'Must be more than the suspension days, or 0' : undefined}
+        >
+          {(id) => <Input id={id} type="number" min={0} max={365} value={f.terminateDays ?? 0} onChange={(e) => setF({ ...f, terminateDays: Number(e.target.value) })} />}
         </Field>
         <Field label="Billing e-mail">{(id) => <Input id={id} type="email" value={f.email ?? ''} onChange={set('email')} />}</Field>
         <Field label="Phone">{(id) => <Input id={id} value={f.phone ?? ''} onChange={set('phone')} />}</Field>
@@ -1360,8 +1445,9 @@ export function ClientAccount({ customerId, staff }: { customerId?: string; staf
         </dl>
         {!staff && (
           <p className="mt-4 text-[13px] text-ink-2">
-            To add funds, pay us by UPI or bank transfer and tell us the reference; we credit your wallet and you get a receipt here. Renewals are taken from the wallet on their due date; if the balance is short, a VPS is suspended
-            {a.graceDays !== null ? ` after ${a.graceDays} day${a.graceDays === 1 ? '' : 's'}` : ''} and resumes as soon as the wallet covers a month.
+            To add funds, pay us by UPI or bank transfer and tell us the reference; we credit your wallet and you get a receipt here. VPSs with auto-renew on are paid from the wallet on their due date; switch it off for the ones you don't
+            want renewed, or use “Renew now”. An unpaid VPS is suspended{a.graceDays !== null ? ` ${a.graceDays} day${a.graceDays === 1 ? '' : 's'} after its due date` : ''}
+            {a.terminateDays ? ` and terminated (deleted, data lost) ${a.terminateDays} days after it` : ''}; renewing before then brings it back.
           </p>
         )}
       </Panel>
@@ -2356,6 +2442,8 @@ export function CreditNotePage() {
 
 /** Client dashboard: wallet balance and each VPS with its renewal date and days left. */
 export function ClientRenewalsPanel() {
+  const { can } = useAuth();
+  const canOrder = can('orders.place');
   const q = useQuery({ queryKey: ['billing', 'account', 'me'], queryFn: () => api.get<AccountT>(`${B}/account`), refetchInterval: 60_000 });
   if (!q.data) return q.error ? <ErrorNote error={q.error} /> : null;
   const a = q.data;
@@ -2386,6 +2474,8 @@ export function ClientRenewalsPanel() {
               <th>IP address</th>
               <th>Status</th>
               <th>Expires / renews</th>
+              <th>Auto-renew</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -2408,7 +2498,10 @@ export function ClientRenewalsPanel() {
                 </td>
                 <td className="text-[13px] whitespace-nowrap">
                   <DueDate iso={s.cancelAt ?? s.nextDueAt} label={s.cancelAt ? 'ends' : undefined} />
+                  {s.terminatesAt && <span className="block text-[12px] font-medium text-crit">terminated {formatDate(s.terminatesAt)} unless renewed</span>}
                 </td>
+                <td>{s.cancelAt ? <span className="text-ink-3">—</span> : <AutoRenewToggle sub={s} editable={canOrder} />}</td>
+                <td className="text-right">{canOrder && !s.cancelAt && <RenewButton sub={s} />}</td>
               </tr>
             ))}
           </tbody>

@@ -1,9 +1,10 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { addMonth, formatInr } from '@crapplet/shared';
+import { formatInr } from '@crapplet/shared';
 import { customers, provisioningJobs, services, subscriptions, virtGuests, virtHosts, virtIntegrations, vpsOrders, type Subscription } from '../../db/schema';
 import { AuditService } from '../../audit/audit.service';
-import { InsufficientFunds, issueInvoice, loadSettings, moveWallet, taxFor } from '../../commerce/ledger';
+import { InsufficientFunds, loadSettings, taxFor } from '../../commerce/ledger';
 import { deliverOrder, refundOrder } from '../../commerce/delivery';
+import { chargeRenewal, unpaidTerms } from '../../commerce/renewal';
 import { virtClientFor, type ProvisioningDeps } from '../provisioning/kinds';
 
 /**
@@ -27,8 +28,8 @@ const META = { ip: null, userAgent: null, requestId: null };
 /** A failed suspend/unsuspend is retried after this long. */
 const RETRY_MS = 10 * 60_000;
 
-export async function runBillingCycle(deps: ProvisioningDeps, now: Date = deps.now?.() ?? new Date()): Promise<{ settled: number; renewed: number; overdue: number; suspended: number; unsuspended: number }> {
-  const out = { settled: 0, renewed: 0, overdue: 0, suspended: 0, unsuspended: 0 };
+export async function runBillingCycle(deps: ProvisioningDeps, now: Date = deps.now?.() ?? new Date()): Promise<{ settled: number; renewed: number; overdue: number; suspended: number; unsuspended: number; terminated: number }> {
+  const out = { settled: 0, renewed: 0, overdue: 0, suspended: 0, unsuspended: 0, terminated: 0 };
   out.settled = await settleOrders(deps, now);
   await endCancelled(deps, now);
   Object.assign(out, await renewDue(deps, now));
@@ -202,7 +203,7 @@ async function setServiceStatus(deps: ProvisioningDeps, sub: Subscription, statu
 
 async function renewDue(deps: ProvisioningDeps, now: Date) {
   const audit = new AuditService(deps.db);
-  const out = { renewed: 0, overdue: 0, suspended: 0, unsuspended: 0 };
+  const out = { renewed: 0, overdue: 0, suspended: 0, unsuspended: 0, terminated: 0 };
   const due = await deps.db.execute<{ id: string }>(sql`
     select id from subscriptions where status in ('active', 'overdue', 'suspended') and next_due_at <= ${now.toISOString()}::timestamptz and (cancel_at is null or cancel_at > ${now.toISOString()}::timestamptz) order by next_due_at limit 200`);
   for (const { id } of due.rows) {
@@ -220,31 +221,9 @@ async function renewDue(deps: ProvisioningDeps, now: Date) {
         }
         const [c] = await tx.select().from(customers).where(eq(customers.id, s.customerId));
         const t = taxFor(settings, c!, s.pricePaise);
-        if (c!.walletBalancePaise >= t.totalPaise) {
-          // A suspended VPS starts a fresh month on the day it is paid; an overdue one continues from its due date.
-          const from = s.status === 'suspended' ? now : s.nextDueAt;
-          const to = addMonth(from);
-          const inv = await issueInvoice(tx, {
-            orgId: s.orgId,
-            customerId: s.customerId,
-            settings,
-            at: now,
-            rateBp: t.rateBp,
-            placeOfSupply: t.placeOfSupply,
-            subscriptionId: s.id,
-            lines: [{ description: `${s.name} — renewal`, quantity: 1, unitPaise: s.pricePaise, periodFrom: from.toISOString(), periodTo: to.toISOString(), subscriptionId: s.id }],
-          });
-          await moveWallet(tx, {
-            orgId: s.orgId,
-            customerId: s.customerId,
-            kind: 'debit',
-            amountPaise: -inv.totalPaise,
-            description: `Renewal ${s.name} (invoice ${inv.number})`,
-            invoiceId: inv.id,
-            subscriptionId: s.id,
-            actorLabel: 'billing',
-          });
-          await tx.update(subscriptions).set({ status: 'active', periodStart: from, nextDueAt: to, overdueSince: null, lastError: null }).where(eq(subscriptions.id, id));
+        // Auto-renew off: the wallet is not charged; the client renews by hand, and the unpaid terms apply.
+        if (s.autoRenew && c!.walletBalancePaise >= t.totalPaise) {
+          const r = await chargeRenewal(tx, s, settings, now, 'billing');
           await audit.record(
             {
               orgId: s.orgId,
@@ -254,12 +233,40 @@ async function renewDue(deps: ProvisioningDeps, now: Date) {
               target: { type: 'subscription', id },
               outcome: 'success',
               meta: META,
-              metadata: { invoice: inv.number, total: inv.totalPaise, wasSuspended: s.status === 'suspended' },
+              metadata: { invoice: r.invoice.number, total: r.invoice.totalPaise, wasSuspended: r.unsuspend },
             },
             tx,
           );
           out.renewed++;
-          if (s.status === 'suspended') after = { action: 'unsuspend', sub: s };
+          if (r.unsuspend) after = { action: 'unsuspend', sub: s };
+          return;
+        }
+        // Unpaid past the termination term: the subscription ends and the VPS is deleted.
+        const terms = unpaidTerms(s, settings);
+        if (terms.terminatesAt && now >= terms.terminatesAt) {
+          await tx
+            .update(subscriptions)
+            .set({ status: 'cancelled', cancelledAt: now, cancelReason: `Terminated: unpaid ${settings.terminateDays} days after the due date`, deleteVps: true, pendingAction: s.guestId ? 'delete' : null, pendingBy: 'billing (unpaid)' })
+            .where(eq(subscriptions.id, id));
+          if (s.serviceId)
+            await tx
+              .update(services)
+              .set({ status: 'terminated', endDate: now.toISOString().slice(0, 10) })
+              .where(eq(services.id, s.serviceId));
+          await audit.record(
+            {
+              orgId: s.orgId,
+              actor: SYSTEM,
+              customerId: s.customerId,
+              action: 'billing.terminated',
+              target: { type: 'subscription', id },
+              outcome: 'success',
+              meta: META,
+              metadata: { name: s.name, terminateDays: settings.terminateDays, guestId: s.guestId },
+            },
+            tx,
+          );
+          out.terminated++;
           return;
         }
         if (s.status === 'active') {
@@ -273,7 +280,11 @@ async function renewDue(deps: ProvisioningDeps, now: Date) {
               target: { type: 'subscription', id },
               outcome: 'failure',
               meta: META,
-              metadata: { needed: t.totalPaise, balance: c!.walletBalancePaise, note: `Needs ${formatInr(t.totalPaise)}; suspends after ${settings.graceDays} day(s)` },
+              metadata: {
+                needed: t.totalPaise,
+                balance: c!.walletBalancePaise,
+                note: s.autoRenew ? `Needs ${formatInr(t.totalPaise)}; suspends after ${settings.graceDays} day(s)` : `Auto-renew off; suspends after ${settings.graceDays} day(s) unless renewed`,
+              },
             },
             tx,
           );

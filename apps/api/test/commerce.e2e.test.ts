@@ -372,4 +372,52 @@ describe('renewals', () => {
     // Cancelled once only.
     expect((await admin.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'now', refund: 'full' })).status).toBe(409);
   });
+
+  it('lets the client choose what renews, renew by hand, and applies the suspend and terminate terms', async () => {
+    const SETTINGS = { legalName: 'Crapplet Cloud Pvt Ltd', address: 'Plot 5, Sector 62, Noida, Uttar Pradesh 201309', stateCode: '09', gstin: '09AAACC1234F1Z6', pan: 'AAACC1234F', graceDays: 3 };
+    expect((await admin.put(`${B}/settings`, { ...SETTINGS, terminateDays: 2 })).status).toBe(400);
+    await ok(admin.put(`${B}/settings`, { ...SETTINGS, terminateDays: 7 }));
+    await ok(admin.post(`${B}/customers/${ctx.customers.globex}/funds`, { amountPaise: 200_000, method: 'cash' }));
+    const res = await ok(globex.post(`${B}/orders`, { planId: ids.plan, hostname: 'vps-g4.globex.example', osId: '270', password: ROOT_PW }));
+    const jobs = await ctx.db.select().from(provisioningJobs).where(eq(provisioningJobs.kind, 'guest_create'));
+    await drive(jobs.find((x) => x.params.orderId === res.order.id)!.id);
+    await runBillingCycle(deps(), new Date());
+    const [sub] = await ctx.db
+      .select()
+      .from(subscriptions)
+      .where(sql`${subscriptions.customerId} = ${ctx.customers.globex} and ${subscriptions.status} = 'active'`);
+    // The client turns auto-renew off: on the due date nothing is taken although the wallet could pay.
+    await ok(globex.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'auto_renew_off' }));
+    expect((await acme.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'auto_renew_on' })).status).toBe(404);
+    expect((await globex.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'suspend' })).status).toBe(403);
+    const due = new Date(Date.now() - 1000);
+    await ctx.db.update(subscriptions).set({ nextDueAt: due }).where(eq(subscriptions.id, sub!.id));
+    const before = await balance(ctx.customers.globex);
+    await runBillingCycle(deps(), new Date());
+    expect(await balance(ctx.customers.globex)).toBe(before);
+    let acc = await ok(globex.get(`${B}/account`));
+    let row = acc.subscriptions.find((x: { id: string }) => x.id === sub!.id);
+    expect(row).toMatchObject({ status: 'overdue', autoRenew: false });
+    expect(new Date(row.terminatesAt).getTime()).toBe(due.getTime() + 7 * DAY);
+    // The client renews this one by hand: one month from the old due date, with an invoice.
+    const r = await ok(globex.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'renew' }));
+    expect(r.invoice.totalPaise).toBe(47_200);
+    expect(await balance(ctx.customers.globex)).toBe(before - 47_200);
+    acc = await ok(globex.get(`${B}/account`));
+    row = acc.subscriptions.find((x: { id: string }) => x.id === sub!.id);
+    expect(row.status).toBe('active');
+    expect(new Date(row.nextDueAt).getTime()).toBeGreaterThan(due.getTime() + 27 * DAY);
+    // Never renewed again: suspended after 3 days, terminated (VPS deleted) after 7.
+    const due2 = new Date(Date.now() - 8 * DAY);
+    await ctx.db.update(subscriptions).set({ nextDueAt: due2 }).where(eq(subscriptions.id, sub!.id));
+    await runBillingCycle(deps(), new Date());
+    expect((await ctx.db.select().from(subscriptions).where(eq(subscriptions.id, sub!.id)))[0]!.status).toBe('overdue');
+    const ext = (await ctx.db.select().from(virtGuests).where(eq(virtGuests.id, sub!.guestId!)))[0]!.externalId;
+    const out = await runBillingCycle(deps(), new Date());
+    expect(out.terminated).toBe(1);
+    const [ended] = await ctx.db.select().from(subscriptions).where(eq(subscriptions.id, sub!.id));
+    expect(ended).toMatchObject({ status: 'cancelled', deleteVps: true, pendingAction: null });
+    expect(vz.vps.has(ext)).toBe(false);
+    expect((await globex.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'renew' })).status).toBe(409);
+  });
 });

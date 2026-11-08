@@ -192,6 +192,8 @@ export const billingSettingsSchema = z.object({
   receiptPrefix: prefix.default('RCPT'),
   creditNotePrefix: prefix.default('CN'),
   graceDays: z.number().int().min(0).max(60).default(3),
+  /** Days unpaid after the due date before the VPS is terminated (deleted); 0 = never. Must be after the suspension. */
+  terminateDays: z.number().int().min(0).max(365).default(0),
   email: z.string().trim().email().nullable().optional(),
   phone: z.string().trim().max(40).nullable().optional(),
   bankDetails: z.string().trim().max(1000).nullable().optional(),
@@ -282,7 +284,7 @@ export const subscriptionCancelSchema = z
   })
   .refine((v) => v.when === 'now' || v.refund === 'none', { message: 'A refund is only for an immediate cancellation', path: ['refund'] });
 /** Staff actions on a subscription's VPS (carried out by the worker within a minute), or withdrawing a cancellation. */
-export const subscriptionActionSchema = z.object({ action: z.enum(['suspend', 'unsuspend', 'keep']) });
+export const subscriptionActionSchema = z.object({ action: z.enum(['suspend', 'unsuspend', 'keep', 'renew', 'auto_renew_on', 'auto_renew_off']) });
 
 export const subscriptionUpdateSchema = z.object({
   pricePaise: paise.min(100).optional(),

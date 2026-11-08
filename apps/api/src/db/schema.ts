@@ -2804,6 +2804,8 @@ export const billingSettings = pgTable('billing_settings', {
   receiptPrefix: text('receipt_prefix').notNull().default('RCPT'),
   creditNotePrefix: text('credit_note_prefix').notNull().default('CN'),
   graceDays: integer('grace_days').notNull().default(3),
+  /** Unpaid this many days after the due date: the VPS is terminated (deleted in Virtualizor). 0 = never. */
+  terminateDays: integer('terminate_days').notNull().default(0),
   email: text('email'),
   phone: text('phone'),
   bankDetails: text('bank_details'),
@@ -2988,6 +2990,8 @@ export const subscriptions = pgTable(
     /** A hypervisor action staff asked for, carried out by the worker: suspend | unsuspend | delete. */
     pendingAction: text('pending_action'),
     pendingBy: text('pending_by'),
+    /** Renew from the wallet on the due date. Off: the client renews by hand ("Renew now"); unpaid, the terms below apply. */
+    autoRenew: boolean('auto_renew').notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

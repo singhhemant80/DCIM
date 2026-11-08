@@ -281,6 +281,13 @@
       "when": 1794136990286,
       "tag": "0039_cancellations_credit_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794146482544,
+      "tag": "0040_renewal_terms",
+      "breakpoints": true
     }
   ]
 }
