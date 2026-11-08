@@ -388,6 +388,9 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
           { stid: '2', serid: '5' },
         ],
       });
+    // The Create VPS form for a server: what it offers there (storages with their uuid).
+    if (q.act === 'addvs' && req.method !== 'POST')
+      return send({ title: 'Create VPS', serid: rest.serid ?? '0', storages: { stuuidprimary01: { stid: '1', st_uuid: 'stuuidprimary01', name: 'local-lvm', primary_storage: '1', free: '900' } } });
     if (q.act === 'addvs') {
       mock.creates.push({ query: rest, body });
       // Like the panel: the disk needs a storage of the chosen server.

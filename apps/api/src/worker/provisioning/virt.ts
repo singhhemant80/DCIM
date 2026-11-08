@@ -536,6 +536,35 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       // panel looks for the primary storage of the server it assumes and may answer "The primary storage
       // could not be found". When no server is chosen, the one with room on a storage and the most free RAM is used.
       const target = await pickTarget(input);
+      // What Virtualizor's own Create VPS form offers for that server (GET act=addvs&serid=N): the storages it
+      // accepts there are the ones to send. Logged (names, uuids, which server the form is on) for diagnosis.
+      if (target) {
+        try {
+          const form = await call({ act: 'addvs', serid: target.serverId });
+          const found: VirtStorage[] = [];
+          const seen = new Set<string>();
+          const scan = (v: unknown, depth: number) => {
+            if (!v || typeof v !== 'object' || depth > 5) return;
+            const o = v as Row;
+            const uuid = s(o.st_uuid);
+            if (uuid && !seen.has(uuid)) {
+              seen.add(uuid);
+              found.push({ stid: s(o.stid) ?? '', uuid, name: s(o.name) ?? s(o.path) ?? uuid, servers: s(o.serid) ? [s(o.serid)!] : [], primary: String(o.primary_storage ?? '0') === '1', freeGb: n(o.free) });
+            }
+            for (const x of Object.values(o)) scan(x, depth + 1);
+          };
+          scan(form, 0);
+          const formServer = s((form as Row).serid) ?? s(((form as Row).globals as Row | undefined)?.serid) ?? null;
+          input.log?.(
+            `Virtualizor Create VPS form for server ${target.serverId}: answer keys ${Object.keys(form).slice(0, 40).join(', ')}${formServer !== null ? `; form is on server ${formServer}` : ''}; storages offered: ${found.length ? found.map((x) => `${x.name} (${x.uuid}${x.primary ? ', primary' : ''}${x.servers.length ? `, server ${x.servers[0]}` : ''})`).join('; ') : 'none found'}`,
+          );
+          const own = found.filter((x) => !x.servers.length || x.servers.includes(target.serverId)).sort((a, b) => Number(b.primary) - Number(a.primary));
+          if (own.length) target.linked = [...own, ...target.linked.filter((x) => !own.some((o) => o.uuid === x.uuid))];
+        } catch (e) {
+          input.log?.(`Could not read Virtualizor's Create VPS form for server ${target.serverId}: ${(e as Error).message}`);
+        }
+        input.log?.(`Sending to server ${target.serverId}; storages to try: ${target.linked.map((x) => `${x.name} (${x.uuid})`).join('; ') || 'none (Virtualizor picks the primary)'}`);
+      }
       const base: Record<string, string> = {
         addvps: '1',
         virt: p.virt ?? 'kvm',
