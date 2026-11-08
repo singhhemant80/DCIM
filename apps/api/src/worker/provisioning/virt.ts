@@ -96,6 +96,8 @@ export interface VpsCreateInput {
   planId: string;
   plan: Pick<VirtPlan, 'virt' | 'ramMb' | 'diskGb' | 'cores' | 'bandwidthGb' | 'ips' | 'ips6'>;
   serverId: string | null;
+  /** Notes for the job log (what was chosen and why). */
+  log?: (message: string) => void;
   /** When no server is chosen: the panel's servers that may take it (online, from the sync), with their free RAM. */
   candidates?: { serverId: string; freeRamMb: number | null }[];
   osid: string;
@@ -256,7 +258,23 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
   const storages = async (): Promise<VirtStorage[]> => {
     const r = await call({ act: 'storage', page: '1', reslen: '1000' });
     const list = (r.storage && typeof r.storage === 'object' ? r.storage : {}) as Record<string, Row>;
-    const links = (r.storage_servers && typeof r.storage_servers === 'object' ? r.storage_servers : {}) as Record<string, unknown>;
+    // storage_servers keyed by storage id ({stid: [serid…]}); a list of {stid, serid} rows is read by the scan below.
+    const links = (r.storage_servers && typeof r.storage_servers === 'object' && !Array.isArray(r.storage_servers) ? r.storage_servers : {}) as Record<string, unknown>;
+    // Any rows elsewhere in the answer that pair a storage with a server ({stid, serid}), whatever the key is called.
+    const pairs = new Map<string, Set<string>>();
+    const scan = (v: unknown, depth: number) => {
+      if (!v || typeof v !== 'object' || depth > 4) return;
+      const o = v as Row;
+      if (o.stid !== undefined && o.serid !== undefined && !('st_uuid' in o)) {
+        const k = String(o.stid);
+        if (!pairs.has(k)) pairs.set(k, new Set());
+        String(o.serid)
+          .split(',')
+          .forEach((t) => t.trim() && pairs.get(k)!.add(t.trim()));
+      }
+      for (const [key, x] of Object.entries(o)) if (key !== 'storage') scan(x, depth + 1);
+    };
+    scan(r, 0);
     return Object.entries(list).map(([key, x]) => {
       const sv = new Set<string>();
       const add = (v: unknown) => {
@@ -270,10 +288,18 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       add(x.serid);
       add(x.servers);
       add(x.serids);
-      add(links[key]);
+      const lk = links[s(x.stid) ?? key];
+      if (!(lk && typeof lk === 'object' && !Array.isArray(lk) && 'stid' in (lk as Row))) add(lk);
+      pairs.get(s(x.stid) ?? key)?.forEach((t) => sv.add(t));
       return { stid: s(x.stid) ?? key, uuid: s(x.st_uuid), name: s(x.name) ?? s(x.path) ?? `storage ${key}`, servers: [...sv], primary: String(x.primary_storage ?? '0') === '1', freeGb: n(x.free) };
     });
   };
+  const describe = (all: VirtStorage[] | null) =>
+    all === null
+      ? 'storage list not readable'
+      : all.length
+        ? all.map((x) => `${x.name}${x.servers.length ? ` on ${x.servers.join('/')}` : ' (no server given)'}${x.primary ? ', primary' : ''}${x.freeGb !== null ? `, ${x.freeGb} GB free` : ''}`).join('; ')
+        : 'no storages listed';
   /** Server and storage for a new VPS; null = leave it to Virtualizor (storages unreadable and no server chosen). */
   const pickTarget = async (input: VpsCreateInput): Promise<{ serverId: string; stUuid: string | null; stid: string | null; stName: string | null } | null> => {
     let all: VirtStorage[] | null = null;
@@ -287,15 +313,22 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
     const fits = (x: VirtStorage) => x.freeGb === null || x.freeGb >= need;
     if (input.serverId) {
       const st = onServer(input.serverId).find(fits) ?? onServer(input.serverId)[0] ?? null;
-      if (all && !st) throw new VirtRefused(`Virtualizor lists no storage on server ${input.serverId}; add one in the panel or choose another server`);
+      if (!st) input.log?.(`No storage of server ${input.serverId} recognised in Virtualizor's storage list (${describe(all)}); sending the server only, Virtualizor uses its primary storage`);
       return { serverId: input.serverId, stUuid: st?.uuid ?? null, stid: st?.stid ?? null, stName: st?.name ?? null };
     }
     if (!all || !input.candidates?.length) return null;
+    const anyMapped = all.some((x) => x.servers.length);
     const options = input.candidates
       .map((c) => ({ c, st: onServer(c.serverId).find(fits) }))
       .filter((o) => o.st)
       .sort((a, b) => (b.c.freeRamMb ?? -1) - (a.c.freeRamMb ?? -1));
-    if (!options.length) throw new VirtRefused(`No Virtualizor server has a storage with ${need} GB free for this plan`);
+    if (!options.length) {
+      // The storage list doesn't say which server each storage is on: pick the server by free RAM and let Virtualizor use its primary storage.
+      const best = [...input.candidates].sort((a, b) => (b.freeRamMb ?? -1) - (a.freeRamMb ?? -1))[0]!;
+      if (anyMapped) throw new VirtRefused(`No Virtualizor server has a storage with ${need} GB free for this plan (${describe(all)})`);
+      input.log?.(`Virtualizor's storage list does not show which server each storage is on (${describe(all)}); using server ${best.serverId} (most free RAM) and its primary storage`);
+      return { serverId: best.serverId, stUuid: null, stid: null, stName: null };
+    }
     const o = options[0]!;
     return { serverId: o.c.serverId, stUuid: o.st!.uuid, stid: o.st!.stid, stName: o.st!.name };
   };

@@ -376,7 +376,18 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
         },
       });
     // Storages as Virtualizor lists them (size and free in GB).
-    if (q.act === 'storage') return send({ title: 'Storage', storage: { '1': { stid: '1', st_uuid: 'stuuidprimary01', name: 'local-lvm', serid: '0', primary_storage: '1', size: '1800', free: '900' } } });
+    if (q.act === 'storage')
+      return send({
+        title: 'Storage',
+        storage: {
+          '1': { stid: '1', st_uuid: 'stuuidprimary01', name: 'local-lvm', primary_storage: '1', size: '1800', free: '900' },
+          '2': { stid: '2', st_uuid: 'stuuidother0002', name: 'nfs-backup', primary_storage: '0', size: '500', free: '400' },
+        },
+        storage_servers: [
+          { stid: '1', serid: '0' },
+          { stid: '2', serid: '5' },
+        ],
+      });
     if (q.act === 'addvs') {
       mock.creates.push({ query: rest, body });
       // Like the panel: the disk needs a storage of the chosen server.

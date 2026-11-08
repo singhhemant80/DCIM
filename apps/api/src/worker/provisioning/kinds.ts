@@ -781,6 +781,7 @@ export const guestCreateKind: KindDef = {
             planId: String(pr.planId),
             plan: (pr.plan ?? {}) as VpsCreateInput['plan'],
             serverId: (pr.serverId as string | null) ?? null,
+            log: (m) => void ctx.log(m, 'warn'),
             candidates: hosts.rows.map((h) => ({ serverId: h.external_id, freeRamMb: h.free === null ? null : Number(h.free) })),
             osid: String(pr.osid),
             hostname: String(pr.hostname),
