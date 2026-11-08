@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { IpList } from '../components/IpList';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
@@ -1133,6 +1133,16 @@ function ByClient({ kind, selected, onPick }: { kind: Kind; selected: string; on
   );
 }
 
+interface OwnerVpsT {
+  id: string;
+  name: string;
+  externalId: string;
+  ips: string[];
+  status: string | null;
+  customerId: string | null;
+  customer: string | null;
+}
+
 interface OwnerT {
   email: string;
   name: string | null;
@@ -1142,6 +1152,7 @@ interface OwnerT {
   assignedCustomerIds: string[];
   assignedNames: string | null;
   vmNames: string[];
+  vpsList: OwnerVpsT[];
   match: { id: string; name: string; code: string } | null;
 }
 
@@ -1155,8 +1166,9 @@ const suggestCode = (o: OwnerT) =>
   ).padEnd(2, '0');
 
 /**
- * Staff: VPS owners from Virtualizor (its users, by e-mail) and the client each should belong to here:
- * the client with the same e-mail, another existing client, or a new client created from the owner.
+ * Staff: VPS owners from Virtualizor (its users, by e-mail) and the client each should belong to here.
+ * Nothing is selected at first: tick the owners (or single VPSs) to assign, choose the client for each
+ * (the one with the same e-mail is preselected; or another client; or a new one), then assign.
  */
 function OwnersModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
@@ -1165,28 +1177,43 @@ function OwnersModal({ onClose }: { onClose: () => void }) {
   const customers = useQuery({ queryKey: ['customers', 'options'], queryFn: () => api.get<Paginated<Customer>>('/customers?pageSize=200') });
   const [choice, setChoice] = useState<Record<string, string>>({});
   const [codes, setCodes] = useState<Record<string, string>>({});
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [open, setOpen] = useState<Record<string, boolean>>({});
   const [overwrite, setOverwrite] = useState(false);
+  const [filter, setFilter] = useState('');
+  const [onlyUnassigned, setOnlyUnassigned] = useState(true);
   const owners = q.data?.owners ?? [];
-  // Default: the matching client; new client for owners without a match and with unassigned VPSs; otherwise skip.
-  const pick = (o: OwnerT) => choice[o.email] ?? (o.match ? o.match.id : o.unassigned > 0 && can('customers.write') ? 'new' : '');
+  const eligible = (o: OwnerT) => o.vpsList.filter((v) => overwrite || !v.customerId);
+  const shown = owners.filter((o) => (!onlyUnassigned || o.unassigned > 0 || overwrite) && (!filter || `${o.email} ${o.name ?? ''} ${o.vmNames.join(' ')}`.toLowerCase().includes(filter.toLowerCase())));
+  const pick = (o: OwnerT) => choice[o.email] ?? (o.match ? o.match.id : '');
+  const sel = (o: OwnerT) => (picked[o.email] ?? []).filter((id) => eligible(o).some((v) => v.id === id));
+  const setOwner = (o: OwnerT, on: boolean) => setPicked((x) => ({ ...x, [o.email]: on ? eligible(o).map((v) => v.id) : [] }));
+  const setVps = (o: OwnerT, id: string, on: boolean) => setPicked((x) => ({ ...x, [o.email]: on ? [...new Set([...(x[o.email] ?? []), id])] : (x[o.email] ?? []).filter((y) => y !== id) }));
+  const chosen = owners.filter((o) => sel(o).length > 0);
+  const missingClient = chosen.filter((o) => !pick(o));
+  const vpsCount = chosen.reduce((a, o) => a + sel(o).length, 0);
+  const allShownOn = shown.length > 0 && shown.every((o) => eligible(o).length === 0 || sel(o).length === eligible(o).length);
   const m = useMutation({
     mutationFn: () =>
       api.post<{ assigned: number; created: number }>('/virtualization/owners/apply', {
         overwrite,
-        items: owners.filter((o) => pick(o)).map((o) => (pick(o) === 'new' ? { email: o.email, create: { name: o.name || o.email, code: codes[o.email] ?? suggestCode(o) } } : { email: o.email, customerId: pick(o) })),
+        items: chosen.map((o) => ({
+          email: o.email,
+          guestIds: sel(o),
+          ...(pick(o) === 'new' ? { create: { name: o.name || o.email, code: codes[o.email] ?? suggestCode(o) } } : { customerId: pick(o) }),
+        })),
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['virt'] });
       void qc.invalidateQueries({ queryKey: ['customers'] });
     },
   });
-  const chosen = owners.filter((o) => pick(o));
   return (
     <Modal
       open
       onOpenChange={(o) => !o && onClose()}
       title="Clients from Virtualizor"
-      description="Each VPS's owner as Virtualizor lists it (its user e-mail). Choose the client each owner is here: the one with the same e-mail is chosen for you, or create a new client. Only VPSs without a client are assigned, unless you tick the box below."
+      description="Each VPS's owner as Virtualizor lists it (its user e-mail). Tick the owners, or open one and tick single VPSs, choose the client each belongs to here, then assign. Only what you tick is assigned."
       wide
     >
       {q.isLoading ? (
@@ -1199,7 +1226,8 @@ function OwnersModal({ onClose }: { onClose: () => void }) {
             Assigned {m.data.assigned} VPS{m.data.assigned === 1 ? '' : 's'}
             {m.data.created ? `, created ${m.data.created} client${m.data.created === 1 ? '' : 's'}` : ''}. Their addresses follow them in IPAM; billing is not started (use “Start billing here” on a VPS for that).
           </p>
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => (m.reset(), setPicked({}))}>Assign more</Button>
             <Button variant="primary" onClick={onClose}>
               Done
             </Button>
@@ -1209,68 +1237,121 @@ function OwnersModal({ onClose }: { onClose: () => void }) {
         <EmptyState title="No owners read yet">The next Virtualizor sync reads each VPS's owner (users list). Run “Sync now” and come back.</EmptyState>
       ) : (
         <div className="grid gap-3">
-          <div className="max-h-[55vh] overflow-y-auto rounded-xl border border-rule">
+          <div className="flex flex-wrap items-center gap-3 text-[13px]">
+            <Input placeholder="Search e-mail, name or VPS" value={filter} onChange={(e) => setFilter(e.target.value)} className="h-8 w-64" aria-label="Search owners" />
+            <label className="flex items-center gap-1.5">
+              <input type="checkbox" checked={onlyUnassigned} onChange={(e) => setOnlyUnassigned(e.target.checked)} /> Only owners with unassigned VPSs
+            </label>
+            <span className="ml-auto text-ink-3">
+              {shown.length} of {owners.length} owners
+            </span>
+          </div>
+          <div className="max-h-[52vh] overflow-y-auto rounded-xl border border-rule">
             <Table label="Virtualizor owners">
               <thead>
                 <tr>
+                  <th className="w-8">
+                    <input type="checkbox" aria-label="Select all shown" checked={allShownOn} onChange={(e) => shown.forEach((o) => setOwner(o, e.target.checked))} />
+                  </th>
                   <th>Owner in Virtualizor</th>
                   <th className="text-right">VPSs</th>
-                  <th>Now</th>
                   <th>Client here</th>
                 </tr>
               </thead>
               <tbody>
-                {owners.map((o) => (
-                  <tr key={o.email}>
-                    <td className="max-w-[28ch]">
-                      <span className="font-medium">{o.name ?? o.email}</span>
-                      <span className="block truncate text-[12px] text-ink-3" title={o.vmNames.join(', ')}>
-                        {o.email}
-                      </span>
-                    </td>
-                    <td className="text-right tabular-nums">
-                      {o.vms}
-                      {o.unassigned ? <span className="block text-[12px] text-warn">{o.unassigned} unassigned</span> : null}
-                    </td>
-                    <td className="max-w-[20ch] text-[12.5px] text-ink-2">{o.assignedNames ?? '—'}</td>
-                    <td>
-                      <Select aria-label={`Client for ${o.email}`} value={pick(o)} onChange={(e) => setChoice({ ...choice, [o.email]: e.target.value })} className="h-8 w-56">
-                        <option value="">Skip</option>
-                        {can('customers.write') && <option value="new">Create new client</option>}
-                        {o.match && <option value={o.match.id}>{o.match.name} (same e-mail)</option>}
-                        {(customers.data?.items ?? [])
-                          .filter((c) => c.id !== o.match?.id)
-                          .map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name} ({c.code})
-                            </option>
-                          ))}
-                      </Select>
-                      {pick(o) === 'new' && (
-                        <Input
-                          aria-label={`Client code for ${o.email}`}
-                          className="mt-1 h-8 w-56 font-mono uppercase"
-                          value={codes[o.email] ?? suggestCode(o)}
-                          onChange={(e) => setCodes({ ...codes, [o.email]: e.target.value.toUpperCase() })}
-                          title="Client code (2–31 letters, digits or dashes)"
-                        />
+                {shown.map((o) => {
+                  const n = sel(o).length;
+                  const el = eligible(o);
+                  return (
+                    <Fragment key={o.email}>
+                      <tr className={cx(n > 0 && 'bg-accent/5')}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${o.email}`}
+                            disabled={!el.length}
+                            checked={el.length > 0 && n === el.length}
+                            ref={(r) => {
+                              if (r) r.indeterminate = n > 0 && n < el.length;
+                            }}
+                            onChange={(e) => setOwner(o, e.target.checked)}
+                          />
+                        </td>
+                        <td className="max-w-[30ch]">
+                          <span className="font-medium">{o.name ?? o.email}</span>
+                          <span className="block truncate text-[12px] text-ink-3">{o.email}</span>
+                          {o.assignedNames && <span className="block text-[12px] text-ink-2">now: {o.assignedNames}</span>}
+                        </td>
+                        <td className="text-right whitespace-nowrap">
+                          <button className="text-accent tabular-nums hover:underline" onClick={() => setOpen({ ...open, [o.email]: !open[o.email] })} aria-expanded={!!open[o.email]}>
+                            {o.vms} {open[o.email] ? '▴' : '▾'}
+                          </button>
+                          {o.unassigned ? <span className="block text-[12px] text-warn">{o.unassigned} unassigned</span> : null}
+                          {n > 0 && <span className="block text-[12px] font-medium text-accent">{n} selected</span>}
+                        </td>
+                        <td>
+                          <Select aria-label={`Client for ${o.email}`} value={pick(o)} onChange={(e) => setChoice({ ...choice, [o.email]: e.target.value })} className={cx('h-8 w-56', n > 0 && !pick(o) && 'border-crit')}>
+                            <option value="">Choose a client…</option>
+                            {can('customers.write') && <option value="new">Create new client</option>}
+                            {o.match && <option value={o.match.id}>{o.match.name} (same e-mail)</option>}
+                            {(customers.data?.items ?? [])
+                              .filter((c) => c.id !== o.match?.id)
+                              .map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.name} ({c.code})
+                                </option>
+                              ))}
+                          </Select>
+                          {pick(o) === 'new' && (
+                            <Input
+                              aria-label={`Client code for ${o.email}`}
+                              className="mt-1 h-8 w-56 font-mono uppercase"
+                              value={codes[o.email] ?? suggestCode(o)}
+                              onChange={(e) => setCodes({ ...codes, [o.email]: e.target.value.toUpperCase() })}
+                              title="Client code (2–31 letters, digits or dashes)"
+                            />
+                          )}
+                        </td>
+                      </tr>
+                      {open[o.email] && (
+                        <tr>
+                          <td />
+                          <td colSpan={3} className="bg-sunken/40">
+                            <div className="grid max-h-56 grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-x-4 gap-y-1 overflow-y-auto py-1 text-[13px]">
+                              {o.vpsList.map((v) => {
+                                const can2 = overwrite || !v.customerId;
+                                return (
+                                  <label key={v.id} className={cx('flex items-start gap-2', !can2 && 'opacity-60')}>
+                                    <input type="checkbox" className="mt-1" disabled={!can2} checked={sel(o).includes(v.id)} onChange={(e) => setVps(o, v.id, e.target.checked)} />
+                                    <span className="min-w-0">
+                                      <span className="font-medium">{v.name}</span> <span className="text-[12px] text-ink-3">#{v.externalId}</span>
+                                      <span className="block font-mono text-[12px] text-ink-2">{v.ips.join(', ') || '—'}</span>
+                                      {v.customer && <span className="block text-[12px] text-ink-3">now: {v.customer}</span>}
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                  </tr>
-                ))}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </Table>
           </div>
           {q.data!.withoutOwner > 0 && <p className="text-[12.5px] text-ink-3">{q.data!.withoutOwner} VPS(s) have no owner in Virtualizor; assign them by hand in the list.</p>}
           <label className="flex items-start gap-2 text-[13px]">
             <input type="checkbox" className="mt-1" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
-            <span>Also move VPSs that are already assigned to another client here (otherwise only unassigned VPSs are assigned).</span>
+            <span>Also allow selecting VPSs that are already assigned to a client here (to move them).</span>
           </label>
+          {missingClient.length > 0 && <p className="text-[12.5px] text-crit">Choose a client for {missingClient.map((o) => o.name ?? o.email).join(', ')}.</p>}
           <ErrorNote error={m.error} />
           <div className="flex justify-end gap-2">
             <Button onClick={onClose}>Cancel</Button>
-            <Button variant="primary" busy={m.isPending} disabled={!chosen.length} onClick={() => m.mutate()}>
-              Assign {chosen.length} owner{chosen.length === 1 ? '' : 's'}
+            <Button variant="primary" busy={m.isPending} disabled={!vpsCount || missingClient.length > 0} onClick={() => m.mutate()}>
+              Assign {vpsCount} selected VPS{vpsCount === 1 ? '' : 's'}
             </Button>
           </div>
         </div>

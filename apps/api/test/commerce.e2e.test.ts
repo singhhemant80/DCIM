@@ -466,6 +466,9 @@ describe('clients from Virtualizor owners', () => {
     const it2 = o.owners.find((x: { email: string }) => x.email === 'it@acme.example');
     expect(one).toMatchObject({ name: 'Owner One', vms: 1, unassigned: 1, match: null });
     expect(it2).toMatchObject({ vms: 1, unassigned: 1, match: { id: ctx.customers.acme } });
+    expect(one.vpsList[0]).toMatchObject({ name: 'vps11.example.net', ips: ['203.0.113.11'], customerId: null });
+    // Only the ticked VPSs are assigned: a VPS id that is not this owner's assigns nothing.
+    expect((await ok(admin.post('/api/v1/virtualization/owners/apply', { items: [{ email: 'owner.one@example.com', customerId: ctx.customers.globex, guestIds: [it2.vpsList[0].id] }] }))).assigned).toBe(0);
     const r = await ok(
       admin.post('/api/v1/virtualization/owners/apply', {
         items: [

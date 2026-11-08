@@ -1189,12 +1189,14 @@ export class ProvisioningService {
       match_name: string | null;
       match_code: string | null;
       hosts: string | null;
+      list: { id: string; name: string; externalId: string; ips: string[] | null; status: string | null; customerId: string | null; customer: string | null }[] | null;
     }>(sql`
       with o as (
         select lower(g.owner_email) as email, max(g.owner_name) as name, string_agg(distinct g.owner_uid, ',') as uids,
                count(*)::int as vms, count(*) filter (where g.customer_id is null)::int as unassigned,
                string_agg(distinct g.customer_id::text, ',') as assigned_to, string_agg(distinct c.name, ', ') as assigned_names,
-               string_agg(g.name, ', ' order by g.name) as hosts
+               string_agg(g.name, ', ' order by g.name) as hosts,
+               json_agg(json_build_object('id', g.id, 'name', g.name, 'externalId', g.external_id, 'ips', g.ip_addresses, 'status', g.status, 'customerId', g.customer_id, 'customer', c.name) order by g.name) as list
           from virt_guests g left join customers c on c.id = g.customer_id
          where g.org_id = ${p.orgId} and g.missing_since is null and g.owner_email is not null ${integrationId ? sql`and g.integration_id = ${integrationId}` : sql``}
          group by lower(g.owner_email))
@@ -1217,6 +1219,7 @@ export class ProvisioningService {
         assignedCustomerIds: x.assigned_to ? x.assigned_to.split(',') : [],
         assignedNames: x.assigned_names,
         vmNames: (x.hosts ?? '').split(', ').slice(0, 20),
+        vpsList: (x.list ?? []).map((v) => ({ ...v, ips: v.ips ?? [] })),
         match: x.match_id ? { id: x.match_id, name: x.match_name!, code: x.match_code! } : null,
       })),
     };
@@ -1227,7 +1230,7 @@ export class ProvisioningService {
    * created from the owner (name, e-mail). Only VPSs without a client are assigned unless overwrite
    * is set. Each assignment is audited like a manual one.
    */
-  async applyGuestOwners(p: Principal, input: { items: { email: string; customerId?: string | null; create?: { name: string; code: string } | null }[]; overwrite: boolean }, meta: RequestMeta) {
+  async applyGuestOwners(p: Principal, input: { items: { email: string; customerId?: string | null; create?: { name: string; code: string } | null; guestIds?: string[] | null }[]; overwrite: boolean }, meta: RequestMeta) {
     if (input.items.some((x) => x.create) && !p.permissions.has('customers.write')) throw new ForbiddenException({ error: 'forbidden', message: 'Creating clients needs the customers.write permission' });
     const out: { email: string; customerId: string; created: boolean; assigned: number }[] = [];
     for (const it of input.items) {
@@ -1259,7 +1262,8 @@ export class ProvisioningService {
       }
       if (!customerId) continue;
       const guests = await this.db.execute<{ id: string }>(sql`
-        select id from virt_guests where org_id = ${p.orgId} and missing_since is null and lower(owner_email) = ${email} ${input.overwrite ? sql`` : sql`and customer_id is null`}`);
+        select id from virt_guests where org_id = ${p.orgId} and missing_since is null and lower(owner_email) = ${email} ${input.overwrite ? sql`` : sql`and customer_id is null`}
+           ${it.guestIds?.length ? sql`and id in (${sql.join(it.guestIds.map((x) => sql`${x}`), sql`, `)})` : sql``}`);
       for (const g of guests.rows) await this.assignGuest(p, g.id, customerId, meta);
       out.push({ email, customerId, created, assigned: guests.rows.length });
     }

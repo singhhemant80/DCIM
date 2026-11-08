@@ -234,6 +234,8 @@ const ownersApplySchema = z.object({
       z.object({
         email: z.string().trim().email().max(254),
         customerId: z.string().uuid().nullish(),
+        /** Only these VPSs of the owner (selected in the list); empty or absent = all of the owner's VPSs. */
+        guestIds: z.array(z.string().uuid()).max(2000).nullish(),
         create: z
           .object({
             name: z.string().trim().min(1).max(200),
