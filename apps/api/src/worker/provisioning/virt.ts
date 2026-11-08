@@ -553,13 +553,14 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         num_ips: String(p.ips ?? 1),
         ...(p.ips6 ? { num_ips6: String(p.ips6) } : {}),
       };
-      // Attempts, in order: the server's primary storage chosen by Virtualizor (as its own form does),
-      // then each storage linked to the server, then storages not linked to any server. Only a refusal
-      // about the storage moves to the next one: a refusal means nothing was created, so trying again is safe.
+      // Only a refusal about the storage moves to the next one: a refusal means nothing was created, so trying again is safe.
       const disk = String(p.diskGb ?? 10);
-      const attempts: { label: string; post: Record<string, string> }[] = [{ label: target ? `server ${target.serverId}, its primary storage` : 'server and storage chosen by Virtualizor', post: { ...base, space: disk } }];
-      for (const st of [...(target?.linked ?? []), ...(target?.unlinked ?? [])].slice(0, 5))
-        attempts.push({ label: `server ${target!.serverId}, storage ${st.name}`, post: { ...base, 'space[0][size]': disk, 'space[0][st_uuid]': st.uuid!, stid: st.stid } });
+      // Straight onto the target server's own storage (primary first): the master's storage is never involved.
+      // Only when Virtualizor lists no storage for that server is the choice left to it (its primary storage).
+      const attempts: { label: string; post: Record<string, string> }[] = (target?.linked ?? [])
+        .slice(0, 5)
+        .map((st) => ({ label: `server ${target!.serverId}, storage ${st.name}`, post: { ...base, 'space[0][size]': disk, 'space[0][st_uuid]': st.uuid!, stid: st.stid } }));
+      if (!attempts.length) attempts.push({ label: target ? `server ${target.serverId}, its primary storage` : 'server and storage chosen by Virtualizor', post: { ...base, space: disk } });
       let r: Row | null = null;
       const refusals: string[] = [];
       for (const a of attempts) {

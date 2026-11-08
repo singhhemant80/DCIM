@@ -163,8 +163,9 @@ describe('orders', () => {
     const c = vz.creates.at(-1)!;
     expect(c.body).toMatchObject({ addvps: '1', plid: '3', osid: '270', hostname: 'vps1.acme.example', rootpass: ROOT_PW, user_email: 'it@acme.example', virt: 'kvm', ram: '2048' });
     // No server chosen: the synced server with room on a storage, and the disk on that storage.
-    // The server goes in the URL and the body; the panel uses the server's primary storage on the first try.
-    expect(c.body).toMatchObject({ slave_server: '0', serid: '0', space: '40' });
+    // The server goes in the URL and the body, and the disk straight onto that server's own (primary) storage.
+    expect(c.body).toMatchObject({ slave_server: '0', serid: '0', 'space[0][size]': '40', 'space[0][st_uuid]': 'stuuidprimary01', stid: '1' });
+    expect(c.body.space).toBeUndefined();
     expect(c.query).toMatchObject({ serid: '0' });
     expect(JSON.stringify(c.query)).not.toContain(ROOT_PW);
     // The new VPS is in inventory, assigned to Acme, its address in IPAM for Acme.
