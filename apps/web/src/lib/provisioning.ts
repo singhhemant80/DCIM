@@ -145,6 +145,8 @@ export interface VirtHostT {
 
 export interface VirtGuestT {
   id: string;
+  /** Next renewal (expiry) when billed through Billing & Wallet. */
+  renewal?: { nextDueAt: string; status: string; cancelAt: string | null } | null;
   integrationId: string | null;
   integrationName: string | null;
   integrationKind: 'proxmox' | 'virtualizor';

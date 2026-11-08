@@ -8,7 +8,7 @@ type TrafficRange = '24h' | '7d' | '30d';
 const TRAFFIC_RANGE_LABELS: Record<TrafficRange, string> = { '24h': 'last 24 hours', '7d': 'last 7 days', '30d': 'last 30 days' };
 import { api, qs, type Paginated } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { relativeTime } from '../lib/format';
+import { dueIn, formatDate, relativeTime } from '../lib/format';
 import type { DeviceT } from '../lib/dcim';
 import { bytes, duration, newIdempotencyKey, type IntegrationT, type JobT, type VirtGuestT, type VirtHostT } from '../lib/provisioning';
 import { JobModal } from '../components/Jobs';
@@ -850,6 +850,7 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
                 </span>
               </th>
               <th>Addresses</th>
+              {items.some((g) => g.renewal) && <th>Expires</th>}
               <th className="text-right">
                 <span className="block">Bandwidth</span>
                 <span className="font-normal text-ink-3">
@@ -907,6 +908,21 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
                   {g.diskBytes ? ` · ${bytes(g.diskBytes)} disk` : ''}
                 </td>
                 <td className="font-mono text-[12px]">{g.ipAddresses.length ? g.ipAddresses.join(', ') : <span className="font-sans text-ink-3">Not reported</span>}</td>
+                {items.some((x) => x.renewal) && (
+                  <td className="text-[13px] whitespace-nowrap">
+                    {g.renewal ? (
+                      <>
+                        <span className="font-medium text-crit">{formatDate(g.renewal.cancelAt ?? g.renewal.nextDueAt)}</span>
+                        <span className="block text-[12px] font-medium text-crit">
+                          {g.renewal.cancelAt ? 'ends ' : g.renewal.status === 'suspended' ? 'suspended · ' : g.renewal.status === 'overdue' ? 'overdue · ' : ''}
+                          {dueIn(g.renewal.cancelAt ?? g.renewal.nextDueAt)}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-ink-3">—</span>
+                    )}
+                  </td>
+                )}
                 <td className="w-48 text-right text-[12.5px] whitespace-nowrap">
                   <BandwidthCell g={g as GuestListT['items'][number]} range={trafficRange} />
                 </td>

@@ -1053,7 +1053,9 @@ export class ProvisioningService {
     const [rows, total] = await Promise.all([
       this.db.execute(sql`
         select g.*, h.name as host_name, i.name as integration_name, i.kind as integration_kind, i.actions_enabled, c.name as customer_name, tr.in_b, tr.out_b,
-               (select j.status from provisioning_jobs j where j.guest_id = g.id and j.status in ('queued','running','waiting','verifying','recovery') limit 1) as active_job
+               (select j.status from provisioning_jobs j where j.guest_id = g.id and j.status in ('queued','running','waiting','verifying','recovery') limit 1) as active_job,
+               (select json_build_object('nextDueAt', s.next_due_at, 'status', s.status, 'cancelAt', s.cancel_at) from subscriptions s
+                 where s.guest_id = g.id and s.customer_id is not distinct from g.customer_id and s.status <> 'cancelled' order by s.created_at desc limit 1) as bill
           from virt_guests g join virt_integrations i on i.id = g.integration_id left join virt_hosts h on h.id = g.host_id left join customers c on c.id = g.customer_id
           ${traffic}
          where ${where} order by (g.missing_since is not null), ${order} limit ${q.pageSize} offset ${(q.page - 1) * q.pageSize}`),
@@ -1087,6 +1089,8 @@ export class ProvisioningService {
         customerName: staff ? (g.customer_name ?? null) : null,
         actionsEnabled: g.actions_enabled,
         activeJob: g.active_job ?? null,
+        /** Its monthly billing (Billing & Wallet), when it was ordered there: next renewal (expiry). */
+        renewal: (g.bill as { nextDueAt: string; status: string; cancelAt: string | null } | null) ?? null,
         lastSeenAt: g.last_seen_at,
         missingSince: g.missing_since,
       })),

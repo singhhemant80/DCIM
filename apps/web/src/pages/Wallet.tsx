@@ -229,17 +229,18 @@ const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-$
 const gib = (b: number) => `${(b / 1024 ** 3).toFixed(b >= 100 * 1024 ** 3 ? 0 : 1)} GB`;
 const paiseToRupees = (p: number) => (p / 100).toFixed(2).replace(/\.00$/, '');
 
-/** "in 12 days" in a colour by urgency: 3 days or less amber, past due red. */
+/** "in 12 days", highlighted in red. */
 function DueDays({ iso }: { iso: string }) {
-  const n = daysUntil(iso) ?? 99;
-  return <span className={cx(n < 0 ? 'text-crit' : n <= 3 ? 'text-warn font-medium' : 'text-ink-2')}>{dueIn(iso)}</span>;
+  return <span className="font-medium text-crit">{dueIn(iso)}</span>;
 }
 
 function DueDate({ iso, label }: { iso: string; label?: string }) {
   return (
     <>
-      {label ? `${label} ` : ''}
-      {formatDate(iso)}
+      <span className="font-medium text-crit">
+        {label ? `${label} ` : ''}
+        {formatDate(iso)}
+      </span>
       <span className="block text-[12px]">
         <DueDays iso={iso} />
       </span>

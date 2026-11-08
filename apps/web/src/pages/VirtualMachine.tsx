@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { Link, useParams } from 'react-router-dom';
 import { FLOW_RANGE_LABELS, GUEST_ACTION_LABELS, type FlowRange, type GuestAction } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
-import { daysUntil, dueIn, formatDate, relativeTime } from '../lib/format';
+import { dueIn, formatDate, relativeTime } from '../lib/format';
 import { useAuth } from '../lib/auth';
 import { bps } from '../lib/monitoring';
 import { bytes, jobKindLabel, type JobT, type VirtGuestT } from '../lib/provisioning';
@@ -264,8 +264,9 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
                       'Cancelled'
                     ) : (
                       <>
-                        {formatDate(g.billing.cancelAt ?? g.billing.nextDueAt)}{' '}
-                        <span className={(daysUntil(g.billing.cancelAt ?? g.billing.nextDueAt) ?? 99) <= 3 ? 'font-medium text-warn' : 'text-ink-2'}>({dueIn(g.billing.cancelAt ?? g.billing.nextDueAt)})</span>
+                        <span className="font-medium text-crit">
+                          {formatDate(g.billing.cancelAt ?? g.billing.nextDueAt)} ({dueIn(g.billing.cancelAt ?? g.billing.nextDueAt)})
+                        </span>
                         {g.billing.status === 'overdue' && <span className="text-crit"> · overdue</span>}
                         {g.billing.status === 'suspended' && <span className="text-crit"> · suspended for non-payment</span>}{' '}
                         <Link to="/wallet" className="text-accent hover:underline">

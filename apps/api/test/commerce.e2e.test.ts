@@ -196,6 +196,8 @@ describe('orders', () => {
     // The client's VM page shows its renewal date and offers the console; staff-only fields stay hidden.
     const vm = await ok(acme.get(`/api/v1/virtualization/guests/${g!.id}`));
     expect(vm.billing).toMatchObject({ status: 'active', pricePaise: 50_000 });
+    const vms = await ok(acme.get(`/api/v1/virtualization/guests?kind=virtualizor`));
+    expect(vms.items.find((x: { id: string }) => x.id === g!.id).renewal).toMatchObject({ status: 'active' });
     expect(vm.can.console).toBe(true);
     expect(vm.hostName).toBeNull();
     expect(vm.customerName).toBeNull();
