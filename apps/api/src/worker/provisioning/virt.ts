@@ -301,36 +301,32 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         ? all.map((x) => `${x.name}${x.servers.length ? ` on ${x.servers.join('/')}` : ' (no server given)'}${x.primary ? ', primary' : ''}${x.freeGb !== null ? `, ${x.freeGb} GB free` : ''}`).join('; ')
         : 'no storages listed';
   /** Server and storage for a new VPS; null = leave it to Virtualizor (storages unreadable and no server chosen). */
-  const pickTarget = async (input: VpsCreateInput): Promise<{ serverId: string; stUuid: string | null; stid: string | null; stName: string | null } | null> => {
+  /**
+   * Where a new VPS goes: the server (chosen, else the online one with the most free RAM that has room)
+   * and the storages to try on it, best first. Storage-to-server links are not always in the storage
+   * list, so storages not linked to any server are kept as later options.
+   */
+  const pickTarget = async (input: VpsCreateInput): Promise<{ serverId: string; linked: VirtStorage[]; unlinked: VirtStorage[] } | null> => {
     let all: VirtStorage[] | null = null;
     try {
       all = await storages();
     } catch {
       all = null;
     }
+    input.log?.(`Virtualizor storages: ${describe(all)}`);
     const need = input.plan.diskGb ?? 0;
-    const onServer = (id: string) => (all ?? []).filter((x) => x.uuid && (x.servers.includes(id) || x.servers.includes('-1'))).sort((a, b) => Number(b.primary) - Number(a.primary) || (b.freeGb ?? 0) - (a.freeGb ?? 0));
+    const order = (a: VirtStorage, b: VirtStorage) => Number(b.primary) - Number(a.primary) || (b.freeGb ?? 0) - (a.freeGb ?? 0);
     const fits = (x: VirtStorage) => x.freeGb === null || x.freeGb >= need;
-    if (input.serverId) {
-      const st = onServer(input.serverId).find(fits) ?? onServer(input.serverId)[0] ?? null;
-      if (!st) input.log?.(`No storage of server ${input.serverId} recognised in Virtualizor's storage list (${describe(all)}); sending the server only, Virtualizor uses its primary storage`);
-      return { serverId: input.serverId, stUuid: st?.uuid ?? null, stid: st?.stid ?? null, stName: st?.name ?? null };
-    }
-    if (!all || !input.candidates?.length) return null;
-    const anyMapped = all.some((x) => x.servers.length);
-    const options = input.candidates
-      .map((c) => ({ c, st: onServer(c.serverId).find(fits) }))
-      .filter((o) => o.st)
-      .sort((a, b) => (b.c.freeRamMb ?? -1) - (a.c.freeRamMb ?? -1));
-    if (!options.length) {
-      // The storage list doesn't say which server each storage is on: pick the server by free RAM and let Virtualizor use its primary storage.
-      const best = [...input.candidates].sort((a, b) => (b.freeRamMb ?? -1) - (a.freeRamMb ?? -1))[0]!;
-      if (anyMapped) throw new VirtRefused(`No Virtualizor server has a storage with ${need} GB free for this plan (${describe(all)})`);
-      input.log?.(`Virtualizor's storage list does not show which server each storage is on (${describe(all)}); using server ${best.serverId} (most free RAM) and its primary storage`);
-      return { serverId: best.serverId, stUuid: null, stid: null, stName: null };
-    }
-    const o = options[0]!;
-    return { serverId: o.c.serverId, stUuid: o.st!.uuid, stid: o.st!.stid, stName: o.st!.name };
+    const linkedTo = (id: string) => (all ?? []).filter((x) => x.uuid && (x.servers.includes(id) || x.servers.includes('-1'))).sort(order);
+    const unlinked = (all ?? []).filter((x) => x.uuid && !x.servers.length && fits(x)).sort(order);
+    if (input.serverId) return { serverId: input.serverId, linked: linkedTo(input.serverId).filter(fits), unlinked };
+    if (!input.candidates?.length) return null;
+    const byRam = [...input.candidates].sort((a, b) => (b.freeRamMb ?? -1) - (a.freeRamMb ?? -1));
+    const withRoom = byRam.find((c) => linkedTo(c.serverId).some(fits));
+    const anyLinked = (all ?? []).some((x) => x.servers.length);
+    if (anyLinked && !withRoom) throw new VirtRefused(`No Virtualizor server has a storage with ${need} GB free for this plan (${describe(all)})`);
+    const c = withRoom ?? byRam[0]!;
+    return { serverId: c.serverId, linked: linkedTo(c.serverId).filter(fits), unlinked };
   };
 
   const call = async (params: Record<string, string>, post?: Record<string, string>) => {
@@ -540,7 +536,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       // panel looks for the primary storage of the server it assumes and may answer "The primary storage
       // could not be found". When no server is chosen, the one with room on a storage and the most free RAM is used.
       const target = await pickTarget(input);
-      const post: Record<string, string> = {
+      const base: Record<string, string> = {
         addvps: '1',
         virt: p.virt ?? 'kvm',
         plid: input.planId,
@@ -550,24 +546,37 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         user_email: input.userEmail,
         user_pass: input.userPass,
         ...(target ? { slave_server: target.serverId, serid: target.serverId } : { node_select: '1' }),
-        ...(target?.stUuid ? { 'space[0][size]': String(p.diskGb ?? 10), 'space[0][st_uuid]': target.stUuid, ...(target.stid ? { stid: target.stid } : {}) } : {}),
         // The plan's resources, for panels that don't apply them from plid alone.
         ...(p.ramMb !== null ? { ram: String(p.ramMb) } : {}),
-        ...(p.diskGb !== null && !target?.stUuid ? { space: String(p.diskGb) } : {}),
         ...(p.cores !== null ? { cores: String(p.cores) } : {}),
         ...(p.bandwidthGb !== null ? { bandwidth: String(p.bandwidthGb) } : {}),
         num_ips: String(p.ips ?? 1),
         ...(p.ips6 ? { num_ips6: String(p.ips6) } : {}),
       };
-      let r: Row;
-      try {
-        r = await call({ act: 'addvs' }, post);
-      } catch (e) {
-        const msg = (e as Error)?.message ?? '';
-        // Only an answer from the panel proves nothing was created; a timeout or a dropped connection does not.
-        if (/^Virtualizor(: | refused | did not accept | redirects )/.test(msg)) throw new VirtRefused(target ? `${msg} (server ${target.serverId}${target.stName ? `, storage ${target.stName}` : ''})` : msg);
-        throw e;
+      // Attempts, in order: the server's primary storage chosen by Virtualizor (as its own form does),
+      // then each storage linked to the server, then storages not linked to any server. Only a refusal
+      // about the storage moves to the next one: a refusal means nothing was created, so trying again is safe.
+      const disk = String(p.diskGb ?? 10);
+      const attempts: { label: string; post: Record<string, string> }[] = [{ label: target ? `server ${target.serverId}, its primary storage` : 'server and storage chosen by Virtualizor', post: { ...base, space: disk } }];
+      for (const st of [...(target?.linked ?? []), ...(target?.unlinked ?? [])].slice(0, 5))
+        attempts.push({ label: `server ${target!.serverId}, storage ${st.name}`, post: { ...base, 'space[0][size]': disk, 'space[0][st_uuid]': st.uuid!, stid: st.stid } });
+      let r: Row | null = null;
+      const refusals: string[] = [];
+      for (const a of attempts) {
+        try {
+          r = await call({ act: 'addvs' }, a.post);
+          if (refusals.length) input.log?.(`Created with ${a.label}`);
+          break;
+        } catch (e) {
+          const msg = (e as Error)?.message ?? '';
+          // Only an answer from the panel proves nothing was created; a timeout or a dropped connection does not.
+          if (!/^Virtualizor(: | refused | did not accept | redirects )/.test(msg)) throw e;
+          refusals.push(`${a.label}: ${msg.replace(/^Virtualizor: /, '')}`);
+          input.log?.(`Virtualizor refused (${a.label}): ${msg.replace(/^Virtualizor: /, '')}`);
+          if (!/storage|space|disk/i.test(msg)) break;
+        }
       }
+      if (!r) throw new VirtRefused(`Virtualizor: ${refusals.join(' · ')}`);
       const info = (r.newvs ?? r.vs_info ?? (r.done && typeof r.done === 'object' ? r.done : null) ?? {}) as Row;
       const vpsid = s(info.vpsid) ?? s(r.vpsid);
       if (!vpsid || !/^\d+$/.test(vpsid)) throw new PermanentError('Virtualizor did not return the new VPS id; check the VPS list in the panel before trying again');

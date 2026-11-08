@@ -165,6 +165,9 @@ describe('orders', () => {
     // No server chosen: the synced server with room on a storage, and the disk on that storage.
     expect(c.body).toMatchObject({ slave_server: '0', serid: '0', 'space[0][size]': '40', 'space[0][st_uuid]': 'stuuidprimary01', stid: '1' });
     expect(c.body.space).toBeUndefined();
+    // First the server's primary storage as Virtualizor picks it (refused by this panel), then the listed storage.
+    expect(vz.creates.at(-2)!.body).toMatchObject({ slave_server: '0', space: '40' });
+    expect(vz.creates.at(-2)!.body['space[0][st_uuid]']).toBeUndefined();
     expect(JSON.stringify(c.query)).not.toContain(ROOT_PW);
     // The new VPS is in inventory, assigned to Acme, its address in IPAM for Acme.
     const [g] = await ctx.db.select().from(virtGuests).where(eq(virtGuests.id, done.guestId!));
