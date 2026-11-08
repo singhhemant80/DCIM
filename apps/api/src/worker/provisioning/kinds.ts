@@ -766,6 +766,12 @@ export const guestCreateKind: KindDef = {
         if (!ctx.job.secretEnc) throw new PermanentError('The passwords are no longer stored for this job; place the order again');
         const sec = JSON.parse(D(ctx).secrets.decrypt(ctx.job.secretEnc, jobContext(ctx.job.orgId, ctx.job.id))) as { password: string; userPass: string };
         const pr = ctx.job.params;
+        // Servers that may take it when none is chosen: in the last sync and not offline; most free RAM first.
+        const hosts = pr.serverId
+          ? { rows: [] as { external_id: string; free: number | null }[] }
+          : await D(ctx).db.execute<{ external_id: string; free: number | null }>(sql`
+              select external_id, case when mem_total is not null then (mem_total - coalesce(mem_used, 0)) / 1048576 end::float8 as free
+                from virt_hosts where integration_id = ${String(pr.integrationId)} and missing_since is null and coalesce(status, 'online') not in ('offline', 'down', '0')`);
         let vpsid: string;
         // Recorded before the request: from here on, a failure may have left a VPS behind (the order is then reviewed, not refunded).
         ctx.state.createSent = true;
@@ -775,6 +781,7 @@ export const guestCreateKind: KindDef = {
             planId: String(pr.planId),
             plan: (pr.plan ?? {}) as VpsCreateInput['plan'],
             serverId: (pr.serverId as string | null) ?? null,
+            candidates: hosts.rows.map((h) => ({ serverId: h.external_id, freeRamMb: h.free === null ? null : Number(h.free) })),
             osid: String(pr.osid),
             hostname: String(pr.hostname),
             password: sec.password,

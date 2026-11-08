@@ -863,10 +863,10 @@ function PlanModal({ plan, hv, ext, onClose }: { plan?: PlanT; hv: HvT; ext: HvT
         <div className="sm:col-span-2">
           <Field label="Description (optional)">{(id) => <Textarea id={id} rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />}</Field>
         </div>
-        <Field label="Create VPSs on" hint={serverId ? 'Every VPS of this plan is created on this server.' : 'Virtualizor picks a server for each new VPS.'}>
+        <Field label="Create VPSs on" hint={serverId ? 'Every VPS of this plan is created on this server.' : 'For each new VPS, the online server with the most free RAM and enough free storage is used.'}>
           {(id) => (
             <Select id={id} value={serverId} onChange={(e) => setServerId(e.target.value)}>
-              <option value="">Let Virtualizor choose</option>
+              <option value="">Automatic: most free RAM, with room on a storage</option>
               {hv.servers
                 .filter((x) => !x.missing || x.id === serverId)
                 .map((x) => (
@@ -1575,10 +1575,10 @@ function OrderModal({ customerId, pickCustomer, balancePaise, onClose }: { custo
             </Field>
             {staffOrder && (
               <div className="sm:col-span-2">
-                <Field label="Create on server" hint={serverId ? 'The VPS is created on this server.' : planServer ? `The plan's server (${planServer}).` : 'Virtualizor picks the server.'}>
+                <Field label="Create on server" hint={serverId ? 'The VPS is created on this server.' : planServer ? `The plan's server (${planServer}).` : 'The online server with the most free RAM and enough free storage.'}>
                   {(id) => (
                     <Select id={id} value={serverId} onChange={(e) => setServerId(e.target.value)} disabled={!planId}>
-                      <option value="">{planServer ? `Plan default: ${planServer}` : 'Let Virtualizor choose'}</option>
+                      <option value="">{planServer ? `Plan default: ${planServer}` : 'Automatic: most free RAM, with room on a storage'}</option>
                       {servers.map((x) => (
                         <option key={x.id} value={x.id}>
                           {x.name}

@@ -301,6 +301,8 @@ export interface MockVirtualizor {
   creates: { query: Record<string, string>; body: Record<string, string> }[];
   /** Make Create VPS fail with this error (e.g. no free IPs). */
   failCreate: string | null;
+  /** Accept Create VPS without a storage uuid (older panels). */
+  storageOptional: boolean;
   close: () => Promise<void>;
 }
 
@@ -312,7 +314,7 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
   const requests: MockVirtualizor['requests'] = [];
   // eslint-disable-next-line prefer-const
   let server: http.Server;
-  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, loadReads: 0, creates: [], failCreate: null, close: () => closer(server)() };
+  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, loadReads: 0, creates: [], failCreate: null, storageOptional: false, close: () => closer(server)() };
   // Installed templates ("ostemplates"), as Virtualizor lists them; one for another virtualization type.
   const templates: Record<string, Record<string, string>> = {
     '270': { osid: '270', type: 'kvm', name: 'ubuntu-22.04-x86_64', filename: 'ubuntu-22.04-x86_64.img', distro: 'ubuntu' },
@@ -373,8 +375,12 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
           '4': { plid: '4', plan_name: 'KVM 4G', virt: 'kvm', ram: '4096', space: '80', cores: '4', bandwidth: '4000', ips: '1', ips6: '1', network_speed: '128000' },
         },
       });
+    // Storages as Virtualizor lists them (size and free in GB).
+    if (q.act === 'storage') return send({ title: 'Storage', storage: { '1': { stid: '1', st_uuid: 'stuuidprimary01', name: 'local-lvm', serid: '0', primary_storage: '1', size: '1800', free: '900' } } });
     if (q.act === 'addvs') {
       mock.creates.push({ query: rest, body });
+      // Like the panel: the disk needs a storage of the chosen server.
+      if (body['space[0][st_uuid]'] !== 'stuuidprimary01' && !mock.storageOptional) return send({ error: { space: 'The primary storage could not be found' } });
       if (req.method !== 'POST' || body.addvps !== '1') return send({ error: { addvps: 'Invalid request' } });
       if (mock.failCreate) return send({ error: { ips: mock.failCreate } });
       if (!templates[body.osid ?? '']) return send({ error: { osid: 'The OS template was not found' } });

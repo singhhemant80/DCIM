@@ -82,10 +82,22 @@ export interface VirtClient {
   guestOs?(g: GuestRef): Promise<{ osId: string | null; osName: string | null; status: string }>;
 }
 
+export interface VirtStorage {
+  stid: string;
+  uuid: string | null;
+  name: string;
+  /** Server ids (serid) the storage is on; "-1" when Virtualizor marks it shared with all. */
+  servers: string[];
+  primary: boolean;
+  freeGb: number | null;
+}
+
 export interface VpsCreateInput {
   planId: string;
   plan: Pick<VirtPlan, 'virt' | 'ramMb' | 'diskGb' | 'cores' | 'bandwidthGb' | 'ips' | 'ips6'>;
   serverId: string | null;
+  /** When no server is chosen: the panel's servers that may take it (online, from the sync), with their free RAM. */
+  candidates?: { serverId: string; freeRamMb: number | null }[];
   osid: string;
   hostname: string;
   password: string;
@@ -237,6 +249,57 @@ const VZ_ACTIONS: Partial<Record<GuestAction, string>> = { start: 'start', shutd
 export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey: string; apiPass: string; actionsEnabled: boolean }): VirtClient {
   // A master listing many slaves and VPSes can take a while to answer.
   const t = target(cfg.url, cfg.verifyTls, 60_000);
+  /**
+   * Storages (act=storage): uuid, server, primary flag, free GB. Shared storages can list several
+   * servers. Field names as the admin API returns them; read leniently.
+   */
+  const storages = async (): Promise<VirtStorage[]> => {
+    const r = await call({ act: 'storage', page: '1', reslen: '1000' });
+    const list = (r.storage && typeof r.storage === 'object' ? r.storage : {}) as Record<string, Row>;
+    const links = (r.storage_servers && typeof r.storage_servers === 'object' ? r.storage_servers : {}) as Record<string, unknown>;
+    return Object.entries(list).map(([key, x]) => {
+      const sv = new Set<string>();
+      const add = (v: unknown) => {
+        if (Array.isArray(v)) v.forEach(add);
+        else if (v && typeof v === 'object') Object.values(v as Row).forEach((y) => add(typeof y === 'object' && y ? ((y as Row).serid ?? null) : y));
+        else if (v !== null && v !== undefined && String(v).trim() !== '')
+          String(v)
+            .split(',')
+            .forEach((t) => sv.add(t.trim()));
+      };
+      add(x.serid);
+      add(x.servers);
+      add(x.serids);
+      add(links[key]);
+      return { stid: s(x.stid) ?? key, uuid: s(x.st_uuid), name: s(x.name) ?? s(x.path) ?? `storage ${key}`, servers: [...sv], primary: String(x.primary_storage ?? '0') === '1', freeGb: n(x.free) };
+    });
+  };
+  /** Server and storage for a new VPS; null = leave it to Virtualizor (storages unreadable and no server chosen). */
+  const pickTarget = async (input: VpsCreateInput): Promise<{ serverId: string; stUuid: string | null; stid: string | null; stName: string | null } | null> => {
+    let all: VirtStorage[] | null = null;
+    try {
+      all = await storages();
+    } catch {
+      all = null;
+    }
+    const need = input.plan.diskGb ?? 0;
+    const onServer = (id: string) => (all ?? []).filter((x) => x.uuid && (x.servers.includes(id) || x.servers.includes('-1'))).sort((a, b) => Number(b.primary) - Number(a.primary) || (b.freeGb ?? 0) - (a.freeGb ?? 0));
+    const fits = (x: VirtStorage) => x.freeGb === null || x.freeGb >= need;
+    if (input.serverId) {
+      const st = onServer(input.serverId).find(fits) ?? onServer(input.serverId)[0] ?? null;
+      if (all && !st) throw new VirtRefused(`Virtualizor lists no storage on server ${input.serverId}; add one in the panel or choose another server`);
+      return { serverId: input.serverId, stUuid: st?.uuid ?? null, stid: st?.stid ?? null, stName: st?.name ?? null };
+    }
+    if (!all || !input.candidates?.length) return null;
+    const options = input.candidates
+      .map((c) => ({ c, st: onServer(c.serverId).find(fits) }))
+      .filter((o) => o.st)
+      .sort((a, b) => (b.c.freeRamMb ?? -1) - (a.c.freeRamMb ?? -1));
+    if (!options.length) throw new VirtRefused(`No Virtualizor server has a storage with ${need} GB free for this plan`);
+    const o = options[0]!;
+    return { serverId: o.c.serverId, stUuid: o.st!.uuid, stid: o.st!.stid, stName: o.st!.name };
+  };
+
   const call = async (params: Record<string, string>, post?: Record<string, string>) => {
     const q = new URLSearchParams({ ...params, adminapikey: cfg.apiKey, adminapipass: cfg.apiPass, api: 'json', apikey: virtualizorApiKey(cfg.apiPass) });
     try {
@@ -440,6 +503,10 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
     async createVps(input) {
       if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');
       const p = input.plan;
+      // The disk goes on a storage of the target server (Virtualizor's space[0][st_uuid]); without it the
+      // panel looks for the primary storage of the server it assumes and may answer "The primary storage
+      // could not be found". When no server is chosen, the one with room on a storage and the most free RAM is used.
+      const target = await pickTarget(input);
       const post: Record<string, string> = {
         addvps: '1',
         virt: p.virt ?? 'kvm',
@@ -449,10 +516,11 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         rootpass: input.password,
         user_email: input.userEmail,
         user_pass: input.userPass,
-        ...(input.serverId ? { slave_server: input.serverId } : { node_select: '1' }),
+        ...(target ? { slave_server: target.serverId, serid: target.serverId } : { node_select: '1' }),
+        ...(target?.stUuid ? { 'space[0][size]': String(p.diskGb ?? 10), 'space[0][st_uuid]': target.stUuid, ...(target.stid ? { stid: target.stid } : {}) } : {}),
         // The plan's resources, for panels that don't apply them from plid alone.
         ...(p.ramMb !== null ? { ram: String(p.ramMb) } : {}),
-        ...(p.diskGb !== null ? { space: String(p.diskGb) } : {}),
+        ...(p.diskGb !== null && !target?.stUuid ? { space: String(p.diskGb) } : {}),
         ...(p.cores !== null ? { cores: String(p.cores) } : {}),
         ...(p.bandwidthGb !== null ? { bandwidth: String(p.bandwidthGb) } : {}),
         num_ips: String(p.ips ?? 1),
@@ -464,7 +532,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       } catch (e) {
         const msg = (e as Error)?.message ?? '';
         // Only an answer from the panel proves nothing was created; a timeout or a dropped connection does not.
-        if (/^Virtualizor(: | refused | did not accept | redirects )/.test(msg)) throw new VirtRefused(msg);
+        if (/^Virtualizor(: | refused | did not accept | redirects )/.test(msg)) throw new VirtRefused(target ? `${msg} (server ${target.serverId}${target.stName ? `, storage ${target.stName}` : ''})` : msg);
         throw e;
       }
       const info = (r.newvs ?? r.vs_info ?? (r.done && typeof r.done === 'object' ? r.done : null) ?? {}) as Row;
