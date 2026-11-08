@@ -298,6 +298,15 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
                   </dd>
                 </>
               )}
+              {staff && g.owner && (
+                <>
+                  <dt className="text-ink-3">Owner in Virtualizor</dt>
+                  <dd>
+                    {g.owner.name ? `${g.owner.name} · ` : ''}
+                    <span className="text-ink-2">{g.owner.email}</span>
+                  </dd>
+                </>
+              )}
               {staff && g.customerName !== undefined && (
                 <>
                   <dt className="text-ink-3">Customer</dt>

@@ -2374,6 +2374,10 @@ export const virtGuests = pgTable(
       .notNull()
       .default(sql`'{}'::text[]`),
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+    /** Owner in the hypervisor's user list (Virtualizor), read by the sync; used to match clients by e-mail. */
+    ownerUid: text('owner_uid'),
+    ownerEmail: text('owner_email'),
+    ownerName: text('owner_name'),
     lastSeenAt: ts('last_seen_at'),
     missingSince: ts('missing_since'),
   },

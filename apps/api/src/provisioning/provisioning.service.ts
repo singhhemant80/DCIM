@@ -1087,6 +1087,8 @@ export class ProvisioningService {
         hostName: staff ? g.host_name : null,
         customerId: g.customer_id ?? null,
         customerName: staff ? (g.customer_name ?? null) : null,
+        /** The VPS's owner in Virtualizor (staff). */
+        owner: staff && g.owner_email ? { email: g.owner_email as string, name: (g.owner_name as string | null) ?? null } : null,
         actionsEnabled: g.actions_enabled,
         activeJob: g.active_job ?? null,
         /** Its monthly billing (Billing & Wallet), when it was ordered there: next renewal (expiry). */
@@ -1168,6 +1170,100 @@ export class ProvisioningService {
       suspended: x.customer_id ? x.suspended : 0,
       walletPaise: x.wallet === null ? null : Number(x.wallet),
     }));
+  }
+
+  /**
+   * VPS owners as Virtualizor lists them (its users, by e-mail), with how many VPSs each has, how many
+   * are assigned to a client here, and the client whose contact or billing e-mail matches. Staff.
+   */
+  async guestOwners(p: Principal, integrationId?: string) {
+    const r = await this.db.execute<{
+      email: string;
+      name: string | null;
+      uids: string | null;
+      vms: number;
+      unassigned: number;
+      assigned_to: string | null;
+      assigned_names: string | null;
+      match_id: string | null;
+      match_name: string | null;
+      match_code: string | null;
+      hosts: string | null;
+    }>(sql`
+      with o as (
+        select lower(g.owner_email) as email, max(g.owner_name) as name, string_agg(distinct g.owner_uid, ',') as uids,
+               count(*)::int as vms, count(*) filter (where g.customer_id is null)::int as unassigned,
+               string_agg(distinct g.customer_id::text, ',') as assigned_to, string_agg(distinct c.name, ', ') as assigned_names,
+               string_agg(g.name, ', ' order by g.name) as hosts
+          from virt_guests g left join customers c on c.id = g.customer_id
+         where g.org_id = ${p.orgId} and g.missing_since is null and g.owner_email is not null ${integrationId ? sql`and g.integration_id = ${integrationId}` : sql``}
+         group by lower(g.owner_email))
+      select o.*, m.id as match_id, m.name as match_name, m.code as match_code
+        from o left join lateral (select id, name, code from customers cu
+                                   where cu.org_id = ${p.orgId} and (lower(cu.contact_email) = o.email or lower(cu.billing_email) = o.email)
+                                   order by (cu.status = 'active') desc, cu.created_at limit 1) m on true
+       order by o.unassigned desc, o.email`);
+    const noOwner = await this.db.execute<{ n: number }>(
+      sql`select count(*)::int as n from virt_guests where org_id = ${p.orgId} and missing_since is null and owner_email is null ${integrationId ? sql`and integration_id = ${integrationId}` : sql``}`,
+    );
+    return {
+      withoutOwner: noOwner.rows[0]?.n ?? 0,
+      owners: r.rows.map((x) => ({
+        email: x.email,
+        name: x.name,
+        uids: x.uids ? x.uids.split(',') : [],
+        vms: x.vms,
+        unassigned: x.unassigned,
+        assignedCustomerIds: x.assigned_to ? x.assigned_to.split(',') : [],
+        assignedNames: x.assigned_names,
+        vmNames: (x.hosts ?? '').split(', ').slice(0, 20),
+        match: x.match_id ? { id: x.match_id, name: x.match_name!, code: x.match_code! } : null,
+      })),
+    };
+  }
+
+  /**
+   * Assign VPSs to clients by their Virtualizor owner: to an existing client, or to a new client
+   * created from the owner (name, e-mail). Only VPSs without a client are assigned unless overwrite
+   * is set. Each assignment is audited like a manual one.
+   */
+  async applyGuestOwners(p: Principal, input: { items: { email: string; customerId?: string | null; create?: { name: string; code: string } | null }[]; overwrite: boolean }, meta: RequestMeta) {
+    if (input.items.some((x) => x.create) && !p.permissions.has('customers.write')) throw new ForbiddenException({ error: 'forbidden', message: 'Creating clients needs the customers.write permission' });
+    const out: { email: string; customerId: string; created: boolean; assigned: number }[] = [];
+    for (const it of input.items) {
+      const email = it.email.trim().toLowerCase();
+      let customerId = it.customerId ?? null;
+      let created = false;
+      if (!customerId && it.create) {
+        try {
+          const [c] = await this.db
+            .insert(customers)
+            .values({ orgId: p.orgId, name: it.create.name.trim().slice(0, 200), code: it.create.code.trim().toUpperCase(), contactEmail: email, status: 'active' })
+            .returning({ id: customers.id, code: customers.code, name: customers.name });
+          customerId = c!.id;
+          created = true;
+          await this.audit.record({
+            orgId: p.orgId,
+            actor: actorFrom(p),
+            customerId: c!.id,
+            action: 'customer.create',
+            target: { type: 'customer', id: c!.id },
+            outcome: 'success',
+            meta,
+            metadata: { code: c!.code, name: c!.name, from: 'virtualizor owner', email },
+          });
+        } catch (e) {
+          if (isPg(e, '23505')) throw new ConflictException({ error: 'duplicate_code', message: `Client code ${it.create.code} is already used` });
+          throw e;
+        }
+      }
+      if (!customerId) continue;
+      const guests = await this.db.execute<{ id: string }>(sql`
+        select id from virt_guests where org_id = ${p.orgId} and missing_since is null and lower(owner_email) = ${email} ${input.overwrite ? sql`` : sql`and customer_id is null`}`);
+      for (const g of guests.rows) await this.assignGuest(p, g.id, customerId, meta);
+      out.push({ email, customerId, created, assigned: guests.rows.length });
+    }
+    return { results: out, assigned: out.reduce((a, x) => a + x.assigned, 0), created: out.filter((x) => x.created).length };
   }
 
   async assignGuest(p: Principal, id: string, customerId: string | null, meta: RequestMeta) {

@@ -456,3 +456,40 @@ describe('renewals', () => {
     expect(after!.nextDueAt.getTime()).toBeGreaterThan(paidUntil.getTime() + 27 * DAY);
   });
 });
+
+describe('clients from Virtualizor owners', () => {
+  it('lists VPS owners with their matching client, and assigns or creates clients from them', async () => {
+    await syncDueIntegrations(deps(), { force: ids.integration });
+    expect((await acme.get('/api/v1/virtualization/owners')).status).toBe(403);
+    const o = await ok(admin.get('/api/v1/virtualization/owners'));
+    const one = o.owners.find((x: { email: string }) => x.email === 'owner.one@example.com');
+    const it2 = o.owners.find((x: { email: string }) => x.email === 'it@acme.example');
+    expect(one).toMatchObject({ name: 'Owner One', vms: 1, unassigned: 1, match: null });
+    expect(it2).toMatchObject({ vms: 1, unassigned: 1, match: { id: ctx.customers.acme } });
+    const r = await ok(
+      admin.post('/api/v1/virtualization/owners/apply', {
+        items: [
+          { email: 'it@acme.example', customerId: ctx.customers.acme },
+          { email: 'owner.one@example.com', create: { name: 'Owner One', code: 'OWNER1' } },
+        ],
+      }),
+    );
+    expect(r).toMatchObject({ assigned: 2, created: 1 });
+    const [g12] = await ctx.db
+      .select()
+      .from(virtGuests)
+      .where(sql`${virtGuests.integrationId} = ${ids.integration} and ${virtGuests.externalId} = '12'`);
+    expect(g12!.customerId).toBe(ctx.customers.acme);
+    const [g11] = await ctx.db
+      .select()
+      .from(virtGuests)
+      .where(sql`${virtGuests.integrationId} = ${ids.integration} and ${virtGuests.externalId} = '11'`);
+    const [c] = await ctx.db.select().from(customers).where(eq(customers.id, g11!.customerId!));
+    expect(c).toMatchObject({ code: 'OWNER1', contactEmail: 'owner.one@example.com' });
+    // Already assigned VPSs are left alone unless overwrite is asked for; the next sync keeps the assignment.
+    expect((await ok(admin.post('/api/v1/virtualization/owners/apply', { items: [{ email: 'owner.one@example.com', customerId: ctx.customers.globex }] }))).assigned).toBe(0);
+    await syncDueIntegrations(deps(), { force: ids.integration });
+    expect((await ctx.db.select().from(virtGuests).where(eq(virtGuests.id, g11!.id)))[0]!.customerId).toBe(c!.id);
+    expect((await admin.post('/api/v1/virtualization/owners/apply', { items: [{ email: 'x@example.com', create: { name: 'Dup', code: 'OWNER1' } }] })).status).toBe(409);
+  });
+});

@@ -1038,12 +1038,19 @@ interface ByClientT {
 function ByClient({ kind, selected, onPick }: { kind: Kind; selected: string; onPick: (id: string) => void }) {
   const q = useQuery({ queryKey: ['virt', 'by-customer', kind], queryFn: () => api.get<ByClientT[]>(`/virtualization/guests/by-customer${qs({ kind })}`), refetchInterval: 60_000 });
   const [open, setOpen] = useState(true);
+  const [owners, setOwners] = useState(false);
+  const { can } = useAuth();
   const rows = q.data ?? [];
   return (
     <Panel
       title={`VMs by client${rows.length ? ` (${rows.filter((r) => r.customerId).length} client${rows.filter((r) => r.customerId).length === 1 ? '' : 's'})` : ''}`}
       actions={
         <div className="flex items-center gap-3 text-[13px]">
+          {kind === 'virtualizor' && can('provisioning.execute') && (
+            <Button size="sm" onClick={() => setOwners(true)}>
+              Clients from Virtualizor
+            </Button>
+          )}
           {selected && (
             <button className="text-accent hover:underline" onClick={() => onPick('')}>
               Show all clients' VMs
@@ -1121,7 +1128,154 @@ function ByClient({ kind, selected, onPick }: { kind: Kind; selected: string; on
           </tbody>
         </Table>
       )}
+      {owners && <OwnersModal onClose={() => setOwners(false)} />}
     </Panel>
+  );
+}
+
+interface OwnerT {
+  email: string;
+  name: string | null;
+  uids: string[];
+  vms: number;
+  unassigned: number;
+  assignedCustomerIds: string[];
+  assignedNames: string | null;
+  vmNames: string[];
+  match: { id: string; name: string; code: string } | null;
+}
+
+const suggestCode = (o: OwnerT) =>
+  (
+    (o.name ?? o.email.split('@')[0] ?? 'CLIENT')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24) || 'CLIENT'
+  ).padEnd(2, '0');
+
+/**
+ * Staff: VPS owners from Virtualizor (its users, by e-mail) and the client each should belong to here:
+ * the client with the same e-mail, another existing client, or a new client created from the owner.
+ */
+function OwnersModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const { can } = useAuth();
+  const q = useQuery({ queryKey: ['virt', 'owners'], queryFn: () => api.get<{ withoutOwner: number; owners: OwnerT[] }>('/virtualization/owners') });
+  const customers = useQuery({ queryKey: ['customers', 'options'], queryFn: () => api.get<Paginated<Customer>>('/customers?pageSize=200') });
+  const [choice, setChoice] = useState<Record<string, string>>({});
+  const [codes, setCodes] = useState<Record<string, string>>({});
+  const [overwrite, setOverwrite] = useState(false);
+  const owners = q.data?.owners ?? [];
+  // Default: the matching client; new client for owners without a match and with unassigned VPSs; otherwise skip.
+  const pick = (o: OwnerT) => choice[o.email] ?? (o.match ? o.match.id : o.unassigned > 0 && can('customers.write') ? 'new' : '');
+  const m = useMutation({
+    mutationFn: () =>
+      api.post<{ assigned: number; created: number }>('/virtualization/owners/apply', {
+        overwrite,
+        items: owners.filter((o) => pick(o)).map((o) => (pick(o) === 'new' ? { email: o.email, create: { name: o.name || o.email, code: codes[o.email] ?? suggestCode(o) } } : { email: o.email, customerId: pick(o) })),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['virt'] });
+      void qc.invalidateQueries({ queryKey: ['customers'] });
+    },
+  });
+  const chosen = owners.filter((o) => pick(o));
+  return (
+    <Modal
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="Clients from Virtualizor"
+      description="Each VPS's owner as Virtualizor lists it (its user e-mail). Choose the client each owner is here: the one with the same e-mail is chosen for you, or create a new client. Only VPSs without a client are assigned, unless you tick the box below."
+      wide
+    >
+      {q.isLoading ? (
+        <Loading />
+      ) : q.error ? (
+        <ErrorNote error={q.error} />
+      ) : m.data ? (
+        <div className="grid gap-3 text-[13.5px]">
+          <p>
+            Assigned {m.data.assigned} VPS{m.data.assigned === 1 ? '' : 's'}
+            {m.data.created ? `, created ${m.data.created} client${m.data.created === 1 ? '' : 's'}` : ''}. Their addresses follow them in IPAM; billing is not started (use “Start billing here” on a VPS for that).
+          </p>
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      ) : !owners.length ? (
+        <EmptyState title="No owners read yet">The next Virtualizor sync reads each VPS's owner (users list). Run “Sync now” and come back.</EmptyState>
+      ) : (
+        <div className="grid gap-3">
+          <div className="max-h-[55vh] overflow-y-auto rounded-xl border border-rule">
+            <Table label="Virtualizor owners">
+              <thead>
+                <tr>
+                  <th>Owner in Virtualizor</th>
+                  <th className="text-right">VPSs</th>
+                  <th>Now</th>
+                  <th>Client here</th>
+                </tr>
+              </thead>
+              <tbody>
+                {owners.map((o) => (
+                  <tr key={o.email}>
+                    <td className="max-w-[28ch]">
+                      <span className="font-medium">{o.name ?? o.email}</span>
+                      <span className="block truncate text-[12px] text-ink-3" title={o.vmNames.join(', ')}>
+                        {o.email}
+                      </span>
+                    </td>
+                    <td className="text-right tabular-nums">
+                      {o.vms}
+                      {o.unassigned ? <span className="block text-[12px] text-warn">{o.unassigned} unassigned</span> : null}
+                    </td>
+                    <td className="max-w-[20ch] text-[12.5px] text-ink-2">{o.assignedNames ?? '—'}</td>
+                    <td>
+                      <Select aria-label={`Client for ${o.email}`} value={pick(o)} onChange={(e) => setChoice({ ...choice, [o.email]: e.target.value })} className="h-8 w-56">
+                        <option value="">Skip</option>
+                        {can('customers.write') && <option value="new">Create new client</option>}
+                        {o.match && <option value={o.match.id}>{o.match.name} (same e-mail)</option>}
+                        {(customers.data?.items ?? [])
+                          .filter((c) => c.id !== o.match?.id)
+                          .map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name} ({c.code})
+                            </option>
+                          ))}
+                      </Select>
+                      {pick(o) === 'new' && (
+                        <Input
+                          aria-label={`Client code for ${o.email}`}
+                          className="mt-1 h-8 w-56 font-mono uppercase"
+                          value={codes[o.email] ?? suggestCode(o)}
+                          onChange={(e) => setCodes({ ...codes, [o.email]: e.target.value.toUpperCase() })}
+                          title="Client code (2–31 letters, digits or dashes)"
+                        />
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </div>
+          {q.data!.withoutOwner > 0 && <p className="text-[12.5px] text-ink-3">{q.data!.withoutOwner} VPS(s) have no owner in Virtualizor; assign them by hand in the list.</p>}
+          <label className="flex items-start gap-2 text-[13px]">
+            <input type="checkbox" className="mt-1" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
+            <span>Also move VPSs that are already assigned to another client here (otherwise only unassigned VPSs are assigned).</span>
+          </label>
+          <ErrorNote error={m.error} />
+          <div className="flex justify-end gap-2">
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" busy={m.isPending} disabled={!chosen.length} onClick={() => m.mutate()}>
+              Assign {chosen.length} owner{chosen.length === 1 ? '' : 's'}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 

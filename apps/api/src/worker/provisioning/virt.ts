@@ -37,6 +37,10 @@ export interface VirtGuestInfo {
   /** Bandwidth this billing month and its limit, in GB, as the hypervisor counts it (Virtualizor; 0 limit = unlimited). */
   bwUsedGb?: number | null;
   bwLimitGb?: number | null;
+  /** The VPS's owner in the hypervisor's own user list (Virtualizor uid, e-mail, name). */
+  ownerUid?: string | null;
+  ownerEmail?: string | null;
+  ownerName?: string | null;
 }
 type GuestRef = { externalId: string; hostExternalId: string | null; virtType: string | null };
 /** A VM's current use as the hypervisor reports it. Sizes in bytes; null where not reported. */
@@ -401,6 +405,27 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       } catch {
         plans = undefined;
       }
+      // Users (act=users), to name each VPS's owner; best effort like the templates.
+      const users = new Map<string, { email: string | null; name: string | null }>();
+      try {
+        for (let page = 1; page <= 50; page++) {
+          const r = await call({ act: 'users', page: String(page), reslen: '1000' });
+          const list = (r.users && typeof r.users === 'object' ? r.users : {}) as Record<string, Row>;
+          for (const [key, u] of Object.entries(list)) {
+            const name = [s(u.fname), s(u.lname)].filter(Boolean).join(' ') || null;
+            users.set(s(u.uid) ?? key, { email: s(u.email)?.toLowerCase() ?? null, name });
+          }
+          if (Object.keys(list).length < 1000) break;
+        }
+      } catch {
+        users.clear();
+      }
+      const owner = (x: Row) => {
+        const uid = s(x.uid);
+        const u = uid ? users.get(uid) : undefined;
+        const email = (s(x.email) ?? u?.email ?? null)?.toLowerCase() ?? null;
+        return { ownerUid: uid && uid !== '0' ? uid : null, ownerEmail: email, ownerName: u?.name ?? ([s(x.fname), s(x.lname)].filter(Boolean).join(' ') || null) };
+      };
       const loads = await hostLoads(Object.values(servers).map((x) => String(x.serid)));
       return {
         hosts: Object.values(servers).map((x) => ({
@@ -428,6 +453,7 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
           osName: s(x.os_name),
           bwUsedGb: bw.get(String(x.vpsid))?.used ?? null,
           bwLimitGb: bw.get(String(x.vpsid))?.limit ?? n(x.bandwidth),
+          ...owner(x),
         })),
         warning,
         templates,

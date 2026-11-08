@@ -286,7 +286,7 @@ export interface MockVirtualizor {
   port: number;
   vps: Map<
     string,
-    { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; virt: string; ips: string[]; osid?: string; bwUsed?: number; bwLimit?: number; rebuild?: { osid: string; password: string; at: number } }
+    { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; uid?: string; virt: string; ips: string[]; osid?: string; bwUsed?: number; bwLimit?: number; rebuild?: { osid: string; password: string; at: number } }
   >;
   /** Rebuild requests as received (POST bodies), to check the password went in the body and not the URL. */
   rebuilds: { query: Record<string, string>; body: Record<string, string> }[];
@@ -308,8 +308,8 @@ export interface MockVirtualizor {
 
 export async function startVirtualizor(apiKey: string, apiPass: string, listenPort?: number): Promise<MockVirtualizor> {
   const vps: MockVirtualizor['vps'] = new Map([
-    ['11', { serid: '0', hostname: 'vps11.example.net', status: 1, suspended: 0, virt: 'kvm', ips: ['203.0.113.11'], osid: '270' }],
-    ['12', { serid: '0', hostname: 'vps12.example.net', status: 0, suspended: 0, virt: 'kvm', ips: ['203.0.113.12'], osid: '270' }],
+    ['11', { serid: '0', hostname: 'vps11.example.net', status: 1, suspended: 0, virt: 'kvm', ips: ['203.0.113.11'], osid: '270', uid: '41' }],
+    ['12', { serid: '0', hostname: 'vps12.example.net', status: 0, suspended: 0, virt: 'kvm', ips: ['203.0.113.12'], osid: '270', uid: '42' }],
   ]);
   const requests: MockVirtualizor['requests'] = [];
   // eslint-disable-next-line prefer-const
@@ -365,6 +365,9 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
       const cpu = 20 + (mock.loadReads % 5) * 3;
       return send({ title: 'Manage Server', usage: { cpu: { percent: cpu, percent_free: 100 - cpu }, ram: { used: 196608, limit: 262144, free: 65536, percent: 75, percent_free: 25 } } });
     }
+    // Users (owners of VPSs), as the panel lists them.
+    if (q.act === 'users')
+      return send({ title: 'Users', users: { '41': { uid: '41', email: 'Owner.One@Example.com', fname: 'Owner', lname: 'One', type: '0' }, '42': { uid: '42', email: 'it@acme.example', fname: 'Acme', lname: 'IT', type: '0' } } });
     if (q.act === 'ostemplates') return send({ title: 'OS Templates', ostemplates: templates });
     // Plans as Virtualizor lists them (RAM in MB, disk and bandwidth in GB, speed in KB/s).
     if (q.act === 'plans')
@@ -471,6 +474,7 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
               ram: '2048',
               space: '40',
               ips: Object.fromEntries(v.ips.map((ip, i) => [String(i + 1), ip])),
+              uid: v.uid ?? '0',
             },
           ]),
         ),

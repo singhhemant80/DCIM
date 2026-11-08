@@ -228,6 +228,29 @@ export class ProvisioningController {
   }
 }
 
+const ownersApplySchema = z.object({
+  items: z
+    .array(
+      z.object({
+        email: z.string().trim().email().max(254),
+        customerId: z.string().uuid().nullish(),
+        create: z
+          .object({
+            name: z.string().trim().min(1).max(200),
+            code: z
+              .string()
+              .trim()
+              .toUpperCase()
+              .regex(/^[A-Z0-9][A-Z0-9-]{1,30}$/, 'Code must be 2–31 letters, digits or dashes'),
+          })
+          .nullish(),
+      }),
+    )
+    .min(1)
+    .max(500),
+  overwrite: z.boolean().default(false),
+});
+
 /** Proxmox and Virtualizor. */
 @ApiTags('virtualization')
 @ApiCookieAuth()
@@ -309,6 +332,24 @@ export class VirtualizationController {
   @ApiZodQuery(guestListQuerySchema)
   guests(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(guestListQuerySchema)) q: Infer<typeof guestListQuerySchema>) {
     return this.svc.guests(p, q);
+  }
+
+  @Get('owners')
+  @RequirePermissions('provisioning.execute')
+  @StaffOnly()
+  @ApiOperation({ summary: "VPS owners from Virtualizor's user list (by e-mail) with their VPSs and the matching client here." })
+  owners(@CurrentPrincipal() p: Principal, @Query('integrationId') integrationId?: string) {
+    return this.svc.guestOwners(p, integrationId && /^[0-9a-f-]{36}$/i.test(integrationId) ? integrationId : undefined);
+  }
+
+  @Post('owners/apply')
+  @HttpCode(200)
+  @RequirePermissions('provisioning.execute')
+  @StaffOnly()
+  @ApiOperation({ summary: 'Assign VPSs to clients by their Virtualizor owner: an existing client, or a new one created from the owner (needs customers.write).' })
+  @ApiZodBody(ownersApplySchema)
+  applyOwners(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(ownersApplySchema)) b: Infer<typeof ownersApplySchema>, @ReqMeta() meta: RequestMeta) {
+    return this.svc.applyGuestOwners(p, b, meta);
   }
 
   @Put('guests/:id/customer')
