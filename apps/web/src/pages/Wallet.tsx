@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { amountInWords, formatInr, GST_STATES, rupeesToPaise, validGstin, WALLET_METHOD_LABELS, WALLET_METHODS } from '@crapplet/shared';
@@ -122,6 +122,7 @@ interface HvT {
   actionsEnabled: boolean;
   lastSyncAt: string | null;
   synced: boolean;
+  servers: { id: string; name: string; status: string | null; cpus: number | null; memUsedBytes: number | null; memTotalBytes: number | null; vms: number; missing: boolean }[];
   templates: { osid: string; name: string; type: string | null }[];
   plans: {
     id: string;
@@ -200,6 +201,7 @@ const specLine = (s: PlanT['specs']) =>
     .filter(Boolean)
     .join(' · ');
 const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+const gib = (b: number) => `${(b / 1024 ** 3).toFixed(b >= 100 * 1024 ** 3 ? 0 : 1)} GB`;
 const paiseToRupees = (p: number) => (p / 100).toFixed(2).replace(/\.00$/, '');
 
 function Money({ p, className }: { p: number; className?: string }) {
@@ -729,7 +731,8 @@ function PlansTab() {
                   <td>
                     <span className="font-medium">{p.name}</span>
                     <span className="block text-[12px] text-ink-3">
-                      {p.integration} · Virtualizor plan {p.externalPlanId}
+                      {p.integration} · Virtualizor plan {p.externalPlanId} ·{' '}
+                      {p.serverId ? `on ${hv.data?.find((x) => x.id === p.integrationId)?.servers.find((x) => x.id === p.serverId)?.name ?? `server ${p.serverId}`}` : 'server chosen by Virtualizor'}
                     </span>
                   </td>
                   <td className="text-[13px] text-ink-2">{specLine(p.specs) || '—'}</td>
@@ -860,8 +863,23 @@ function PlanModal({ plan, hv, ext, onClose }: { plan?: PlanT; hv: HvT; ext: HvT
         <div className="sm:col-span-2">
           <Field label="Description (optional)">{(id) => <Textarea id={id} rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />}</Field>
         </div>
-        <Field label="Create on server (optional)" hint="Virtualizor server id (serid). Empty: Virtualizor picks the server.">
-          {(id) => <Input id={id} value={serverId} onChange={(e) => setServerId(e.target.value)} placeholder="Let Virtualizor choose" />}
+        <Field label="Create VPSs on" hint={serverId ? 'Every VPS of this plan is created on this server.' : 'Virtualizor picks a server for each new VPS.'}>
+          {(id) => (
+            <Select id={id} value={serverId} onChange={(e) => setServerId(e.target.value)}>
+              <option value="">Let Virtualizor choose</option>
+              {hv.servers
+                .filter((x) => !x.missing || x.id === serverId)
+                .map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.name}
+                    {x.memTotalBytes ? ` · ${gib(Math.max(0, x.memTotalBytes - (x.memUsedBytes ?? 0)))} RAM free` : ''}
+                    {` · ${x.vms} VPS${x.vms === 1 ? '' : 's'}`}
+                    {x.status && x.status !== 'online' ? ` · ${x.status}` : ''}
+                  </option>
+                ))}
+              {serverId && !hv.servers.some((x) => x.id === serverId) && <option value={serverId}>Server {serverId} (not in the last sync)</option>}
+            </Select>
+          )}
         </Field>
         <div className="grid content-start gap-2 pt-6 text-[13.5px]">
           <label className="flex items-center gap-2">
@@ -1442,15 +1460,28 @@ function OrderModal({ customerId, pickCustomer, balancePaise, onClose }: { custo
   const templates = useQuery({ queryKey: ['billing', 'templates', planId], queryFn: () => api.get<{ osid: string; name: string }[]>(`${B}/plans/${planId}/templates`), enabled: !!planId });
   const [hostname, setHostname] = useState('');
   const [osId, setOsId] = useState('');
+  const [serverId, setServerId] = useState('');
   const [password, setPassword] = useState('');
   const [key] = useState(newKey);
+  const staffOrder = !!(pickCustomer || customerId);
+  const hv = useQuery({ queryKey: ['billing', 'hv-plans'], queryFn: () => api.get<HvT[]>(`${B}/hypervisor-plans`), enabled: staffOrder });
   const list = (plans.data ?? []).filter((p) => p.active !== false && p.orderable);
+  // With a single plan on sale there is nothing to choose: select it.
+  const only = list.length === 1 ? list[0]!.id : null;
+  useEffect(() => {
+    if (!planId && only) setPlanId(only);
+  }, [planId, only]);
   const plan = list.find((p) => p.id === planId);
+  const servers = (hv.data?.find((h) => h.id === plan?.integrationId)?.servers ?? []).filter((x) => !x.missing);
+  const planServer = plan?.serverId ? (servers.find((x) => x.id === plan.serverId)?.name ?? `server ${plan.serverId}`) : null;
   const price = plan ? (prices.data?.find((x) => x.planId === plan.id)?.clientPricePaise ?? plan.pricePaise) : null;
   const balance = account.data?.balancePaise ?? balancePaise ?? null;
   const pwOk = password.length >= 10 && /[a-z]/.test(password) && /[A-Z]/.test(password) && /\d/.test(password);
   const hostOk = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i.test(hostname);
-  const m = useMutation({ mutationFn: () => api.post(`${B}/orders`, { customerId: cid || undefined, planId, hostname, osId, password }, { 'Idempotency-Key': key }), onSuccess: () => void qc.invalidateQueries({ queryKey: ['billing'] }) });
+  const m = useMutation({
+    mutationFn: () => api.post(`${B}/orders`, { customerId: cid || undefined, planId, hostname, osId, password, serverId: serverId || null }, { 'Idempotency-Key': key }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['billing'] }),
+  });
   const gen = () => {
     const a = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     const r = crypto.getRandomValues(new Uint32Array(16));
@@ -1510,6 +1541,7 @@ function OrderModal({ customerId, pickCustomer, balancePaise, onClose }: { custo
                       onClick={() => {
                         setPlanId(p.id);
                         setOsId('');
+                        setServerId('');
                       }}
                       className={cx('rounded-xl border px-3 py-2.5 text-left transition', planId === p.id ? 'border-accent bg-accent/10' : 'border-rule hover:border-accent/50')}
                     >
@@ -1541,6 +1573,25 @@ function OrderModal({ customerId, pickCustomer, balancePaise, onClose }: { custo
                 </Select>
               )}
             </Field>
+            {staffOrder && (
+              <div className="sm:col-span-2">
+                <Field label="Create on server" hint={serverId ? 'The VPS is created on this server.' : planServer ? `The plan's server (${planServer}).` : 'Virtualizor picks the server.'}>
+                  {(id) => (
+                    <Select id={id} value={serverId} onChange={(e) => setServerId(e.target.value)} disabled={!planId}>
+                      <option value="">{planServer ? `Plan default: ${planServer}` : 'Let Virtualizor choose'}</option>
+                      {servers.map((x) => (
+                        <option key={x.id} value={x.id}>
+                          {x.name}
+                          {x.memTotalBytes ? ` · ${gib(Math.max(0, x.memTotalBytes - (x.memUsedBytes ?? 0)))} RAM free` : ''}
+                          {` · ${x.vms} VPS${x.vms === 1 ? '' : 's'}`}
+                          {x.status && x.status !== 'online' ? ` · ${x.status}` : ''}
+                        </option>
+                      ))}
+                    </Select>
+                  )}
+                </Field>
+              </div>
+            )}
             <div className="sm:col-span-2">
               <Field label="Root password" hint="At least 10 characters with a capital letter, a small letter and a digit. Sent to Virtualizor once, then deleted." error={password && !pwOk ? 'Too weak' : undefined}>
                 {(id) => (

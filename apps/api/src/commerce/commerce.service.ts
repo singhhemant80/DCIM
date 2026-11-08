@@ -136,6 +136,11 @@ export class CommerceService {
       .from(virtIntegrations)
       .where(and(eq(virtIntegrations.orgId, p.orgId), eq(virtIntegrations.kind, 'virtualizor')));
     const offered = await this.db.select({ integrationId: vpsPlans.integrationId, ext: vpsPlans.externalPlanId, id: vpsPlans.id }).from(vpsPlans).where(eq(vpsPlans.orgId, p.orgId));
+    // The servers (nodes) of each panel, to choose where a plan's VPSs are created.
+    const hosts = await this.db.execute<{ integration_id: string; external_id: string; name: string; status: string | null; cpus: number | null; mem_used: number | null; mem_total: number | null; missing: boolean; vms: number }>(sql`
+      select h.integration_id, h.external_id, h.name, h.status, h.cpus, h.mem_used, h.mem_total, h.missing_since is not null as missing,
+             (select count(*) from virt_guests g where g.host_id = h.id and g.missing_since is null)::int as vms
+        from virt_hosts h where h.org_id = ${p.orgId} order by h.name`);
     return ints.map((i) => ({
       id: i.id,
       name: i.name,
@@ -143,6 +148,18 @@ export class CommerceService {
       actionsEnabled: i.actionsEnabled,
       lastSyncAt: i.lastSyncAt,
       synced: i.plans !== null,
+      servers: hosts.rows
+        .filter((h) => h.integration_id === i.id)
+        .map((h) => ({
+          id: h.external_id,
+          name: h.name,
+          status: h.status,
+          cpus: h.cpus,
+          memUsedBytes: h.mem_used === null ? null : Number(h.mem_used),
+          memTotalBytes: h.mem_total === null ? null : Number(h.mem_total),
+          vms: h.vms,
+          missing: h.missing,
+        })),
       templates: (i.templates ?? []).map((t) => ({ osid: String(t.osid), name: t.name, type: t.type })),
       plans: (i.plans ?? []).map((x) => ({ ...x, offeredAs: offered.find((o) => o.integrationId === i.id && o.ext === x.id)?.id ?? null })),
     }));
@@ -590,6 +607,13 @@ export class CommerceService {
     if (!r || (p.userType === 'customer' && !r.plan.visibleToCustomers)) throw NF('Plan');
     if (!r.plan.active) throw new ConflictException({ error: 'plan_inactive', message: 'This plan is not on sale' });
     if (!r.i.enabled || !r.i.actionsEnabled) throw new ConflictException({ error: 'actions_disabled', message: 'VPS creation is not enabled for this hypervisor (turn on VM actions for the integration)' });
+    // Where to create it: chosen by staff for this order, else the plan's server, else Virtualizor decides.
+    if (input.serverId && p.userType !== 'staff') throw forbidden();
+    const serverId = input.serverId || r.plan.serverId || null;
+    if (input.serverId) {
+      const h = await this.db.execute(sql`select 1 from virt_hosts where integration_id = ${r.i.id} and external_id = ${input.serverId} and missing_since is null`);
+      if (!h.rows.length) throw new BadRequestException({ error: 'unknown_server', message: 'That server is not in the last Virtualizor sync' });
+    }
     const os = CommerceService.templatesFor(r.plan, r.i.templates ?? [], r.i.plans).find((t) => t.osid === input.osId);
     if (!os) throw new BadRequestException({ error: 'invalid_template', message: 'That OS is not offered with this plan' });
     const settings = await loadSettings(this.db, p.orgId);
@@ -641,7 +665,7 @@ export class CommerceService {
             planId: r.plan.externalPlanId,
             planName: r.plan.name,
             plan: { virt: specs.virt ?? null, ramMb: specs.ramMb ?? null, diskGb: specs.diskGb ?? null, cores: specs.cores ?? null, bandwidthGb: specs.bandwidthGb ?? null, ips: specs.ips ?? null, ips6: specs.ips6 ?? null },
-            serverId: r.plan.serverId,
+            serverId,
             osid: input.osId,
             osName: os.name,
             hostname: input.hostname,

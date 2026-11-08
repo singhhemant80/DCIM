@@ -138,6 +138,12 @@ describe('orders', () => {
   it('validates the OS and the password', async () => {
     expect((await acme.post(`${B}/orders`, { planId: ids.plan, hostname: 'vps1.acme.example', osId: '448', password: ROOT_PW })).status).toBe(400);
     expect((await acme.post(`${B}/orders`, { planId: ids.plan, hostname: 'vps1.acme.example', osId: '270', password: 'short' })).status).toBe(400);
+    // Choosing the server is for staff; an unknown server is refused.
+    expect((await acme.post(`${B}/orders`, { planId: ids.plan, hostname: 'vps1.acme.example', osId: '270', password: ROOT_PW, serverId: '1' })).status).toBe(403);
+    expect((await admin.post(`${B}/orders`, { customerId: ctx.customers.acme, planId: ids.plan, hostname: 'vps1.acme.example', osId: '270', password: ROOT_PW, serverId: '999' })).status).toBe(400);
+    const hv = await ok(admin.get(`${B}/hypervisor-plans`));
+    expect(hv[0].servers.length).toBeGreaterThan(0);
+    expect(hv[0].servers[0]).toMatchObject({ id: expect.any(String), name: expect.any(String), vms: expect.any(Number) });
   });
 
   it('takes price + GST from the wallet, creates the VPS, and invoices it with IGST', async () => {

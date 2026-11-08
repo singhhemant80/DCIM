@@ -257,6 +257,8 @@ export const vpsOrderSchema = z.object({
   planId: z.string().uuid(),
   hostname,
   osId: z.string().trim().min(1).max(20),
+  /** Staff only: the Virtualizor server (serid) to create it on; empty = the plan's server, or Virtualizor chooses. */
+  serverId: z.string().trim().max(20).regex(/^\d*$/, 'A Virtualizor server id').nullish(),
   password: z.string().min(10, 'At least 10 characters').max(64).regex(/[a-z]/, 'Needs a lower-case letter').regex(/[A-Z]/, 'Needs a capital letter').regex(/\d/, 'Needs a digit'),
 });
 export type VpsOrderInput = z.infer<typeof vpsOrderSchema>;
