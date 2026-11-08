@@ -1,4 +1,4 @@
-import type { GuestAction, VirtTemplate } from '@crapplet/shared';
+import type { GuestAction, VirtPlan, VirtTemplate } from '@crapplet/shared';
 import type { AdapterTarget } from '../../network/discovery/types';
 import { DeviceHttpError, deviceRequest } from '../adapters/http';
 import { createHash, randomInt } from 'node:crypto';
@@ -61,7 +61,11 @@ export interface VirtClient {
   test(): Promise<string>;
   /** `warning`: the sync worked but part of the data could not be read (shown on the integration). */
   /** `templates`: OS templates the hypervisor can install, where it offers reinstalls (undefined: not read). */
-  inventory(): Promise<{ hosts: VirtHostInfo[]; guests: VirtGuestInfo[]; warning?: string; templates?: VirtTemplate[] }>;
+  inventory(): Promise<{ hosts: VirtHostInfo[]; guests: VirtGuestInfo[]; warning?: string; templates?: VirtTemplate[]; plans?: VirtPlan[] }>;
+  /** Create a VPS from a plan (Virtualizor "Create VPS"); returns the new VPS id. Not safe to send twice. */
+  createVps?(input: VpsCreateInput): Promise<{ vpsid: string }>;
+  /** Administrative (billing) suspension, not a pause: Virtualizor act=vs&suspend / unsuspend. */
+  billingSuspend?(g: GuestRef, suspend: boolean): Promise<void>;
   guestStatus(g: { externalId: string; hostExternalId: string | null; virtType: string | null }): Promise<string>;
   /** Seconds since the guest started, where the hypervisor reports it (used to verify reboots). */
   guestUptime?(g: { externalId: string; hostExternalId: string | null; virtType: string | null }): Promise<number | null>;
@@ -78,6 +82,17 @@ export interface VirtClient {
   guestOs?(g: GuestRef): Promise<{ osId: string | null; osName: string | null; status: string }>;
 }
 
+export interface VpsCreateInput {
+  planId: string;
+  plan: Pick<VirtPlan, 'virt' | 'ramMb' | 'diskGb' | 'cores' | 'bandwidthGb' | 'ips' | 'ips6'>;
+  serverId: string | null;
+  osid: string;
+  hostname: string;
+  password: string;
+  userEmail: string;
+  userPass: string;
+}
+
 type Row = Record<string, unknown>;
 const n = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null);
 const s = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : typeof v === 'number' ? String(v) : null);
@@ -86,6 +101,9 @@ function target(url: string, verifyTls: boolean, timeoutMs = 20_000): AdapterTar
   const u = new URL(url);
   return { host: u.hostname, port: u.port ? Number(u.port) : null, params: { scheme: u.protocol === 'http:' ? 'http' : 'https', verifyTls, timeoutMs }, secret: {} };
 }
+/** Virtualizor answered and refused a create request (an error message, or the credentials were not accepted): nothing was created. */
+export class VirtRefused extends PermanentError {}
+
 const fail = (e: unknown): never => {
   if (e instanceof DeviceHttpError && (e.status === 401 || e.status === 403)) throw new PermanentError(e.message);
   throw e;
@@ -354,6 +372,29 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       } catch {
         templates = undefined;
       }
+      // Plans (Virtualizor's Plans call), for offering them for sale; best effort like the templates.
+      let plans: VirtPlan[] | undefined;
+      try {
+        const r = await call({ act: 'plans', page: '1', reslen: '1000' });
+        const list = (r.plans && typeof r.plans === 'object' ? r.plans : {}) as Record<string, Row>;
+        plans = Object.entries(list)
+          .map(([key, x]) => ({
+            id: s(x.plid) ?? key,
+            name: s(x.plan_name) ?? `Plan ${key}`,
+            virt: s(x.virt),
+            ramMb: n(x.ram),
+            diskGb: n(x.space),
+            cores: n(x.cores),
+            bandwidthGb: n(x.bandwidth),
+            ips: n(x.ips),
+            ips6: n(x.ips6),
+            // Virtualizor gives the port speed in KB/s.
+            speedMbps: n(x.network_speed) ? Math.round((n(x.network_speed)! * 8) / 1000) : null,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+      } catch {
+        plans = undefined;
+      }
       const loads = await hostLoads(Object.values(servers).map((x) => String(x.serid)));
       return {
         hosts: Object.values(servers).map((x) => ({
@@ -384,9 +425,58 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         })),
         warning,
         templates,
+        plans,
       };
     },
     hostLoads,
+    /**
+     * Virtualizor "Create VPS" (act=addvs), per its admin API and SDK: the plan
+     * id (plid) and its resources, the OS template, hostname, root password and
+     * the owner (user_email; Virtualizor creates the user with user_pass when it
+     * doesn't exist). The server is the plan's (slave_server) or chosen by
+     * Virtualizor (node_select). Passwords go in the POST body only. Not
+     * checked against a live panel.
+     */
+    async createVps(input) {
+      if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');
+      const p = input.plan;
+      const post: Record<string, string> = {
+        addvps: '1',
+        virt: p.virt ?? 'kvm',
+        plid: input.planId,
+        osid: input.osid,
+        hostname: input.hostname,
+        rootpass: input.password,
+        user_email: input.userEmail,
+        user_pass: input.userPass,
+        ...(input.serverId ? { slave_server: input.serverId } : { node_select: '1' }),
+        // The plan's resources, for panels that don't apply them from plid alone.
+        ...(p.ramMb !== null ? { ram: String(p.ramMb) } : {}),
+        ...(p.diskGb !== null ? { space: String(p.diskGb) } : {}),
+        ...(p.cores !== null ? { cores: String(p.cores) } : {}),
+        ...(p.bandwidthGb !== null ? { bandwidth: String(p.bandwidthGb) } : {}),
+        num_ips: String(p.ips ?? 1),
+        ...(p.ips6 ? { num_ips6: String(p.ips6) } : {}),
+      };
+      let r: Row;
+      try {
+        r = await call({ act: 'addvs' }, post);
+      } catch (e) {
+        const msg = (e as Error)?.message ?? '';
+        // Only an answer from the panel proves nothing was created; a timeout or a dropped connection does not.
+        if (/^Virtualizor(: | refused | did not accept | redirects )/.test(msg)) throw new VirtRefused(msg);
+        throw e;
+      }
+      const info = (r.newvs ?? r.vs_info ?? (r.done && typeof r.done === 'object' ? r.done : null) ?? {}) as Row;
+      const vpsid = s(info.vpsid) ?? s(r.vpsid);
+      if (!vpsid || !/^\d+$/.test(vpsid)) throw new PermanentError('Virtualizor did not return the new VPS id; check the VPS list in the panel before trying again');
+      return { vpsid };
+    },
+    async billingSuspend(g, suspend) {
+      if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');
+      if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
+      await call({ act: 'vs', ...(suspend ? { suspend: g.externalId } : { unsuspend: g.externalId }) });
+    },
     /**
      * VPS Status (act=vs&vs_status=<id>): status, used_cpu (%), used_ram / ram
      * (MB), used_disk / disk (GB), used_bandwidth / bandwidth (GB this month).

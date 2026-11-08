@@ -407,6 +407,20 @@ export const GUEST_ACTION_LABELS: Record<GuestAction, string> = { start: 'Start'
 
 export const guestActionSchema = z.object({ action: z.enum(GUEST_ACTIONS), confirm: z.string().trim().min(1).max(200) });
 /** An OS template the hypervisor can install (from the read-only sync). */
+/** A plan defined in the hypervisor (Virtualizor), as read by the sync. */
+export interface VirtPlan {
+  id: string;
+  name: string;
+  virt: string | null;
+  ramMb: number | null;
+  diskGb: number | null;
+  cores: number | null;
+  bandwidthGb: number | null;
+  ips: number | null;
+  ips6: number | null;
+  speedMbps: number | null;
+}
+
 export interface VirtTemplate {
   osid: number;
   name: string;

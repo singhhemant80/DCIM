@@ -39,6 +39,7 @@ import { WorkflowsPage } from './pages/Workflows';
 import { ReportsPage } from './pages/Reports';
 import { BillingPage } from './pages/Billing';
 import { MaintenancePage } from './pages/Maintenance';
+import { InvoicePage, ReceiptPage, WalletPage } from './pages/Wallet';
 
 /** Implemented sections. Every key here must be `available` in NAV_SECTIONS (checked by a test). */
 export const IMPLEMENTED: Record<string, ComponentType> = {
@@ -69,6 +70,7 @@ export const IMPLEMENTED: Record<string, ComponentType> = {
   workflows: WorkflowsPage,
   reports: ReportsPage,
   billing: BillingPage,
+  wallet: WalletPage,
   api: ApiIntegrationsPage,
 };
 
@@ -96,6 +98,8 @@ function AppRoutes() {
         {visible.has('customers') && <Route path="/customers/:id" element={<CustomerDetailPage />} />}
         {visible.has('virtualizor') && <Route path="/integrations/virtualizor/vms/:id" element={<VirtualMachinePage kind="virtualizor" />} />}
         {visible.has('proxmox') && <Route path="/integrations/proxmox/vms/:id" element={<VirtualMachinePage kind="proxmox" />} />}
+        {visible.has('wallet') && <Route path="/wallet/invoices/:id" element={<InvoicePage />} />}
+        {visible.has('wallet') && <Route path="/wallet/receipts/:id" element={<ReceiptPage />} />}
         <Route path="/account" element={<AccountPage />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />

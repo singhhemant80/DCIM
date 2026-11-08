@@ -271,6 +271,15 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 * These observations, BMC addresses and hypervisor node names are staff-only. Customers see their own server's hostname, brand and model, their VM's OS and size, and public reverse-DNS names.
 * MAC vendors come from the IEEE OUI registry bundled in the `oui-data` npm package (data only, no install scripts, pinned version).
 
+## Native billing (wallets, VPS orders, GST invoices)
+
+- Money is integers in paise. A wallet balance changes only in `commerce/ledger.ts`, under a row lock on the customer, together with a `wallet_transactions` row in the same transaction; charges never take a wallet below zero (staff corrections may, with a reason). The ledger is append-only and issued invoices cannot be changed or deleted (database triggers).
+- Invoice and receipt numbers come from a counter row locked by the same transaction, so a rolled-back charge gives its number back: no gaps.
+- Client users act on their own account only; their customer id comes from the session, never from the request. Staff need `billing.read` to see and `billing.write` (dangerous) to add funds, set prices or plans and change renewals. The NOC role does not get `billing.read`.
+- The VPS root password and the random password for the Virtualizor user are stored only in the job's encrypted secret (AAD bound to the job), sent in the POST body, scrubbed from error messages and deleted once sent. They never reach logs, the audit log or any response.
+- Ordering and topping up honour an Idempotency-Key. The Create VPS request is never repeated automatically: an order is refunded only when Virtualizor answered with an error or the request was never sent; otherwise it waits for a person ("needs review").
+- Hypervisor calls (create, suspend, unsuspend) happen outside the money transactions. Suspension for non-payment is Virtualizor's administrative suspend; nothing is deleted, and no network or routing change is made.
+
 ## Dependency advisories
 
 `npm audit --omit=dev` reports only the `js-yaml` advisory below (Swagger UI, disabled in production). The remaining advisories are in development and test tooling (`vitest` 2, `esbuild`, `tinypool`, `drizzle-kit`'s bundled `esbuild`) that never runs in production installs; they are scheduled for the next tooling upgrade.

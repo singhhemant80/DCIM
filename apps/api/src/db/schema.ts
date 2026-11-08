@@ -86,6 +86,14 @@ export const customers = pgTable(
     /** Internal notes: staff-only, never returned to customer users. */
     notes: text('notes'),
     status: customerStatusEnum('status').notNull().default('active'),
+    /** Billing profile for GST invoices: legal name, GSTIN, address and state (place of supply). */
+    legalName: text('legal_name'),
+    gstin: text('gstin'),
+    billingAddress: text('billing_address'),
+    stateCode: text('state_code'),
+    billingEmail: text('billing_email'),
+    /** Prepaid wallet balance in paise; changed only together with a wallet_transactions row, under a row lock. */
+    walletBalancePaise: bigint('wallet_balance_paise', { mode: 'number' }).notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -1989,7 +1997,7 @@ export type PowerTariff = typeof powerTariffs.$inferSelect;
 
 /* ============================================================== Phase 6: provisioning and virtualization */
 
-export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process', 'guest_reinstall']);
+export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process', 'guest_reinstall', 'guest_create']);
 export const jobStatusEnum = pgEnum('job_status', ['queued', 'running', 'waiting', 'verifying', 'completed', 'failed', 'cancelled', 'recovery']);
 export const stepStatusEnum = pgEnum('job_step_status', ['pending', 'running', 'done', 'failed', 'skipped']);
 export const bmcKindEnum = pgEnum('bmc_kind', ['redfish', 'ipmi']);
@@ -2302,6 +2310,11 @@ export const virtIntegrations = pgTable(
     lastError: text('last_error'),
     /** OS templates the hypervisor can install, from the last sync (Virtualizor). */
     templates: jsonb('templates').$type<{ osid: number; name: string; distro: string | null; type: string | null }[]>(),
+    /** Plans defined in the hypervisor, from the last sync (Virtualizor), for offering them for sale. */
+    plans:
+      jsonb('plans').$type<
+        { id: string; name: string; virt: string | null; ramMb: number | null; diskGb: number | null; cores: number | null; bandwidthGb: number | null; ips: number | null; ips6: number | null; speedMbps: number | null }[]
+      >(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -2773,6 +2786,205 @@ export const billingEvents = pgTable(
   (t) => [uniqueIndex('billing_events_event_uq').on(t.integrationId, t.eventId), index('billing_events_integration_idx').on(t.integrationId, t.id)],
 );
 
+/* ------------------------------------------------------------------ native billing (wallets, VPS orders, GST invoices) */
+
+/** The organization as the supplier on GST invoices, and billing rules. */
+export const billingSettings = pgTable('billing_settings', {
+  orgId: uuid('org_id')
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  legalName: text('legal_name').notNull(),
+  address: text('address').notNull(),
+  stateCode: text('state_code').notNull(),
+  gstin: text('gstin'),
+  pan: text('pan'),
+  sacCode: text('sac_code').notNull().default('998315'),
+  gstRateBp: integer('gst_rate_bp').notNull().default(1800),
+  invoicePrefix: text('invoice_prefix').notNull().default('INV'),
+  receiptPrefix: text('receipt_prefix').notNull().default('RCPT'),
+  graceDays: integer('grace_days').notNull().default(3),
+  email: text('email'),
+  phone: text('phone'),
+  bankDetails: text('bank_details'),
+  invoiceNotes: text('invoice_notes'),
+  updatedAt: updatedAt(),
+});
+
+/** Consecutive document numbers per series and financial year (taken under a row lock, so there are no gaps). */
+export const billingCounters = pgTable('billing_counters', { orgId: orgRef(), series: text('series').notNull(), fy: text('fy').notNull(), last: integer('last').notNull().default(0) }, (t) => [
+  primaryKey({ columns: [t.orgId, t.series, t.fy] }),
+]);
+
+/** A Virtualizor plan offered for sale, with its default monthly price (paise, before GST). */
+export const vpsPlans = pgTable(
+  'vps_plans',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    integrationId: uuid('integration_id')
+      .notNull()
+      .references(() => virtIntegrations.id, { onDelete: 'restrict' }),
+    externalPlanId: text('external_plan_id').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    /** As Virtualizor reports the plan (virt type, RAM, disk, cores, bandwidth, IPs), refreshed by the sync. */
+    specs: jsonb('specs').$type<Record<string, unknown>>().notNull().default({}),
+    pricePaise: bigint('price_paise', { mode: 'number' }).notNull(),
+    serverId: text('server_id'),
+    osIds: jsonb('os_ids').$type<string[]>().notNull().default([]),
+    active: boolean('active').notNull().default(true),
+    visibleToCustomers: boolean('visible_to_customers').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('vps_plans_ext_uq').on(t.integrationId, t.externalPlanId)],
+);
+
+/** A client's own monthly price for a plan (paise, before GST). */
+export const customerPlanPrices = pgTable(
+  'customer_plan_prices',
+  {
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => vpsPlans.id, { onDelete: 'cascade' }),
+    orgId: orgRef(),
+    pricePaise: bigint('price_paise', { mode: 'number' }).notNull(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.customerId, t.planId] })],
+);
+
+export const invoices = pgTable(
+  'invoices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    number: text('number').notNull(),
+    fy: text('fy').notNull(),
+    issuedAt: ts('issued_at').notNull(),
+    /** Supplier and recipient as they were when the invoice was issued. */
+    supplier: jsonb('supplier').$type<Record<string, unknown>>().notNull(),
+    recipient: jsonb('recipient').$type<Record<string, unknown>>().notNull(),
+    placeOfSupply: text('place_of_supply').notNull(),
+    lines: jsonb('lines').$type<{ description: string; sac: string; quantity: number; unitPaise: number; amountPaise: number; periodFrom?: string; periodTo?: string; subscriptionId?: string }[]>().notNull(),
+    taxablePaise: bigint('taxable_paise', { mode: 'number' }).notNull(),
+    gstRateBp: integer('gst_rate_bp').notNull(),
+    cgstPaise: bigint('cgst_paise', { mode: 'number' }).notNull(),
+    sgstPaise: bigint('sgst_paise', { mode: 'number' }).notNull(),
+    igstPaise: bigint('igst_paise', { mode: 'number' }).notNull(),
+    totalPaise: bigint('total_paise', { mode: 'number' }).notNull(),
+    /** Paid from the wallet when issued. */
+    status: text('status').notNull().default('paid'),
+    subscriptionId: uuid('subscription_id'),
+    orderId: uuid('order_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('invoices_org_number_uq').on(t.orgId, t.number), index('invoices_customer_idx').on(t.customerId, t.issuedAt)],
+);
+
+/** Every change to a wallet: credits (payments received), debits (orders, renewals), refunds and corrections. */
+export const walletTransactions = pgTable(
+  'wallet_transactions',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    at: createdAt(),
+    /** credit | debit | refund | adjustment */
+    kind: text('kind').notNull(),
+    /** Signed: + into the wallet, − out of it. */
+    amountPaise: bigint('amount_paise', { mode: 'number' }).notNull(),
+    balanceAfterPaise: bigint('balance_after_paise', { mode: 'number' }).notNull(),
+    method: text('method'),
+    reference: text('reference'),
+    description: text('description').notNull(),
+    /** Receipt voucher number for a payment received. */
+    receiptNumber: text('receipt_number'),
+    invoiceId: uuid('invoice_id').references(() => invoices.id, { onDelete: 'set null' }),
+    orderId: uuid('order_id'),
+    subscriptionId: uuid('subscription_id'),
+    actorLabel: text('actor_label'),
+    /** Idempotency-Key of the request that added the funds (a repeated request is not credited twice). */
+    idempotencyKey: text('idempotency_key'),
+  },
+  (t) => [index('wallet_tx_customer_idx').on(t.customerId, t.at), uniqueIndex('wallet_tx_receipt_uq').on(t.orgId, t.receiptNumber), uniqueIndex('wallet_tx_idem_uq').on(t.orgId, t.customerId, t.idempotencyKey)],
+);
+
+/** A VPS order: paid from the wallet when placed, invoiced when the VPS exists, refunded when creation fails. */
+export const vpsOrders = pgTable(
+  'vps_orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => vpsPlans.id, { onDelete: 'restrict' }),
+    hostname: text('hostname').notNull(),
+    osId: text('os_id').notNull(),
+    osName: text('os_name'),
+    pricePaise: bigint('price_paise', { mode: 'number' }).notNull(),
+    taxPaise: bigint('tax_paise', { mode: 'number' }).notNull(),
+    totalPaise: bigint('total_paise', { mode: 'number' }).notNull(),
+    /** GST as charged when the order was placed (the invoice repeats it). */
+    gstRateBp: integer('gst_rate_bp').notNull(),
+    placeOfSupply: text('place_of_supply').notNull(),
+    /** provisioning | active | refunded | review */
+    status: text('status').notNull().default('provisioning'),
+    jobId: uuid('job_id'),
+    guestId: uuid('guest_id'),
+    invoiceId: uuid('invoice_id'),
+    subscriptionId: uuid('subscription_id'),
+    error: text('error'),
+    placedBy: text('placed_by'),
+    byCustomer: boolean('by_customer').notNull().default(false),
+    idempotencyKey: text('idempotency_key'),
+    createdAt: createdAt(),
+    settledAt: ts('settled_at'),
+  },
+  (t) => [index('vps_orders_customer_idx').on(t.customerId, t.createdAt), uniqueIndex('vps_orders_idem_uq').on(t.orgId, t.customerId, t.idempotencyKey), index('vps_orders_status_idx').on(t.status)],
+);
+
+/** A recurring monthly charge for a VPS, renewed from the wallet. */
+export const subscriptions = pgTable(
+  'subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    planId: uuid('plan_id').references(() => vpsPlans.id, { onDelete: 'set null' }),
+    guestId: uuid('guest_id').references(() => virtGuests.id, { onDelete: 'set null' }),
+    serviceId: uuid('service_id').references(() => services.id, { onDelete: 'set null' }),
+    name: text('name').notNull(),
+    pricePaise: bigint('price_paise', { mode: 'number' }).notNull(),
+    /** active | overdue | suspended | cancelled */
+    status: text('status').notNull().default('active'),
+    periodStart: ts('period_start').notNull(),
+    nextDueAt: ts('next_due_at').notNull(),
+    overdueSince: ts('overdue_since'),
+    suspendedAt: ts('suspended_at'),
+    cancelledAt: ts('cancelled_at'),
+    /** Last automatic action that failed (e.g. Virtualizor could not suspend), shown to staff. */
+    lastError: text('last_error'),
+    orderId: uuid('order_id'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('subscriptions_due_idx').on(t.status, t.nextDueAt), index('subscriptions_customer_idx').on(t.customerId)],
+);
+
 export const billingReconciliations = pgTable('billing_reconciliations', {
   id: uuid('id').primaryKey().defaultRandom(),
   integrationId: uuid('integration_id')
@@ -2908,3 +3120,9 @@ export type ApiKey = typeof apiKeys.$inferSelect;
 export type Workflow = typeof workflows.$inferSelect;
 export type WorkflowRun = typeof workflowRuns.$inferSelect;
 export type BillingIntegration = typeof billingIntegrations.$inferSelect;
+
+export type BillingSetting = typeof billingSettings.$inferSelect;
+export type VpsPlan = typeof vpsPlans.$inferSelect;
+export type Invoice = typeof invoices.$inferSelect;
+export type VpsOrder = typeof vpsOrders.$inferSelect;
+export type Subscription = typeof subscriptions.$inferSelect;

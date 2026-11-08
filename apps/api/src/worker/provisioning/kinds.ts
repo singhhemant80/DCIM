@@ -14,7 +14,7 @@ import { readPxeStatus } from '../pxe/desired';
 import { redact } from '../processor';
 import { PermanentError, type EngineDeps, type KindDef, type StepContext, type StepDef } from './engine';
 import { ipmiControl, redfishControl, type BmcControl } from './bmc';
-import { proxmoxClient, virtualizorClient, type VirtClient } from './virt';
+import { proxmoxClient, virtualizorClient, VirtRefused, type VirtClient, type VpsCreateInput } from './virt';
 import { recordGuestAddresses, type SyncedGuest } from './guest-ips';
 
 export interface ProvisioningDeps extends EngineDeps {
@@ -738,7 +738,112 @@ export const guestReinstallKind: KindDef = {
   },
 };
 
+/**
+ * Create a VPS from a Virtualizor plan (a paid order). The request step is
+ * never repeated automatically (a second request would create a second VPS);
+ * an interruption sends the job to recovery for a person to check the panel.
+ * The root password and the panel user's password live only in the job's
+ * encrypted secret and are deleted once sent. Verified when the next
+ * inventory sync shows the new VPS; it is then assigned to the client, with
+ * its addresses in IPAM.
+ */
+export const guestCreateKind: KindDef = {
+  steps: (job) => [
+    {
+      name: 'Check the hypervisor',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client } = await integrationOf(ctx);
+        if (!client.createVps) throw new PermanentError('This hypervisor does not offer VPS creation from NexoraDC');
+        return { done: true, detail: `Plan ${String(job.params.planName ?? job.params.planId)} on ${String(job.params.integration ?? 'the hypervisor')}` };
+      },
+    },
+    {
+      name: `Create ${String(job.params.hostname ?? 'the VPS')}`,
+      safeToRepeat: false,
+      run: async (ctx) => {
+        const { client } = await integrationOf(ctx);
+        if (!ctx.job.secretEnc) throw new PermanentError('The passwords are no longer stored for this job; place the order again');
+        const sec = JSON.parse(D(ctx).secrets.decrypt(ctx.job.secretEnc, jobContext(ctx.job.orgId, ctx.job.id))) as { password: string; userPass: string };
+        const pr = ctx.job.params;
+        let vpsid: string;
+        // Recorded before the request: from here on, a failure may have left a VPS behind (the order is then reviewed, not refunded).
+        ctx.state.createSent = true;
+        await ctx.checkpoint();
+        try {
+          ({ vpsid } = await client.createVps!({
+            planId: String(pr.planId),
+            plan: (pr.plan ?? {}) as VpsCreateInput['plan'],
+            serverId: (pr.serverId as string | null) ?? null,
+            osid: String(pr.osid),
+            hostname: String(pr.hostname),
+            password: sec.password,
+            userEmail: String(pr.userEmail),
+            userPass: sec.userPass,
+          }));
+        } catch (e) {
+          const msg = redact((e as Error)?.message || 'Create VPS failed', { password: sec.password, userPass: sec.userPass });
+          if (e instanceof VirtRefused) {
+            // Virtualizor answered with an error: nothing was created, so the order can be refunded.
+            ctx.state.refused = true;
+            throw new PermanentError(msg);
+          }
+          // No clear answer (timeout, connection dropped, no VPS id): it may exist. Not repeated; a person checks the panel.
+          throw new PermanentError(`${msg}. The VPS may have been created: check the VPS list in Virtualizor`);
+        }
+        ctx.state.vpsid = vpsid;
+        await D(ctx).db.update(provisioningJobs).set({ secretEnc: null }).where(eq(provisioningJobs.id, ctx.job.id));
+        ctx.job.secretEnc = null;
+        return { done: true, detail: `Virtualizor created VPS ${vpsid}` };
+      },
+    },
+    {
+      name: 'Find the VPS in inventory',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const deps = D(ctx);
+        const integrationId = String(ctx.job.params.integrationId);
+        const vpsid = String(ctx.state.vpsid);
+        ctx.state.findFrom ??= ctx.now().toISOString();
+        await syncDueIntegrations(deps, { force: integrationId });
+        const [g] = await deps.db
+          .select()
+          .from(virtGuests)
+          .where(sql`${virtGuests.integrationId} = ${integrationId} and ${virtGuests.externalId} = ${vpsid}`);
+        if (g) {
+          const customerId = (ctx.job.params.customerId as string | null) ?? null;
+          await deps.db.transaction(async (tx) => {
+            await tx.update(virtGuests).set({ customerId }).where(eq(virtGuests.id, g.id));
+            // The addresses the sync recorded for it (without a customer) go to the client too.
+            if (customerId) await tx.execute(sql`update ip_addresses set customer_id = ${customerId}, updated_at = now() where guest_id = ${g.id} and source = 'hypervisor' and customer_id is null and status <> 'released'`);
+            await tx.update(provisioningJobs).set({ guestId: g.id }).where(eq(provisioningJobs.id, ctx.job.id));
+          });
+          ctx.job.guestId = g.id;
+          ctx.state.guestId = g.id;
+          return { done: true, detail: `VPS ${vpsid} (${g.name}) is in inventory and assigned to the client` };
+        }
+        if (ctx.now().getTime() - new Date(String(ctx.state.findFrom)).getTime() > 15 * 60_000) throw new PermanentError(`Virtualizor created VPS ${vpsid}, but the inventory sync has not shown it for 15 minutes; check the integration`);
+        return { wait: poll(ctx, 20_000), status: 'verifying', detail: `Waiting for VPS ${vpsid} to appear in the sync` };
+      },
+    },
+  ],
+  async onCompleted(ctx) {
+    return { verified: true, vpsid: ctx.state.vpsid, guestId: ctx.state.guestId };
+  },
+};
+
+async function integrationOf(ctx: StepContext) {
+  const [i] = await D(ctx)
+    .db.select()
+    .from(virtIntegrations)
+    .where(eq(virtIntegrations.id, String(ctx.job.params.integrationId)));
+  if (!i || !i.enabled) throw new PermanentError('The hypervisor integration is disabled or deleted');
+  if (!i.actionsEnabled) throw new PermanentError('VM actions are off for this hypervisor integration');
+  return { i, client: virtClientFor(D(ctx), i) };
+}
+
 export const PROVISIONING_KINDS: Record<string, KindDef> = {
+  guest_create: guestCreateKind,
   power_action: powerActionKind,
   os_install: osInstallKind,
   image_verify: imageVerifyKind,
@@ -793,8 +898,12 @@ export async function syncDueIntegrations(deps: ProvisioningDeps, opts: { force?
         await tx.execute(sql`update virt_hosts set missing_since = coalesce(missing_since, now()) where integration_id = ${i.id} and (last_seen_at is null or last_seen_at < ${started.toISOString()}::timestamptz)`);
         await tx
           .update(virtIntegrations)
-          .set({ lastSyncAt: started, lastSyncOk: true, lastError: inv.warning?.slice(0, 500) ?? null, ...(inv.templates ? { templates: inv.templates } : {}) })
+          .set({ lastSyncAt: started, lastSyncOk: true, lastError: inv.warning?.slice(0, 500) ?? null, ...(inv.templates ? { templates: inv.templates } : {}), ...(inv.plans ? { plans: inv.plans } : {}) })
           .where(eq(virtIntegrations.id, i.id));
+        // Plans on sale keep the resources Virtualizor reports for them.
+        if (inv.plans?.length)
+          await tx.execute(sql`update vps_plans v set specs = x.p from jsonb_array_elements(${JSON.stringify(inv.plans)}::jsonb) as x(p)
+                                where v.integration_id = ${i.id} and v.external_plan_id = x.p->>'id' and v.specs is distinct from x.p`);
       });
     } catch (e) {
       await deps.db

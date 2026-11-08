@@ -1,0 +1,2 @@
+ALTER TABLE "wallet_transactions" ADD COLUMN "idempotency_key" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "wallet_tx_idem_uq" ON "wallet_transactions" USING btree ("org_id","customer_id","idempotency_key");

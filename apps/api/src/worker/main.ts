@@ -40,6 +40,7 @@ import { createJobLoop } from './provisioning/engine';
 import { deliverWebhooks, dispatchEvents, runWorkflows, type AutomationDeps } from './automation/dispatch';
 import { runReportSchedules } from './automation/reports';
 import { PROVISIONING_KINDS, syncDueIntegrations, type ProvisioningDeps } from './provisioning/kinds';
+import { runBillingCycle } from './billing/cycle';
 
 /**
  * Background worker, a separate process from the API so that device and DNS
@@ -190,6 +191,7 @@ async function main() {
     }),
     every('provisioning', 2_000, createJobLoop(provisioning, Math.max(1, Math.min(32, Number(process.env.PROVISIONING_CONCURRENCY ?? 4) || 4)))),
     every('virt-sync', 30_000, () => syncDueIntegrations(provisioning)),
+    every('billing', 60_000, () => runBillingCycle(provisioning).then(() => undefined)),
     // Node CPU / memory every 5 s while someone has a hypervisor page open (nothing stored).
     every('virt-live', 5_000, createVirtLiveLoop({ provisioning, redis: pub, logger })),
     // RDP / SSH reachability of running VMs (TCP handshake only) every 5 s while a hypervisor page is open.

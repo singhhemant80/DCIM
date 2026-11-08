@@ -76,6 +76,10 @@ export const PERMISSIONS = [
   p('tickets.read', 'View tickets and remote-hands requests', 'Support', false),
   p('tickets.write', 'Create and update tickets', 'Support', false),
   p('billing.manage', 'Manage billing integrations', 'Billing', true, true),
+  p('billing.read', 'View wallets, invoices, plans and prices', 'Billing'),
+  p('billing.write', 'Add funds, set prices and plans, change subscriptions', 'Billing', true, true),
+  // Customers can order for their own account, paid from their own wallet.
+  p('orders.place', 'Order VPS from the wallet', 'Billing', false),
   p('reports.read', 'View and export reports', 'Reports', false),
   p('workflows.manage', 'Manage automation workflows', 'Automation', true, true),
 ] as const satisfies readonly PermissionDef[];

@@ -14,3 +14,4 @@ export * from './hardware';
 export * from './console';
 export * from './install-templates';
 export * from './routing';
+export * from './billing';

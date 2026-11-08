@@ -15,6 +15,7 @@ import { CustomerEquipment } from './Hardware';
 import { CustomerForm } from './Customers';
 import { TopIps } from '../components/TopIps';
 import { Button, Chip, ErrorNote, Loading, Modal, PageHeader, Panel, Table } from '../components/ui';
+import { WalletSummaryPanel } from './Wallet';
 
 interface SummaryT {
   devices: number;
@@ -186,6 +187,8 @@ export function CustomerDetailPage() {
             </div>
           )}
         </Panel>
+
+        {can('billing.read') && <WalletSummaryPanel customerId={id!} />}
 
         {can('dcim.read') && <CustomerEquipment embedded customerId={id} onIds={setDeviceIds} />}
 

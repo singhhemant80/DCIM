@@ -297,6 +297,10 @@ export interface MockVirtualizor {
   requests: { act: string | null; params: Record<string, string> }[];
   /** Make the VPS Status call fail (to test that statuses stay unknown and the reason is shown). */
   failStatus: boolean;
+  /** Create VPS requests as received (POST bodies). */
+  creates: { query: Record<string, string>; body: Record<string, string> }[];
+  /** Make Create VPS fail with this error (e.g. no free IPs). */
+  failCreate: string | null;
   close: () => Promise<void>;
 }
 
@@ -308,7 +312,7 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
   const requests: MockVirtualizor['requests'] = [];
   // eslint-disable-next-line prefer-const
   let server: http.Server;
-  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, loadReads: 0, close: () => closer(server)() };
+  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, loadReads: 0, creates: [], failCreate: null, close: () => closer(server)() };
   // Installed templates ("ostemplates"), as Virtualizor lists them; one for another virtualization type.
   const templates: Record<string, Record<string, string>> = {
     '270': { osid: '270', type: 'kvm', name: 'ubuntu-22.04-x86_64', filename: 'ubuntu-22.04-x86_64.img', distro: 'ubuntu' },
@@ -360,6 +364,26 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
       return send({ title: 'Manage Server', usage: { cpu: { percent: cpu, percent_free: 100 - cpu }, ram: { used: 196608, limit: 262144, free: 65536, percent: 75, percent_free: 25 } } });
     }
     if (q.act === 'ostemplates') return send({ title: 'OS Templates', ostemplates: templates });
+    // Plans as Virtualizor lists them (RAM in MB, disk and bandwidth in GB, speed in KB/s).
+    if (q.act === 'plans')
+      return send({
+        title: 'Plans',
+        plans: {
+          '3': { plid: '3', plan_name: 'KVM 2G', virt: 'kvm', ram: '2048', space: '40', cores: '2', bandwidth: '2000', ips: '1', ips6: '0', network_speed: '12800' },
+          '4': { plid: '4', plan_name: 'KVM 4G', virt: 'kvm', ram: '4096', space: '80', cores: '4', bandwidth: '4000', ips: '1', ips6: '1', network_speed: '128000' },
+        },
+      });
+    if (q.act === 'addvs') {
+      mock.creates.push({ query: rest, body });
+      if (req.method !== 'POST' || body.addvps !== '1') return send({ error: { addvps: 'Invalid request' } });
+      if (mock.failCreate) return send({ error: { ips: mock.failCreate } });
+      if (!templates[body.osid ?? '']) return send({ error: { osid: 'The OS template was not found' } });
+      if (!body.hostname || !body.rootpass || !body.user_email) return send({ error: { hostname: 'Missing fields' } });
+      const id = String(Math.max(...[...vps.keys()].map(Number)) + 1);
+      const ip = `203.0.113.${id}`;
+      vps.set(id, { serid: body.slave_server ?? '0', hostname: body.hostname, status: 1, suspended: 0, virt: body.virt ?? 'kvm', ips: [ip], osid: body.osid });
+      return send({ title: 'Create VPS', done: 1, newvs: { vpsid: id, ips: [ip] } });
+    }
     if (q.act === 'rebuild') {
       mock.rebuilds.push({ query: rest, body });
       const v = vps.get(body.vpsid ?? '');

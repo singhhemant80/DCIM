@@ -260,6 +260,20 @@
       "when": 1793643409531,
       "tag": "0036_ip_observations",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794111491162,
+      "tag": "0037_native_billing",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794111722125,
+      "tag": "0038_wallet_idempotency",
+      "breakpoints": true
     }
   ]
 }

@@ -65,6 +65,8 @@ import { ApiKeysService } from './automation/api-keys.service';
 import { AutomationService } from './automation/automation.service';
 import { BillingController, WhmcsModuleController } from './billing/billing.controller';
 import { BillingService } from './billing/billing.service';
+import { CommerceController } from './commerce/commerce.controller';
+import { CommerceService } from './commerce/commerce.service';
 import { ReportsController } from './reports/reports.controller';
 import { ReportsService } from './reports/reports.service';
 import { IncidentsController } from './incidents/incidents.controller';
@@ -140,6 +142,7 @@ export class AppModule {
         WebhooksController,
         WorkflowsController,
         BillingController,
+        CommerceController,
         WhmcsModuleController,
         ReportsController,
         IncidentsController,
@@ -192,6 +195,7 @@ export class AppModule {
         ApiKeysService,
         AutomationService,
         BillingService,
+        CommerceService,
         ReportsService,
         IncidentsService,
         // Order matters: rate limit → authenticate → authorize.

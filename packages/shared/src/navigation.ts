@@ -40,6 +40,16 @@ export const NAV_SECTIONS: readonly NavSection[] = [
   { key: 'proxmox', label: 'Proxmox', path: '/integrations/proxmox', group: 'Services', permission: 'services.read', status: 'available', phase: 6, summary: 'Proxmox VE node and VM synchronization.' },
   { key: 'virtualizor', label: 'Virtualizor', path: '/integrations/virtualizor', group: 'Services', permission: 'services.read', status: 'available', phase: 6, summary: 'Virtualizor service synchronization.' },
   { key: 'customers', label: 'Customers & Tenants', path: '/customers', group: 'Services', permission: 'customers.read', status: 'available', phase: 1, summary: 'Customer accounts that own services and portal users.' },
+  {
+    key: 'wallet',
+    label: 'Billing & Wallet',
+    path: '/wallet',
+    group: 'Services',
+    permission: 'services.read',
+    status: 'available',
+    phase: 9,
+    summary: 'VPS orders from Virtualizor plans, prepaid wallets, client prices, monthly renewals and GST invoices.',
+  },
   { key: 'orders', label: 'Orders & Services', path: '/services', group: 'Services', permission: 'services.read', status: 'available', phase: 7, summary: 'Customer services and their lifecycle.' },
   {
     key: 'health',

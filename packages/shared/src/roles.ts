@@ -39,7 +39,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDef[] = [
     name: 'NOC Engineer',
     description: 'Read-only infrastructure visibility plus alert handling. No control operations.',
     scope: 'staff',
-    permissions: [...readAll.filter((k) => !['users.read', 'roles.read', 'settings.read'].includes(k)), 'alerts.manage', 'tickets.write'],
+    permissions: [...readAll.filter((k) => !['users.read', 'roles.read', 'settings.read', 'billing.read'].includes(k)), 'alerts.manage', 'tickets.write'],
   },
   {
     key: 'dc_technician',
@@ -60,7 +60,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDef[] = [
     name: 'Customer Administrator',
     description: "Customer portal user who can control their own organization's services.",
     scope: 'customer',
-    permissions: ['dcim.read', 'network.read', 'monitoring.read', 'ipam.read', 'power.read', 'hardware.control', 'services.read', 'tickets.read', 'tickets.write', 'reports.read'],
+    permissions: ['dcim.read', 'network.read', 'monitoring.read', 'ipam.read', 'power.read', 'hardware.control', 'services.read', 'tickets.read', 'tickets.write', 'reports.read', 'orders.place'],
   },
   {
     key: 'customer_viewer',

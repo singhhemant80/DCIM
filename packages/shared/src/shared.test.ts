@@ -21,9 +21,9 @@ describe('permission catalog', () => {
     for (const s of NAV_SECTIONS) if (s.permission) expect(isPermission(s.permission)).toBe(true);
   });
 
-  it('defines all 27 required navigation sections plus Health with unique paths', () => {
-    expect(NAV_SECTIONS).toHaveLength(28);
-    expect(new Set(NAV_SECTIONS.map((s) => s.path)).size).toBe(28);
+  it('defines all 27 required navigation sections plus Health and Billing & Wallet with unique paths', () => {
+    expect(NAV_SECTIONS).toHaveLength(29);
+    expect(new Set(NAV_SECTIONS.map((s) => s.path)).size).toBe(29);
   });
 
   it('customer system roles hold no staff-only permissions', () => {
