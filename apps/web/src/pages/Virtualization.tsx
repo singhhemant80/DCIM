@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { GUEST_ACTIONS, GUEST_ACTION_LABELS, GUEST_SORTS, type GuestAction, type VirtTemplate } from '@crapplet/shared';
+import { GUEST_ACTIONS, GUEST_ACTION_LABELS, GUEST_SORTS, formatInr, type GuestAction, type VirtTemplate } from '@crapplet/shared';
 
 type GuestSort = (typeof GUEST_SORTS)[number];
 type TrafficRange = '24h' | '7d' | '30d';
@@ -600,14 +600,31 @@ export function ReinstallDialog({ guest, onClose, onQueued }: { guest: VirtGuest
   );
 }
 
-function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; integrations: IntegrationT[] | null; staff: boolean; nodeId: string; onNode: (id: string) => void }) {
+function Guests({
+  kind,
+  integrations,
+  staff,
+  nodeId,
+  onNode,
+  customer,
+  onCustomer,
+}: {
+  kind: Kind;
+  integrations: IntegrationT[] | null;
+  staff: boolean;
+  nodeId: string;
+  onNode: (id: string) => void;
+  customer: string;
+  onCustomer: (id: string) => void;
+}) {
   const { can, me } = useAuth();
   const canControl = can('hardware.control');
   const canAssign = staff && can('provisioning.execute');
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
-  const [customerFilter, setCustomerFilter] = useState('');
+  const customerFilter = customer;
+  const setCustomerFilter = onCustomer;
   const [virtType, setVirtType] = useState('');
   const [osName, setOsName] = useState('');
   const [sort, setSort] = useState<GuestSort>('name');
@@ -993,6 +1010,118 @@ function Guests({ kind, integrations, staff, nodeId, onNode }: { kind: Kind; int
   );
 }
 
+/* ------------------------------------------------------------------ VMs per client */
+
+interface ByClientT {
+  customerId: string | null;
+  name: string;
+  code: string | null;
+  vms: number;
+  running: number;
+  missing: number;
+  cpus: number;
+  memBytes: number;
+  diskBytes: number;
+  ips: number;
+  subscriptions: number;
+  monthlyPaise: number;
+  nextDueAt: string | null;
+  overdue: number;
+  suspended: number;
+  walletPaise: number | null;
+}
+
+/** Staff: VMs per client, with resources and billing; a row filters the VM list below to that client. */
+function ByClient({ kind, selected, onPick }: { kind: Kind; selected: string; onPick: (id: string) => void }) {
+  const q = useQuery({ queryKey: ['virt', 'by-customer', kind], queryFn: () => api.get<ByClientT[]>(`/virtualization/guests/by-customer${qs({ kind })}`), refetchInterval: 60_000 });
+  const [open, setOpen] = useState(true);
+  const rows = q.data ?? [];
+  return (
+    <Panel
+      title={`VMs by client${rows.length ? ` (${rows.filter((r) => r.customerId).length} client${rows.filter((r) => r.customerId).length === 1 ? '' : 's'})` : ''}`}
+      actions={
+        <div className="flex items-center gap-3 text-[13px]">
+          {selected && (
+            <button className="text-accent hover:underline" onClick={() => onPick('')}>
+              Show all clients' VMs
+            </button>
+          )}
+          <button className="text-ink-2 hover:text-ink" onClick={() => setOpen(!open)} aria-expanded={open}>
+            {open ? 'Hide' : 'Show'}
+          </button>
+        </div>
+      }
+      flush
+    >
+      {!open ? null : q.isLoading ? (
+        <Loading />
+      ) : q.error ? (
+        <ErrorNote error={q.error} className="m-4" />
+      ) : !rows.length ? (
+        <EmptyState title="No VMs yet">VMs appear after the first sync.</EmptyState>
+      ) : (
+        <Table label="VMs by client">
+          <thead>
+            <tr>
+              <th>Client</th>
+              <th className="text-right">VMs</th>
+              <th>Resources</th>
+              <th className="text-right">IPs</th>
+              <th className="text-right">Per month</th>
+              <th>Next expiry</th>
+              <th className="text-right">Wallet</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const id = r.customerId ?? 'own';
+              return (
+                <tr key={id} className={cx('cursor-pointer hover:bg-sunken/60', selected === id && 'bg-accent/10')} onClick={() => onPick(selected === id ? '' : id)}>
+                  <td>
+                    <span className={cx('font-medium', r.customerId ? 'text-accent' : 'text-ink-2')}>{r.name}</span>
+                    {r.code && <span className="ml-1 text-[12px] text-ink-3">{r.code}</span>}
+                    {(r.overdue > 0 || r.suspended > 0) && <span className="block text-[12px] text-crit">{[r.overdue ? `${r.overdue} overdue` : null, r.suspended ? `${r.suspended} suspended` : null].filter(Boolean).join(' · ')}</span>}
+                  </td>
+                  <td className="text-right tabular-nums">
+                    {r.vms}
+                    <span className="block text-[12px] text-ink-3">
+                      {r.running} running{r.missing ? ` · ${r.missing} missing` : ''}
+                    </span>
+                  </td>
+                  <td className="text-[13px]">
+                    {r.cpus} vCPU · {bytes(r.memBytes)} · {bytes(r.diskBytes)} disk
+                  </td>
+                  <td className="text-right tabular-nums">{r.ips}</td>
+                  <td className="text-right tabular-nums">{r.monthlyPaise ? formatInr(r.monthlyPaise) : <span className="text-ink-3">—</span>}</td>
+                  <td className="text-[13px] whitespace-nowrap">
+                    {r.nextDueAt ? (
+                      <span className="font-medium text-crit">
+                        {formatDate(r.nextDueAt)}
+                        <span className="block text-[12px]">{dueIn(r.nextDueAt)}</span>
+                      </span>
+                    ) : (
+                      <span className="text-ink-3">—</span>
+                    )}
+                  </td>
+                  <td className="text-right tabular-nums">{r.customerId && r.walletPaise !== null ? formatInr(r.walletPaise) : ''}</td>
+                  <td className="text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    {r.customerId && (
+                      <Link to={`/wallet?customer=${r.customerId}`} className="text-[13px] text-accent hover:underline">
+                        Billing
+                      </Link>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </Table>
+      )}
+    </Panel>
+  );
+}
+
 /* ------------------------------------------------------------------ page */
 
 function VirtualizationPage({ kind }: { kind: Kind }) {
@@ -1001,7 +1130,12 @@ function VirtualizationPage({ kind }: { kind: Kind }) {
   const q = useQuery({ queryKey: ['virt', 'integrations'], queryFn: () => api.get<IntegrationT[]>('/virtualization/integrations'), enabled: staff, refetchInterval: 30_000 });
   const mine = (q.data ?? []).filter((i) => i.kind === kind);
   const [nodeId, setNodeId] = useState('');
+  const [customer, setCustomer] = useState('');
   const vmsRef = useRef<HTMLDivElement>(null);
+  const pickCustomer = (id: string) => {
+    setCustomer(id);
+    vmsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   const pickNode = (id: string) => {
     setNodeId(id);
     if (id) vmsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1019,9 +1153,10 @@ function VirtualizationPage({ kind }: { kind: Kind }) {
       <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
         {staff && (q.isLoading ? <Loading /> : q.error ? <ErrorNote error={q.error} /> : <Integrations kind={kind} list={mine} />)}
         {staff && q.data && <Hosts kind={kind} integrations={mine} nodeId={nodeId} onNode={pickNode} />}
+        {staff && mine.length > 0 && <ByClient kind={kind} selected={customer} onPick={pickCustomer} />}
         {(!staff || mine.length > 0) && (
           <div ref={vmsRef} className="scroll-mt-4">
-            <Guests kind={kind} integrations={staff ? mine : null} staff={staff} nodeId={nodeId} onNode={setNodeId} />
+            <Guests kind={kind} integrations={staff ? mine : null} staff={staff} nodeId={nodeId} onNode={setNodeId} customer={customer} onCustomer={setCustomer} />
           </div>
         )}
       </div>

@@ -297,6 +297,13 @@ export class VirtualizationController {
     return this.svc.mapHost(p, id, b.deviceId, meta);
   }
 
+  @Get('guests/by-customer')
+  @RequirePermissions('services.read')
+  @ApiOperation({ summary: 'Staff: VMs per client with resources, addresses and VPS billing (monthly, next expiry, overdue / suspended).' })
+  guestsByCustomer(@CurrentPrincipal() p: Principal, @Query('kind') kind?: string) {
+    return this.svc.guestsByCustomer(p, kind === 'proxmox' || kind === 'virtualizor' ? kind : undefined);
+  }
+
   @Get('guests')
   @RequirePermissions('services.read')
   @ApiZodQuery(guestListQuerySchema)

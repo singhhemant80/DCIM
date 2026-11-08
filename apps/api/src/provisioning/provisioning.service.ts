@@ -1108,6 +1108,68 @@ export class ProvisioningService {
     };
   }
 
+  /**
+   * VMs per client (staff): how many, running, resources and addresses, and what their VPS billing
+   * looks like (monthly, next expiry, overdue / suspended). "Own" (no client) is one row.
+   */
+  async guestsByCustomer(p: Principal, kind?: string) {
+    if (p.userType !== 'staff') throw new NotFoundException({ error: 'not_found', message: 'Not found' });
+    const r = await this.db.execute<{
+      customer_id: string | null;
+      name: string | null;
+      code: string | null;
+      vms: number;
+      running: number;
+      missing: number;
+      cpus: number;
+      mem: number;
+      disk: number;
+      ips: number;
+      subs: number;
+      monthly: number;
+      next_due: string | null;
+      overdue: number;
+      suspended: number;
+      wallet: number | null;
+    }>(sql`
+      select g.customer_id, c.name, c.code,
+             count(*)::int as vms,
+             count(*) filter (where g.status = 'running' and g.missing_since is null)::int as running,
+             count(*) filter (where g.missing_since is not null)::int as missing,
+             coalesce(sum(g.cpus) filter (where g.missing_since is null), 0)::int as cpus,
+             coalesce(sum(g.mem_bytes) filter (where g.missing_since is null), 0)::float8 as mem,
+             coalesce(sum(g.disk_bytes) filter (where g.missing_since is null), 0)::float8 as disk,
+             coalesce(sum(cardinality(g.ip_addresses)) filter (where g.missing_since is null), 0)::int as ips,
+             (select count(*) from subscriptions s where s.customer_id = g.customer_id and s.status <> 'cancelled')::int as subs,
+             (select coalesce(sum(price_paise), 0) from subscriptions s where s.customer_id = g.customer_id and s.status in ('active', 'overdue'))::float8 as monthly,
+             (select min(coalesce(s.cancel_at, s.next_due_at)) from subscriptions s where s.customer_id = g.customer_id and s.status <> 'cancelled') as next_due,
+             (select count(*) from subscriptions s where s.customer_id = g.customer_id and s.status = 'overdue')::int as overdue,
+             (select count(*) from subscriptions s where s.customer_id = g.customer_id and s.status = 'suspended')::int as suspended,
+             max(c.wallet_balance_paise)::float8 as wallet
+        from virt_guests g join virt_integrations i on i.id = g.integration_id left join customers c on c.id = g.customer_id
+       where g.org_id = ${p.orgId} ${kind ? sql`and i.kind = ${kind}` : sql``}
+       group by g.customer_id, c.name, c.code
+       order by (g.customer_id is null), c.name`);
+    return r.rows.map((x) => ({
+      customerId: x.customer_id,
+      name: x.name ?? 'Own (no client)',
+      code: x.code,
+      vms: x.vms,
+      running: x.running,
+      missing: x.missing,
+      cpus: x.cpus,
+      memBytes: Number(x.mem),
+      diskBytes: Number(x.disk),
+      ips: x.ips,
+      subscriptions: x.customer_id ? x.subs : 0,
+      monthlyPaise: x.customer_id ? Number(x.monthly) : 0,
+      nextDueAt: x.customer_id ? x.next_due : null,
+      overdue: x.customer_id ? x.overdue : 0,
+      suspended: x.customer_id ? x.suspended : 0,
+      walletPaise: x.wallet === null ? null : Number(x.wallet),
+    }));
+  }
+
   async assignGuest(p: Principal, id: string, customerId: string | null, meta: RequestMeta) {
     if (customerId) {
       const [c] = await this.db

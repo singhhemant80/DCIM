@@ -201,6 +201,11 @@ describe('orders', () => {
     expect(vm.can.console).toBe(true);
     expect(vm.hostName).toBeNull();
     expect(vm.customerName).toBeNull();
+    // Staff see VMs per client, with billing; clients don't get this view.
+    const byClient = await ok(admin.get('/api/v1/virtualization/guests/by-customer?kind=virtualizor'));
+    expect(byClient.find((r: { customerId: string | null }) => r.customerId === ctx.customers.acme)).toMatchObject({ vms: 1, subscriptions: 1, monthlyPaise: 50_000, ips: 1 });
+    expect(byClient.find((r: { customerId: string | null }) => r.customerId === null)).toMatchObject({ name: 'Own (no client)' });
+    expect((await acme.get('/api/v1/virtualization/guests/by-customer')).status).toBe(404);
     // Delivered orders show when they renew.
     expect(acc.orders[0].nextDueAt).toBeTruthy();
     expect(acc.subscriptions[0].ipAddresses).toEqual(['203.0.113.13']);
