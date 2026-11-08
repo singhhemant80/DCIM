@@ -428,4 +428,31 @@ describe('renewals', () => {
     expect(vz.vps.has(ext)).toBe(false);
     expect((await globex.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'renew' })).status).toBe(409);
   });
+
+  it('starts billing an existing VPS (moved from WHMCS) without charging, then renews on the paid-until date', async () => {
+    const [g] = await ctx.db
+      .insert(virtGuests)
+      .values({ orgId: ctx.org.id, integrationId: ids.integration, externalId: '9902', name: 'whmcs-vps.acme.example', status: 'running', ipAddresses: ['203.0.113.99'] })
+      .returning();
+    const paidUntil = new Date(Date.now() + 10 * DAY);
+    const body = { guestId: g!.id, planId: ids.plan, pricePaise: 70_000, nextDueAt: paidUntil.toISOString(), autoRenew: true };
+    expect((await admin.post(`${B}/subscriptions`, body)).status).toBe(400); // no client yet
+    await ctx.db.update(virtGuests).set({ customerId: ctx.customers.acme }).where(eq(virtGuests.id, g!.id));
+    expect((await acme.post(`${B}/subscriptions`, body)).status).toBe(403);
+    const before = await balance(ctx.customers.acme);
+    const sub = await ok(admin.post(`${B}/subscriptions`, body));
+    expect(sub).toMatchObject({ status: 'active', pricePaise: 70_000, customerId: ctx.customers.acme });
+    expect(new Date(sub.nextDueAt).getTime()).toBe(paidUntil.getTime());
+    expect(await balance(ctx.customers.acme)).toBe(before);
+    expect((await admin.post(`${B}/subscriptions`, body)).status).toBe(409);
+    const vm = await ok(acme.get(`/api/v1/virtualization/guests/${g!.id}`));
+    expect(vm.billing).toMatchObject({ status: 'active' });
+    // Nothing happens before the paid-until date; on it, the first renewal is charged.
+    expect((await runBillingCycle(deps(), new Date())).renewed).toBe(0);
+    await ok(admin.post(`${B}/customers/${ctx.customers.acme}/funds`, { amountPaise: 100_000, method: 'cash' }));
+    const r = await runBillingCycle(deps(), new Date(paidUntil.getTime() + 60_000));
+    expect(r.renewed).toBeGreaterThanOrEqual(1);
+    const [after] = await ctx.db.select().from(subscriptions).where(eq(subscriptions.id, sub.id));
+    expect(after!.nextDueAt.getTime()).toBeGreaterThan(paidUntil.getTime() + 27 * DAY);
+  });
 });

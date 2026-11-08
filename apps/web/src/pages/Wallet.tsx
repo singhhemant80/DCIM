@@ -585,20 +585,29 @@ function CreditNotesPanel({ rows }: { rows?: CreditNoteRowT[] }) {
 }
 
 function SubscriptionsTab() {
+  const { can } = useAuth();
+  const [adopt, setAdopt] = useState(false);
   const [status, setStatus] = useState('');
   const q = useQuery({ queryKey: ['billing', 'subscriptions', status], queryFn: () => api.get<SubT[]>(`${B}/subscriptions${qs({ status })}`), refetchInterval: 30_000 });
   return (
     <Panel
       title="Monthly renewals"
       actions={
-        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="h-8 w-44" aria-label="Status">
-          <option value="">All</option>
-          {(Object.keys(SUB_LABEL) as SubStatus[]).map((s) => (
-            <option key={s} value={s}>
-              {SUB_LABEL[s]}
-            </option>
-          ))}
-        </Select>
+        <div className="flex items-center gap-2">
+          {can('billing.write') && (
+            <Button size="sm" onClick={() => setAdopt(true)}>
+              Bill an existing VPS
+            </Button>
+          )}
+          <Select value={status} onChange={(e) => setStatus(e.target.value)} className="h-8 w-44" aria-label="Status">
+            <option value="">All</option>
+            {(Object.keys(SUB_LABEL) as SubStatus[]).map((s) => (
+              <option key={s} value={s}>
+                {SUB_LABEL[s]}
+              </option>
+            ))}
+          </Select>
+        </div>
       }
       flush
     >
@@ -611,6 +620,7 @@ function SubscriptionsTab() {
       ) : (
         <SubsTable rows={q.data!} staff />
       )}
+      {adopt && <AdoptVpsModal onClose={() => setAdopt(false)} />}
     </Panel>
   );
 }
@@ -2517,5 +2527,101 @@ export function ClientRenewalsPanel() {
         <p className="px-4 py-3 text-[13px] text-ink-2">No VPSs yet.</p>
       )}
     </Panel>
+  );
+}
+
+/**
+ * Staff: start billing an existing VPS here (assigned by hand, or moved from WHMCS). Nothing is charged
+ * now; the first renewal is on the date it is paid until. Pick the VPS here, or pass it in.
+ */
+export function AdoptVpsModal({ guest, onClose }: { guest?: { id: string; name: string; customerName?: string | null }; onClose: () => void }) {
+  const qc = useQueryClient();
+  const guests = useQuery({
+    queryKey: ['virt', 'guests', 'unbilled'],
+    queryFn: () =>
+      api.get<{ items: { id: string; name: string; customerId: string | null; customerName: string | null; ipAddresses: string[]; renewal?: unknown; missingSince: string | null }[] }>('/virtualization/guests?pageSize=200&sort=customer'),
+    enabled: !guest,
+  });
+  const plans = useQuery({ queryKey: ['billing', 'plans'], queryFn: () => api.get<PlanT[]>(`${B}/plans`) });
+  const [guestId, setGuestId] = useState(guest?.id ?? '');
+  const [planId, setPlanId] = useState('');
+  const [price, setPrice] = useState('');
+  const [due, setDue] = useState('');
+  const [auto, setAuto] = useState(true);
+  const p = rupeesToPaise(price);
+  const options = (guests.data?.items ?? []).filter((g) => g.customerId && !g.renewal && !g.missingSince);
+  const m = useMutation({
+    mutationFn: () => api.post(`${B}/subscriptions`, { guestId, planId: planId || null, pricePaise: p, nextDueAt: new Date(`${due}T00:00:00`).toISOString(), autoRenew: auto }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['billing'] });
+      void qc.invalidateQueries({ queryKey: ['virt'] });
+      onClose();
+    },
+  });
+  return (
+    <Modal
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={guest ? `Bill ${guest.name} here` : 'Bill an existing VPS here'}
+      description="For a VPS assigned by hand or moved from WHMCS. Nothing is charged now: enter the date it is already paid until; from then it renews monthly from the client's wallet (or by hand when auto-renew is off)."
+    >
+      <div className="grid gap-3">
+        {!guest && (
+          <Field label="VPS (assigned to a client, not yet billed here)">
+            {(id) => (
+              <Select id={id} value={guestId} onChange={(e) => setGuestId(e.target.value)}>
+                <option value="">{guests.isLoading ? 'Loading…' : 'Choose…'}</option>
+                {options.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.customerName} — {g.name}
+                    {g.ipAddresses[0] ? ` (${g.ipAddresses[0]})` : ''}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        )}
+        {guest?.customerName && <p className="text-[13px] text-ink-2">Client: {guest.customerName}</p>}
+        <Field label="Plan (optional, for the name and price)">
+          {(id) => (
+            <Select
+              id={id}
+              value={planId}
+              onChange={(e) => {
+                setPlanId(e.target.value);
+                const pl = plans.data?.find((x) => x.id === e.target.value);
+                if (pl && !price) setPrice(paiseToRupees(pl.defaultPricePaise ?? pl.pricePaise));
+              }}
+            >
+              <option value="">No plan</option>
+              {(plans.data ?? []).map((pl) => (
+                <option key={pl.id} value={pl.id}>
+                  {pl.name} — {inr(pl.defaultPricePaise ?? pl.pricePaise)}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+        <Field label="Monthly price (₹, before GST)" hint="Use the price the client pays in WHMCS today." error={price && p === null ? 'Enter an amount' : undefined}>
+          {(id) => <Input id={id} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="849.15" />}
+        </Field>
+        <Field label="Paid until (next renewal here)" hint="The next due date in WHMCS. The first charge here is on this date.">
+          {(id) => <Input id={id} type="date" value={due} onChange={(e) => setDue(e.target.value)} />}
+        </Field>
+        <label className="flex items-center gap-2 text-[13.5px]">
+          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> Auto-renew from the wallet
+        </label>
+        <p className="rounded-xl bg-sunken px-3 py-2 text-[12.5px] text-ink-2">
+          In WHMCS, set this service to <b>Cancelled</b> by hand (edit the service, change its status) so it stops invoicing. Do not use the Terminate module command: that deletes the VPS in Virtualizor.
+        </p>
+        <ErrorNote error={m.error} />
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" busy={m.isPending} disabled={!guestId || !p || !due} onClick={() => m.mutate()}>
+            Start billing here
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

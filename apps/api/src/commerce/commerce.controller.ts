@@ -7,6 +7,7 @@ import {
   clientPriceSchema,
   customerBillingSchema,
   subscriptionActionSchema,
+  subscriptionAdoptSchema,
   subscriptionCancelSchema,
   subscriptionUpdateSchema,
   SUBSCRIPTION_STATUSES,
@@ -198,6 +199,14 @@ export class CommerceController {
   @ApiZodQuery(subsQuery)
   subscriptions(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(subsQuery)) q: Infer<typeof subsQuery>) {
     return this.svc.subscriptions(p, q.customerId, q.status);
+  }
+
+  @Post('subscriptions')
+  @RequirePermissions('billing.write')
+  @ApiOperation({ summary: 'Start billing an existing VPS here (assigned by hand or moved from WHMCS): no charge now, first renewal on nextDueAt.' })
+  @ApiZodBody(subscriptionAdoptSchema)
+  adopt(@CurrentPrincipal() p: Principal, @Body(new ZodPipe(subscriptionAdoptSchema)) b: Infer<typeof subscriptionAdoptSchema>, @ReqMeta() meta: RequestMeta) {
+    return this.svc.adoptVps(p, b, meta);
   }
 
   @Post('subscriptions/:id/cancel')

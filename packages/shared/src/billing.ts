@@ -286,6 +286,19 @@ export const subscriptionCancelSchema = z
 /** Staff actions on a subscription's VPS (carried out by the worker within a minute), or withdrawing a cancellation. */
 export const subscriptionActionSchema = z.object({ action: z.enum(['suspend', 'unsuspend', 'keep', 'renew', 'auto_renew_on', 'auto_renew_off']) });
 
+/**
+ * Start billing an existing VPS here (one assigned by hand, or moved from WHMCS): no charge and no
+ * invoice now; the first renewal is taken from the wallet on nextDueAt (the date it is paid until).
+ */
+export const subscriptionAdoptSchema = z.object({
+  guestId: z.string().uuid(),
+  planId: z.string().uuid().nullish(),
+  name: z.string().trim().max(200).nullish(),
+  pricePaise: paise.min(100),
+  nextDueAt: z.string().datetime(),
+  autoRenew: z.boolean().default(true),
+});
+
 export const subscriptionUpdateSchema = z.object({
   pricePaise: paise.min(100).optional(),
   /** Stop renewing (the VPS is not deleted). */

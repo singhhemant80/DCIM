@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AdoptVpsModal } from './Wallet';
 import { IpList } from '../components/IpList';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
@@ -120,8 +121,9 @@ function TrafficChart({ ip }: { ip: string }) {
 
 export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }) {
   const { id = '' } = useParams();
-  const { me } = useAuth();
+  const { me, can } = useAuth();
   const staff = me?.user.userType === 'staff';
+  const [adopt, setAdopt] = useState(false);
   const qc = useQueryClient();
   const [action, setAction] = useState<GuestAction | null>(null);
   const [reinstall, setReinstall] = useState(false);
@@ -222,6 +224,7 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
           )}
         </Panel>
 
+        {adopt && <AdoptVpsModal guest={{ id: g.id, name: g.name, customerName: g.customerName }} onClose={() => setAdopt(false)} />}
         {console && (
           <Panel title="Console" actions={<span className="text-[12.5px] text-ink-3">Through {NAME[kind]}; every session is logged</span>}>
             <VncViewer guestId={g.id} onClose={() => setConsole(false)} />
@@ -281,6 +284,17 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
                         </Link>
                       </>
                     )}
+                  </dd>
+                </>
+              )}
+              {staff && !g.billing && g.customerId && can('billing.write') && (
+                <>
+                  <dt className="text-ink-3">Billing</dt>
+                  <dd>
+                    <span className="text-ink-3">Not billed here. </span>
+                    <button className="text-accent hover:underline" onClick={() => setAdopt(true)}>
+                      Start billing here (set the next renewal)
+                    </button>
                   </dd>
                 </>
               )}

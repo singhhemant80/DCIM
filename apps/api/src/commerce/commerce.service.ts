@@ -10,6 +10,7 @@ import {
   type clientPriceSchema,
   type customerBillingSchema,
   type subscriptionActionSchema,
+  type subscriptionAdoptSchema,
   type subscriptionCancelSchema,
   type subscriptionUpdateSchema,
   type VirtPlan,
@@ -911,6 +912,66 @@ export class CommerceService {
       );
       return { ok: true, creditNote: credit };
     });
+  }
+
+  /**
+   * Start billing an existing VPS here (assigned by hand, or moved from WHMCS): a monthly subscription
+   * and a service record for the VPS's client, paid until nextDueAt. Nothing is charged or invoiced
+   * now; the first renewal is on nextDueAt (auto-renew from the wallet, or by hand).
+   */
+  async adoptVps(p: Principal, input: I<typeof subscriptionAdoptSchema>, meta: RequestMeta) {
+    this.staffWrite(p);
+    const [g] = await this.db
+      .select()
+      .from(virtGuests)
+      .where(and(eq(virtGuests.id, input.guestId), eq(virtGuests.orgId, p.orgId)));
+    if (!g) throw NF('VPS');
+    if (!g.customerId) throw new BadRequestException({ error: 'no_customer', message: 'Assign the VPS to a client first' });
+    let plan: VpsPlan | undefined;
+    if (input.planId) {
+      [plan] = await this.db
+        .select()
+        .from(vpsPlans)
+        .where(and(eq(vpsPlans.id, input.planId), eq(vpsPlans.orgId, p.orgId)));
+      if (!plan) throw NF('Plan');
+    }
+    const due = new Date(input.nextDueAt);
+    const name = input.name?.trim() || `${plan?.name ?? 'VPS'} — ${g.name}`;
+    try {
+      return await this.db.transaction(async (tx) => {
+        await tx.execute(sql`select id from virt_guests where id = ${g.id} for update`);
+        const open = await tx.execute(sql`select id from subscriptions where guest_id = ${g.id} and status <> 'cancelled' limit 1`);
+        if (open.rows.length) throw new ConflictException({ error: 'already_billed', message: 'This VPS is already billed here' });
+        const start = new Date(due);
+        start.setMonth(start.getMonth() - 1);
+        const [sub] = await tx
+          .insert(subscriptions)
+          .values({ orgId: p.orgId, customerId: g.customerId!, planId: plan?.id ?? null, guestId: g.id, name, pricePaise: input.pricePaise, status: 'active', periodStart: start, nextDueAt: due, autoRenew: input.autoRenew })
+          .returning();
+        const [svc] = await tx
+          .insert(services)
+          .values({
+            orgId: p.orgId,
+            customerId: g.customerId!,
+            kind: 'vps',
+            name: g.name,
+            description: `${plan?.name ?? 'VPS'} (Virtualizor VPS ${g.externalId}), billed monthly from the wallet since ${new Date().toISOString().slice(0, 10)}`,
+            status: 'active',
+            startDate: new Date().toISOString().slice(0, 10),
+            guestId: g.id,
+          })
+          .returning({ id: services.id });
+        await tx.update(subscriptions).set({ serviceId: svc!.id }).where(eq(subscriptions.id, sub!.id));
+        // Its addresses go to the client too, as for an ordered VPS.
+        await tx.execute(sql`update ip_addresses set customer_id = ${g.customerId}, updated_at = now() where guest_id = ${g.id} and customer_id is null and status <> 'released'`);
+        await this.rec(p, meta, 'billing.vps_adopted', { type: 'subscription', id: sub!.id }, { vps: g.name, price: input.pricePaise, nextDueAt: due.toISOString(), autoRenew: input.autoRenew }, g.customerId, tx);
+        return { ...sub!, serviceId: svc!.id };
+      });
+    } catch (e) {
+      const code = (e as { code?: string }).code ?? (e as { cause?: { code?: string } }).cause?.code;
+      if (code === '23505') throw new ConflictException({ error: 'already_billed', message: 'This VPS is already billed here' });
+      throw e;
+    }
   }
 
   /** Suspend or unsuspend a subscription's VPS by hand (staff), or withdraw a cancellation set for the end of the period. */
