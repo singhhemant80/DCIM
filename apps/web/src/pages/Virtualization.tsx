@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { IpList } from '../components/IpList';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { GUEST_ACTIONS, GUEST_ACTION_LABELS, GUEST_SORTS, formatInr, type GuestAction, type VirtTemplate } from '@crapplet/shared';
@@ -924,7 +925,9 @@ function Guests({
                   {g.cpus ?? '—'} vCPU · {bytes(g.memBytes)}
                   {g.diskBytes ? ` · ${bytes(g.diskBytes)} disk` : ''}
                 </td>
-                <td className="font-mono text-[12px]">{g.ipAddresses.length ? g.ipAddresses.join(', ') : <span className="font-sans text-ink-3">Not reported</span>}</td>
+                <td className="max-w-64">
+                  <IpList ips={g.ipAddresses} size="sm" />
+                </td>
                 {items.some((x) => x.renewal) && (
                   <td className="text-[13px] whitespace-nowrap">
                     {g.renewal ? (

@@ -2377,7 +2377,7 @@ export const virtGuests = pgTable(
     lastSeenAt: ts('last_seen_at'),
     missingSince: ts('missing_since'),
   },
-  (t) => [uniqueIndex('virt_guests_ext_uq').on(t.integrationId, t.externalId), index('virt_guests_customer_idx').on(t.customerId)],
+  (t) => [uniqueIndex('virt_guests_ext_uq').on(t.integrationId, t.externalId), index('virt_guests_customer_idx').on(t.customerId), index('virt_guests_ips_gin').using('gin', t.ipAddresses)],
 );
 
 export type ProvisioningJob = typeof provisioningJobs.$inferSelect;

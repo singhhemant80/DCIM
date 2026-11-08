@@ -206,6 +206,14 @@ describe('orders', () => {
     expect(byClient.find((r: { customerId: string | null }) => r.customerId === ctx.customers.acme)).toMatchObject({ vms: 1, subscriptions: 1, monthlyPaise: 50_000, ips: 1 });
     expect(byClient.find((r: { customerId: string | null }) => r.customerId === null)).toMatchObject({ name: 'Own (no client)' });
     expect((await acme.get('/api/v1/virtualization/guests/by-customer')).status).toBe(404);
+    // A client's VPS address outside any IPAM subnet is still theirs for traffic; not another client's.
+    const [ext] = await ctx.db
+      .insert(virtGuests)
+      .values({ orgId: ctx.org.id, integrationId: g!.integrationId, externalId: '9901', name: 'outside.acme.example', status: 'running', customerId: ctx.customers.acme, ipAddresses: ['198.51.100.77'] })
+      .returning();
+    expect((await acme.get('/api/v1/monitoring/flows/ips/198.51.100.77/history?range=24h')).status).toBe(200);
+    expect((await globex.get('/api/v1/monitoring/flows/ips/198.51.100.77/history?range=24h')).status).toBe(404);
+    await ctx.db.delete(virtGuests).where(eq(virtGuests.id, ext!.id));
     // Delivered orders show when they renew.
     expect(acc.orders[0].nextDueAt).toBeTruthy();
     expect(acc.subscriptions[0].ipAddresses).toEqual(['203.0.113.13']);

@@ -1,0 +1,1 @@
+CREATE INDEX "virt_guests_ips_gin" ON "virt_guests" USING gin ("ip_addresses");

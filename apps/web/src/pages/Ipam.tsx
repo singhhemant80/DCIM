@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { IpList } from '../components/IpList';
+import type { VirtGuestT } from '../lib/provisioning';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { IP_ROLES, IP_STATUS_LABELS, PREFIX_STATUSES, PREFIX_STATUS_LABELS, type IpStatus } from '@crapplet/shared';
@@ -1202,8 +1204,45 @@ function CustomerIpam() {
             </Table>
           )}
         </Panel>
+        <VpsAddresses />
         <AddressList />
       </div>
     </>
+  );
+}
+
+/** Client: the addresses of their VPSs as the hypervisor reports them (also when the subnet is not in IPAM). */
+function VpsAddresses() {
+  const q = useQuery({ queryKey: ['virt', 'guests', 'mine-ips'], queryFn: () => api.get<Paginated<VirtGuestT>>('/virtualization/guests?pageSize=200') });
+  const rows = (q.data?.items ?? []).filter((g) => !g.missingSince);
+  if (!rows.length) return null;
+  return (
+    <Panel flush title="Your VPS addresses">
+      <Table label="Your VPS addresses">
+        <thead>
+          <tr>
+            <th>VPS</th>
+            <th>IP addresses</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((g) => (
+            <tr key={g.id}>
+              <td>
+                <Link to={`/integrations/${g.integrationKind}/vms/${g.id}`} className="font-medium text-accent hover:underline">
+                  {g.name}
+                </Link>
+                {g.osName && <span className="block text-[12px] text-ink-3">{g.osName}</span>}
+              </td>
+              <td>
+                <IpList ips={g.ipAddresses} />
+              </td>
+              <td className="text-[13px]">{g.status ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    </Panel>
   );
 }

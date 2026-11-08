@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { IpList } from '../components/IpList';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { amountInWords, formatInr, GST_STATES, rupeesToPaise, validGstin, WALLET_METHOD_LABELS, WALLET_METHODS } from '@crapplet/shared';
@@ -651,7 +652,11 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
                     {s.guestMissing ? ' · no longer in Virtualizor' : ''}
                   </span>
                 )}
-                {s.ipAddresses.length > 0 && <span className="block font-mono text-[12px] text-ink-2">{s.ipAddresses.join(', ')}</span>}
+                {s.ipAddresses.length > 0 && (
+                  <span className="mt-1 block">
+                    <IpList ips={s.ipAddresses} size="sm" />
+                  </span>
+                )}
               </td>
               <td className="text-right">
                 <Money p={s.pricePaise} />
@@ -2491,7 +2496,9 @@ export function ClientRenewalsPanel() {
                   )}
                   <span className="block text-[12px] text-ink-3">{s.name}</span>
                 </td>
-                <td className="font-mono text-[13px]">{s.ipAddresses.join(', ') || '—'}</td>
+                <td>
+                  <IpList ips={s.ipAddresses} size="sm" empty="—" />
+                </td>
                 <td>
                   <Chip tone={SUB_TONE[s.status]}>{SUB_LABEL[s.status]}</Chip>
                   {s.status === 'overdue' && s.suspendsAt && <span className="block text-[12px] text-warn">suspends {formatDate(s.suspendsAt)} unless the wallet is topped up</span>}

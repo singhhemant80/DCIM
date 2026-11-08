@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { IpList } from '../components/IpList';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { FLOW_RANGE_LABELS, GUEST_ACTION_LABELS, type FlowRange, type GuestAction } from '@crapplet/shared';
@@ -182,6 +183,10 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
           </div>
         }
       />
+      <div className="-mt-2 mb-5 flex flex-wrap items-center gap-2">
+        <span className="text-[12.5px] text-ink-3">IP address{g.ipAddresses.length === 1 ? '' : 'es'}</span>
+        <IpList ips={g.ipAddresses} size="lg" />
+      </div>
       <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
         <Panel
           title="Overview"
@@ -249,7 +254,9 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
                 {g.cpus ?? '—'} vCPU · {bytes(g.memBytes)} RAM{g.diskBytes ? ` · ${bytes(g.diskBytes)} disk` : ''}
               </dd>
               <dt className="text-ink-3">IP addresses</dt>
-              <dd className="font-mono text-[12.5px]">{g.ipAddresses.length ? g.ipAddresses.join(', ') : <span className="font-sans text-ink-3">Not reported</span>}</dd>
+              <dd>
+                <IpList ips={g.ipAddresses} size="sm" />
+              </dd>
               {g.integrationName && (
                 <>
                   <dt className="text-ink-3">Connection</dt>

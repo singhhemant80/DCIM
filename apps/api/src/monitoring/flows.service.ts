@@ -231,12 +231,16 @@ export class FlowsService {
   /** Each traffic row with the address's IPAM record, prefix, device and customer (the most specific). */
   private owned(p: Principal, inner: SQL) {
     return sql`
-      select t.*, a.dns_name, a.device_id, coalesce(a.customer_id, pf.customer_id) as customer_id, pf.prefix::text as prefix, pf.id as prefix_id
+      select t.*, a.dns_name, a.device_id, coalesce(a.customer_id, pf.customer_id, vg.customer_id) as customer_id, pf.prefix::text as prefix, pf.id as prefix_id,
+             (vg.customer_id is not null) as guest_owned
         from (${inner}) t
         left join lateral (select id, dns_name, device_id, customer_id from ip_addresses ia
                             where ia.org_id = ${p.orgId} and ia.address = t.address order by (ia.customer_id is null), ia.created_at limit 1) a on true
         left join lateral (select id, prefix, customer_id from prefixes px
-                            where px.org_id = ${p.orgId} and px.prefix >>= t.address order by masklen(px.prefix) desc limit 1) pf on true`;
+                            where px.org_id = ${p.orgId} and px.prefix >>= t.address order by masklen(px.prefix) desc limit 1) pf on true
+        -- A client's VPS address counts as theirs even when its subnet is not in IPAM (hypervisor-reported addresses).
+        left join lateral (select customer_id from virt_guests vg
+                            where vg.org_id = ${p.orgId} and vg.missing_since is null and vg.customer_id is not null and vg.ip_addresses @> array[host(t.address)] limit 1) vg on true`;
   }
 
   private scope(p: Principal, customerId: string | undefined) {
@@ -390,7 +394,7 @@ export class FlowsService {
     const own = await this.db.execute<Record<string, unknown>>(sql`
       select x.* from (${this.owned(p, sql`select ${ip}::inet as address`)}) x where ${this.scope(p, undefined)}`);
     const o = own.rows[0];
-    if (!o || (!o.prefix_id && p.userType !== 'staff')) throw notFound('Address');
+    if (!o || (!o.prefix_id && !o.guest_owned && p.userType !== 'staff')) throw notFound('Address');
   }
 
   /**
@@ -447,7 +451,7 @@ export class FlowsService {
         left join devices d on d.id = x.device_id left join customers c on c.id = x.customer_id
        where ${this.scope(p, undefined)}`);
     const o = own.rows[0];
-    if (!o || (!o.prefix_id && p.userType !== 'staff')) throw notFound('Address');
+    if (!o || (!o.prefix_id && !o.guest_owned && p.userType !== 'staff')) throw notFound('Address');
     const r = await this.db.execute<{ bucket: string; in_b: number; out_b: number }>(sql`
       select bucket, in_bytes::float8 as in_b, out_bytes::float8 as out_b from ${t}
        where org_id = ${p.orgId} and address = ${ip}::inet and bucket >= ${w.since.toISOString()}::timestamptz and bucket < ${w.until.toISOString()}::timestamptz
