@@ -564,7 +564,9 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       const refusals: string[] = [];
       for (const a of attempts) {
         try {
-          r = await call({ act: 'addvs' }, a.post);
+          // The server also goes in the URL: Virtualizor's Create VPS page is per server (act=addvs&serid=N),
+          // and reads the server's storages, IPs and templates from it; in the POST body alone it was not used.
+          r = await call({ act: 'addvs', ...(target ? { serid: target.serverId } : {}) }, a.post);
           if (refusals.length) input.log?.(`Created with ${a.label}`);
           break;
         } catch (e) {

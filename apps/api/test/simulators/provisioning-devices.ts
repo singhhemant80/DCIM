@@ -391,7 +391,8 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
     if (q.act === 'addvs') {
       mock.creates.push({ query: rest, body });
       // Like the panel: the disk needs a storage of the chosen server.
-      if (body['space[0][st_uuid]'] !== 'stuuidprimary01' && !mock.storageOptional) return send({ error: { space: 'The primary storage could not be found' } });
+      // Like the user's panel: the server comes from the URL (serid); with it, the primary storage is found.
+      if (rest.serid === undefined && body['space[0][st_uuid]'] !== 'stuuidprimary01' && !mock.storageOptional) return send({ error: { space: 'The primary storage could not be found' } });
       if (req.method !== 'POST' || body.addvps !== '1') return send({ error: { addvps: 'Invalid request' } });
       if (mock.failCreate) return send({ error: { ips: mock.failCreate } });
       if (!templates[body.osid ?? '']) return send({ error: { osid: 'The OS template was not found' } });
