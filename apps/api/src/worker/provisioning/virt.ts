@@ -66,6 +66,8 @@ export interface VirtClient {
   createVps?(input: VpsCreateInput): Promise<{ vpsid: string }>;
   /** Administrative (billing) suspension, not a pause: Virtualizor act=vs&suspend / unsuspend. */
   billingSuspend?(g: GuestRef, suspend: boolean): Promise<void>;
+  /** Delete the VPS (Virtualizor act=vs&delete=<id>). Irreversible; only on a cancelled subscription with the hostname typed by staff. */
+  deleteVps?(g: GuestRef): Promise<void>;
   guestStatus(g: { externalId: string; hostExternalId: string | null; virtType: string | null }): Promise<string>;
   /** Seconds since the guest started, where the hypervisor reports it (used to verify reboots). */
   guestUptime?(g: { externalId: string; hostExternalId: string | null; virtType: string | null }): Promise<number | null>;
@@ -489,6 +491,11 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
       const vpsid = s(info.vpsid) ?? s(r.vpsid);
       if (!vpsid || !/^\d+$/.test(vpsid)) throw new PermanentError('Virtualizor did not return the new VPS id; check the VPS list in the panel before trying again');
       return { vpsid };
+    },
+    async deleteVps(g) {
+      if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');
+      if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
+      await call({ act: 'vs', delete: g.externalId });
     },
     async billingSuspend(g, suspend) {
       if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');

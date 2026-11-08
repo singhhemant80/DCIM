@@ -39,7 +39,7 @@ import { WorkflowsPage } from './pages/Workflows';
 import { ReportsPage } from './pages/Reports';
 import { BillingPage } from './pages/Billing';
 import { MaintenancePage } from './pages/Maintenance';
-import { InvoicePage, ReceiptPage, WalletPage } from './pages/Wallet';
+import { CreditNotePage, InvoicePage, ReceiptPage, WalletPage } from './pages/Wallet';
 
 /** Implemented sections. Every key here must be `available` in NAV_SECTIONS (checked by a test). */
 export const IMPLEMENTED: Record<string, ComponentType> = {
@@ -100,6 +100,7 @@ function AppRoutes() {
         {visible.has('proxmox') && <Route path="/integrations/proxmox/vms/:id" element={<VirtualMachinePage kind="proxmox" />} />}
         {visible.has('wallet') && <Route path="/wallet/invoices/:id" element={<InvoicePage />} />}
         {visible.has('wallet') && <Route path="/wallet/receipts/:id" element={<ReceiptPage />} />}
+        {visible.has('wallet') && <Route path="/wallet/credit-notes/:id" element={<CreditNotePage />} />}
         <Route path="/account" element={<AccountPage />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFoundPage />} />

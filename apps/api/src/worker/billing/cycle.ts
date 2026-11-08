@@ -30,7 +30,9 @@ const RETRY_MS = 10 * 60_000;
 export async function runBillingCycle(deps: ProvisioningDeps, now: Date = deps.now?.() ?? new Date()): Promise<{ settled: number; renewed: number; overdue: number; suspended: number; unsuspended: number }> {
   const out = { settled: 0, renewed: 0, overdue: 0, suspended: 0, unsuspended: 0 };
   out.settled = await settleOrders(deps, now);
+  await endCancelled(deps, now);
   Object.assign(out, await renewDue(deps, now));
+  await runPendingActions(deps, now);
   out.unsuspended += await retryUnsuspend(deps, now);
   return out;
 }
@@ -100,6 +102,100 @@ async function suspendGuest(deps: ProvisioningDeps, guestId: string | null, susp
   await client.billingSuspend({ externalId: g.externalId, hostExternalId: h?.externalId ?? null, virtType: g.virtType }, suspend);
 }
 
+async function deleteGuest(deps: ProvisioningDeps, guestId: string | null): Promise<void> {
+  if (!guestId) return;
+  const [g] = await deps.db.select().from(virtGuests).where(eq(virtGuests.id, guestId));
+  if (!g || g.missingSince) return;
+  const [i] = await deps.db.select().from(virtIntegrations).where(eq(virtIntegrations.id, g.integrationId));
+  if (!i || !i.enabled) throw new Error('The hypervisor integration is disabled or deleted');
+  const client = virtClientFor(deps, i);
+  if (!client.deleteVps) throw new Error('This hypervisor does not offer VPS deletion from NexoraDC');
+  const [h] = g.hostId ? await deps.db.select().from(virtHosts).where(eq(virtHosts.id, g.hostId)) : [];
+  await client.deleteVps({ externalId: g.externalId, hostExternalId: h?.externalId ?? null, virtType: g.virtType });
+}
+
+/** Subscriptions set to cancel at the end of their paid period whose day has come: ended, VPS suspended or deleted. */
+async function endCancelled(deps: ProvisioningDeps, now: Date) {
+  const audit = new AuditService(deps.db);
+  const rows = await deps.db
+    .select()
+    .from(subscriptions)
+    .where(sql`${subscriptions.status} <> 'cancelled' and ${subscriptions.cancelAt} is not null and ${subscriptions.cancelAt} <= ${now.toISOString()}::timestamptz`)
+    .limit(100);
+  for (const s of rows) {
+    await deps.db.transaction(async (tx) => {
+      await tx
+        .update(subscriptions)
+        .set({ status: 'cancelled', cancelledAt: now, pendingAction: s.guestId ? (s.deleteVps ? 'delete' : 'suspend') : null, pendingBy: 'billing (end of period)' })
+        .where(and(eq(subscriptions.id, s.id), sql`${subscriptions.status} <> 'cancelled'`));
+      if (s.serviceId)
+        await tx
+          .update(services)
+          .set({ status: 'cancelled', endDate: now.toISOString().slice(0, 10) })
+          .where(eq(services.id, s.serviceId));
+      await audit.record(
+        {
+          orgId: s.orgId,
+          actor: SYSTEM,
+          customerId: s.customerId,
+          action: 'billing.subscription_ended',
+          target: { type: 'subscription', id: s.id },
+          outcome: 'success',
+          meta: META,
+          metadata: { name: s.name, reason: s.cancelReason, deleteVps: s.deleteVps },
+        },
+        tx,
+      );
+    });
+  }
+}
+
+/** Hypervisor actions asked for by staff or by a cancellation: suspend, unsuspend, delete. Retried every 10 minutes on failure. */
+async function runPendingActions(deps: ProvisioningDeps, now: Date) {
+  const audit = new AuditService(deps.db);
+  const rows = await deps.db
+    .select()
+    .from(subscriptions)
+    .where(sql`${subscriptions.pendingAction} is not null and (${subscriptions.lastError} is null or ${subscriptions.updatedAt} < ${new Date(now.getTime() - RETRY_MS).toISOString()}::timestamptz)`)
+    .limit(50);
+  for (const s of rows) {
+    const action = s.pendingAction as 'suspend' | 'unsuspend' | 'delete';
+    try {
+      if (action === 'delete') await deleteGuest(deps, s.guestId);
+      else await suspendGuest(deps, s.guestId, action === 'suspend');
+      const cancelled = s.status === 'cancelled';
+      await deps.db
+        .update(subscriptions)
+        .set({
+          pendingAction: null,
+          lastError: null,
+          ...(action === 'suspend' ? { suspendedAt: now } : action === 'unsuspend' ? { suspendedAt: null } : {}),
+          // A paid subscription suspended by hand stays active (it renews as usual); unsuspending one suspended for non-payment needs payment, not this.
+        })
+        .where(eq(subscriptions.id, s.id));
+      if (s.serviceId && !cancelled && action !== 'delete')
+        await deps.db
+          .update(services)
+          .set({ status: action === 'suspend' ? 'suspended' : 'active' })
+          .where(eq(services.id, s.serviceId));
+      await audit.record({
+        orgId: s.orgId,
+        actor: SYSTEM,
+        customerId: s.customerId,
+        action: `billing.vps_${action}`,
+        target: { type: 'subscription', id: s.id },
+        outcome: 'success',
+        meta: META,
+        metadata: { name: s.name, by: s.pendingBy, guestId: s.guestId },
+      });
+    } catch (e) {
+      const msg = `Could not ${action} the VPS: ${(e as Error).message}`.slice(0, 500);
+      await deps.db.update(subscriptions).set({ lastError: msg }).where(eq(subscriptions.id, s.id));
+      deps.logger.warn({ subscriptionId: s.id, err: (e as Error).message }, `billing ${action} failed`);
+    }
+  }
+}
+
 async function setServiceStatus(deps: ProvisioningDeps, sub: Subscription, status: 'active' | 'suspended') {
   if (sub.serviceId) await deps.db.update(services).set({ status }).where(eq(services.id, sub.serviceId));
 }
@@ -108,7 +204,7 @@ async function renewDue(deps: ProvisioningDeps, now: Date) {
   const audit = new AuditService(deps.db);
   const out = { renewed: 0, overdue: 0, suspended: 0, unsuspended: 0 };
   const due = await deps.db.execute<{ id: string }>(sql`
-    select id from subscriptions where status in ('active', 'overdue', 'suspended') and next_due_at <= ${now.toISOString()}::timestamptz order by next_due_at limit 200`);
+    select id from subscriptions where status in ('active', 'overdue', 'suspended') and next_due_at <= ${now.toISOString()}::timestamptz and (cancel_at is null or cancel_at > ${now.toISOString()}::timestamptz) order by next_due_at limit 200`);
   for (const { id } of due.rows) {
     let after: { action: 'suspend' | 'unsuspend'; sub: Subscription } | null = null;
     try {
@@ -236,7 +332,9 @@ async function retryUnsuspend(deps: ProvisioningDeps, now: Date): Promise<number
   const rows = await deps.db
     .select()
     .from(subscriptions)
-    .where(sql`${subscriptions.status} = 'active' and ${subscriptions.suspendedAt} is not null and ${subscriptions.updatedAt} < ${new Date(now.getTime() - RETRY_MS).toISOString()}::timestamptz`)
+    .where(
+      sql`${subscriptions.status} = 'active' and ${subscriptions.suspendedAt} is not null and ${subscriptions.pendingAction} is null and ${subscriptions.lastError} is not null and ${subscriptions.updatedAt} < ${new Date(now.getTime() - RETRY_MS).toISOString()}::timestamptz`,
+    )
     .limit(50);
   let n = 0;
   for (const s of rows) {

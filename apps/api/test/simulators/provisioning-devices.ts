@@ -428,6 +428,10 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
       }
       return send({ status: st });
     }
+    if (q.act === 'vs' && q.delete) {
+      if (!vps.delete(q.delete)) return send({ error: { vpsid: 'VPS not found' } });
+      return send({ done: { msg: 'VPS deleted' } });
+    }
     if (q.act === 'vs') {
       const vpsid = q.vpsid ?? q.suspend ?? q.unsuspend;
       if (q.suspend || q.unsuspend) {

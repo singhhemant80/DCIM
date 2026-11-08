@@ -1,7 +1,19 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, ParseIntPipe, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
-import { addFundsSchema, billingSettingsSchema, clientPriceSchema, customerBillingSchema, subscriptionUpdateSchema, SUBSCRIPTION_STATUSES, vpsOrderSchema, vpsPlanSchema, walletAdjustSchema } from '@crapplet/shared';
+import {
+  addFundsSchema,
+  billingSettingsSchema,
+  clientPriceSchema,
+  customerBillingSchema,
+  subscriptionActionSchema,
+  subscriptionCancelSchema,
+  subscriptionUpdateSchema,
+  SUBSCRIPTION_STATUSES,
+  vpsOrderSchema,
+  vpsPlanSchema,
+  walletAdjustSchema,
+} from '@crapplet/shared';
 import { ApiZodBody, ApiZodQuery, ZodPipe } from '../common/zod';
 import { CurrentPrincipal, ReqMeta, RequirePermissions } from '../auth/decorators';
 import type { Principal, RequestMeta } from '../auth/principal';
@@ -186,6 +198,37 @@ export class CommerceController {
   @ApiZodQuery(subsQuery)
   subscriptions(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(subsQuery)) q: Infer<typeof subsQuery>) {
     return this.svc.subscriptions(p, q.customerId, q.status);
+  }
+
+  @Post('subscriptions/:id/cancel')
+  @HttpCode(200)
+  @RequirePermissions('services.read')
+  @ApiOperation({ summary: 'Cancel at the end of the paid period (staff, or the client for their own) or now (staff, optional GST credit note refund to the wallet); the VPS is then suspended, or deleted if asked (type the hostname).' })
+  @ApiZodBody(subscriptionCancelSchema)
+  cancel(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(subscriptionCancelSchema)) b: Infer<typeof subscriptionCancelSchema>, @ReqMeta() meta: RequestMeta) {
+    return this.svc.cancelSubscription(p, id, b, meta);
+  }
+
+  @Post('subscriptions/:id/actions')
+  @HttpCode(200)
+  @RequirePermissions('services.read')
+  @ApiOperation({ summary: 'Suspend or unsuspend the VPS now (staff; done by the worker within a minute), or keep a subscription that was set to cancel (staff or the client).' })
+  @ApiZodBody(subscriptionActionSchema)
+  action(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(subscriptionActionSchema)) b: Infer<typeof subscriptionActionSchema>, @ReqMeta() meta: RequestMeta) {
+    return this.svc.subscriptionAction(p, id, b, meta);
+  }
+
+  @Get('credit-notes')
+  @RequirePermissions('services.read')
+  @ApiZodQuery(customerQuery)
+  creditNotes(@CurrentPrincipal() p: Principal, @Query(new ZodPipe(customerQuery)) q: Infer<typeof customerQuery>) {
+    return this.svc.creditNotes(p, q.customerId);
+  }
+
+  @Get('credit-notes/:id')
+  @RequirePermissions('services.read')
+  creditNote(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
+    return this.svc.creditNote(p, id);
   }
 
   @Put('subscriptions/:id')

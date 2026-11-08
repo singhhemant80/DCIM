@@ -287,17 +287,73 @@ describe('renewals', () => {
     );
   });
 
-  it('stops renewing when cancelled, without touching the VPS', async () => {
+  it('cancels at the end of the period (client), keeps on request, and ends with the VPS suspended', async () => {
     const [sub] = await ctx.db.select().from(subscriptions).where(eq(subscriptions.customerId, ctx.customers.acme));
-    expect((await acme.put(`${B}/subscriptions/${sub!.id}`, { cancel: true })).status).toBe(403);
-    await ok(admin.put(`${B}/subscriptions/${sub!.id}`, { cancel: true }));
-    await ctx.db
-      .update(subscriptions)
-      .set({ nextDueAt: new Date(Date.now() - 1000) })
-      .where(eq(subscriptions.id, sub!.id));
-    const r = await runBillingCycle(deps(), new Date(Date.now() + 90 * DAY));
-    expect(r).toMatchObject({ renewed: 0, overdue: 0, suspended: 0 });
-    const s = await ok(admin.get(`${B}/summary`));
-    expect(s).toMatchObject({ billingReady: true, subscriptions: 0 });
+    // A client may only stop renewing; refunds and deletion are for staff; other clients see nothing.
+    expect((await acme.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'now' })).status).toBe(403);
+    expect((await acme.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'end_of_period', deleteVps: true })).status).toBe(403);
+    expect((await globex.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'end_of_period' })).status).toBe(404);
+    await ok(acme.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'end_of_period', reason: 'Moving' }));
+    let acc = await ok(acme.get(`${B}/account`));
+    expect(new Date(acc.subscriptions[0].cancelAt).getTime()).toBe(new Date(acc.subscriptions[0].nextDueAt).getTime());
+    await ok(acme.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'keep' }));
+    acc = await ok(acme.get(`${B}/account`));
+    expect(acc.subscriptions[0].cancelAt).toBeNull();
+    await ok(acme.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'end_of_period' }));
+    const bal = await balance(ctx.customers.acme);
+    // On the due date: no renewal charged, subscription ended, VPS suspended in Virtualizor.
+    const due = new Date((await ctx.db.select().from(subscriptions).where(eq(subscriptions.id, sub!.id)))[0]!.nextDueAt.getTime() + 60_000);
+    const r = await runBillingCycle(deps(), due);
+    expect(r.renewed).toBe(0);
+    expect(await balance(ctx.customers.acme)).toBe(bal);
+    const [after] = await ctx.db.select().from(subscriptions).where(eq(subscriptions.id, sub!.id));
+    expect(after).toMatchObject({ status: 'cancelled', pendingAction: null });
+    const ext = (await ctx.db.select().from(virtGuests).where(eq(virtGuests.id, ids.guest)))[0]!.externalId;
+    expect(vz.vps.get(ext)!.suspended).toBe(1);
+    expect((await acme.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'keep' })).status).toBe(409);
+  });
+
+  it('cancels now with a GST credit note for the unused days, and deletes the VPS only with its name typed', async () => {
+    // A fresh delivered VPS for Globex (same state: CGST + SGST).
+    await ok(admin.post(`${B}/customers/${ctx.customers.globex}/funds`, { amountPaise: 100_000, method: 'cash' }));
+    const res = await ok(globex.post(`${B}/orders`, { planId: ids.plan, hostname: 'vps-g3.globex.example', osId: '270', password: ROOT_PW }));
+    const jobs = await ctx.db.select().from(provisioningJobs).where(eq(provisioningJobs.kind, 'guest_create'));
+    await drive(jobs.find((x) => x.params.orderId === res.order.id)!.id);
+    const t0 = new Date();
+    await runBillingCycle(deps(), t0);
+    const [sub] = await ctx.db
+      .select()
+      .from(subscriptions)
+      .where(sql`${subscriptions.customerId} = ${ctx.customers.globex} and ${subscriptions.status} = 'active'`);
+    const before = await balance(ctx.customers.globex);
+    // Staff suspend and unsuspend by hand.
+    await ok(admin.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'suspend' }));
+    await runBillingCycle(deps(), t0);
+    const ext = (await ctx.db.select().from(virtGuests).where(eq(virtGuests.id, sub!.guestId!)))[0]!.externalId;
+    expect(vz.vps.get(ext)!.suspended).toBe(1);
+    await ok(admin.post(`${B}/subscriptions/${sub!.id}/actions`, { action: 'unsuspend' }));
+    await runBillingCycle(deps(), t0);
+    expect(vz.vps.get(ext)!.suspended).toBe(0);
+    // Deleting needs the VPS name.
+    expect((await admin.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'now', refund: 'unused', deleteVps: true, confirmHostname: 'wrong' })).status).toBe(400);
+    expect((await admin.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'end_of_period', refund: 'unused' })).status).toBe(400);
+    const c = await ok(admin.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'now', refund: 'unused', deleteVps: true, confirmHostname: 'vps-g3.globex.example', reason: 'Client request' }));
+    // Almost the whole month unused: close to ₹400 + 18 % back, as a credit note.
+    expect(c.creditNote.number).toMatch(/^CN\/\d\d-\d\d\/0001$/);
+    expect(c.creditNote.totalPaise).toBeGreaterThan(46_000);
+    expect(c.creditNote.totalPaise).toBeLessThanOrEqual(47_200);
+    expect(await balance(ctx.customers.globex)).toBe(before + c.creditNote.totalPaise);
+    const cns = await ok(globex.get(`${B}/credit-notes`));
+    expect(cns).toHaveLength(1);
+    const cn = await ok(globex.get(`${B}/credit-notes/${cns[0].id}`));
+    expect(cn.cgstPaise + cn.sgstPaise).toBe(cn.totalPaise - cn.taxablePaise);
+    expect(cn.igstPaise).toBe(0);
+    expect((await acme.get(`${B}/credit-notes/${cns[0].id}`)).status).toBe(404);
+    await expect(ctx.db.execute(sql`delete from credit_notes where id = ${cns[0].id}`)).rejects.toThrow();
+    // The worker deletes the VPS in Virtualizor.
+    await runBillingCycle(deps(), t0);
+    expect(vz.vps.has(ext)).toBe(false);
+    // Cancelled once only.
+    expect((await admin.post(`${B}/subscriptions/${sub!.id}/cancel`, { when: 'now', refund: 'full' })).status).toBe(409);
   });
 });

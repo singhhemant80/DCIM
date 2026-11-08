@@ -190,6 +190,7 @@ export const billingSettingsSchema = z.object({
   gstRateBp: z.number().int().min(0).max(2800).default(1800),
   invoicePrefix: prefix.default('INV'),
   receiptPrefix: prefix.default('RCPT'),
+  creditNotePrefix: prefix.default('CN'),
   graceDays: z.number().int().min(0).max(60).default(3),
   email: z.string().trim().email().nullable().optional(),
   phone: z.string().trim().max(40).nullable().optional(),
@@ -265,6 +266,24 @@ export type VpsOrderInput = z.infer<typeof vpsOrderSchema>;
 
 export const SUBSCRIPTION_STATUSES = ['active', 'overdue', 'suspended', 'cancelled'] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
+/**
+ * Cancelling a VPS subscription. At the end of the paid period: no renewal, the subscription ends on
+ * its due date. Now: ends today, optionally with a refund of the last invoice (unused days, or all of
+ * it) as a GST credit note into the wallet. Either way the VPS can be deleted in Virtualizor when it
+ * ends (type the hostname to confirm); otherwise it is left as it is.
+ */
+export const subscriptionCancelSchema = z
+  .object({
+    when: z.enum(['end_of_period', 'now']),
+    refund: z.enum(['none', 'unused', 'full']).default('none'),
+    deleteVps: z.boolean().default(false),
+    confirmHostname: z.string().trim().max(253).optional(),
+    reason: z.string().trim().max(400).optional(),
+  })
+  .refine((v) => v.when === 'now' || v.refund === 'none', { message: 'A refund is only for an immediate cancellation', path: ['refund'] });
+/** Staff actions on a subscription's VPS (carried out by the worker within a minute), or withdrawing a cancellation. */
+export const subscriptionActionSchema = z.object({ action: z.enum(['suspend', 'unsuspend', 'keep']) });
+
 export const subscriptionUpdateSchema = z.object({
   pricePaise: paise.min(100).optional(),
   /** Stop renewing (the VPS is not deleted). */

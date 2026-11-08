@@ -2802,6 +2802,7 @@ export const billingSettings = pgTable('billing_settings', {
   gstRateBp: integer('gst_rate_bp').notNull().default(1800),
   invoicePrefix: text('invoice_prefix').notNull().default('INV'),
   receiptPrefix: text('receipt_prefix').notNull().default('RCPT'),
+  creditNotePrefix: text('credit_note_prefix').notNull().default('CN'),
   graceDays: integer('grace_days').notNull().default(3),
   email: text('email'),
   phone: text('phone'),
@@ -2979,6 +2980,14 @@ export const subscriptions = pgTable(
     /** Last automatic action that failed (e.g. Virtualizor could not suspend), shown to staff. */
     lastError: text('last_error'),
     orderId: uuid('order_id'),
+    /** Cancellation asked for the end of the paid period: the subscription ends on this date instead of renewing. */
+    cancelAt: ts('cancel_at'),
+    cancelReason: text('cancel_reason'),
+    /** Delete the VPS in Virtualizor when the subscription ends (or now, for an immediate cancellation). */
+    deleteVps: boolean('delete_vps').notNull().default(false),
+    /** A hypervisor action staff asked for, carried out by the worker: suspend | unsuspend | delete. */
+    pendingAction: text('pending_action'),
+    pendingBy: text('pending_by'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -3121,6 +3130,35 @@ export type Workflow = typeof workflows.$inferSelect;
 export type WorkflowRun = typeof workflowRuns.$inferSelect;
 export type BillingIntegration = typeof billingIntegrations.$inferSelect;
 
+/** GST credit notes: an issued invoice reduced (refund of an unused period). Immutable like invoices. */
+export const creditNotes = pgTable(
+  'credit_notes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: orgRef(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'restrict' }),
+    number: text('number').notNull(),
+    fy: text('fy').notNull(),
+    issuedAt: ts('issued_at').notNull(),
+    reason: text('reason').notNull(),
+    taxablePaise: bigint('taxable_paise', { mode: 'number' }).notNull(),
+    cgstPaise: bigint('cgst_paise', { mode: 'number' }).notNull(),
+    sgstPaise: bigint('sgst_paise', { mode: 'number' }).notNull(),
+    igstPaise: bigint('igst_paise', { mode: 'number' }).notNull(),
+    totalPaise: bigint('total_paise', { mode: 'number' }).notNull(),
+    subscriptionId: uuid('subscription_id'),
+    createdBy: text('created_by'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('credit_notes_org_number_uq').on(t.orgId, t.number), index('credit_notes_invoice_idx').on(t.invoiceId)],
+);
+
+export type CreditNote = typeof creditNotes.$inferSelect;
 export type BillingSetting = typeof billingSettings.$inferSelect;
 export type VpsPlan = typeof vpsPlans.$inferSelect;
 export type Invoice = typeof invoices.$inferSelect;

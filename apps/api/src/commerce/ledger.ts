@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { GST_STATES, documentNumber, financialYear, gst, type GstBreakup } from '@crapplet/shared';
 import type { DbOrTx } from '../db/db';
-import { billingSettings, customers, invoices, walletTransactions, type BillingSetting, type Customer, type Invoice } from '../db/schema';
+import { billingSettings, creditNotes, customers, invoices, walletTransactions, type BillingSetting, type CreditNote, type Customer, type Invoice } from '../db/schema';
 
 /**
  * The money core shared by the API and the worker. Every function takes the
@@ -160,4 +160,44 @@ export async function nextReceipt(tx: DbOrTx, orgId: string, settings: BillingSe
   const prefix = settings?.receiptPrefix ?? 'RCPT';
   const fy = financialYear(at);
   return documentNumber(prefix, fy, await nextNumber(tx, orgId, prefix, fy));
+}
+
+/**
+ * Issues a GST credit note against an invoice (part or all of it), never more than what is left
+ * uncredited on that invoice. Tax is split as on the invoice (same rate, same place of supply).
+ * Returns null when nothing is left to credit.
+ */
+export async function issueCreditNote(
+  tx: DbOrTx,
+  input: { orgId: string; invoice: Invoice; taxablePaise: number; reason: string; at: Date; settings: BillingSetting; subscriptionId?: string | null; by?: string | null },
+): Promise<CreditNote | null> {
+  const prior = await tx.execute<{ taxable: number }>(sql`select coalesce(sum(taxable_paise), 0)::bigint as taxable from credit_notes where invoice_id = ${input.invoice.id}`);
+  const left = input.invoice.taxablePaise - Number(prior.rows[0]?.taxable ?? 0);
+  const taxable = Math.max(0, Math.min(Math.round(input.taxablePaise), left));
+  if (taxable <= 0) return null;
+  const supplierState = String((input.invoice.supplier as { stateCode?: string }).stateCode ?? input.settings.stateCode);
+  const t = gst(taxable, input.invoice.gstRateBp, supplierState, input.invoice.placeOfSupply);
+  const fy = financialYear(input.at);
+  const prefix = input.settings.creditNotePrefix || 'CN';
+  const seq = await nextNumber(tx, input.orgId, prefix, fy);
+  const [cn] = await tx
+    .insert(creditNotes)
+    .values({
+      orgId: input.orgId,
+      customerId: input.invoice.customerId,
+      invoiceId: input.invoice.id,
+      number: documentNumber(prefix, fy, seq),
+      fy,
+      issuedAt: input.at,
+      reason: input.reason.slice(0, 400),
+      taxablePaise: t.taxablePaise,
+      cgstPaise: t.cgstPaise,
+      sgstPaise: t.sgstPaise,
+      igstPaise: t.igstPaise,
+      totalPaise: t.totalPaise,
+      subscriptionId: input.subscriptionId ?? null,
+      createdBy: input.by ?? null,
+    })
+    .returning();
+  return cn!;
 }

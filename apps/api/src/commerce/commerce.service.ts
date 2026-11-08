@@ -9,6 +9,8 @@ import {
   type billingSettingsSchema,
   type clientPriceSchema,
   type customerBillingSchema,
+  type subscriptionActionSchema,
+  type subscriptionCancelSchema,
   type subscriptionUpdateSchema,
   type VirtPlan,
   type VirtTemplate,
@@ -19,6 +21,7 @@ import {
 import { DB, type Db } from '../db/db';
 import {
   billingSettings,
+  creditNotes,
   customerPlanPrices,
   customers,
   invoices,
@@ -38,7 +41,7 @@ import { AuditService, actorFrom } from '../audit/audit.service';
 import { SecretBox } from '../common/secret-box';
 import { jobContext } from '../provisioning/contexts';
 import type { Principal, RequestMeta } from '../auth/principal';
-import { InsufficientFunds, loadSettings, moveWallet, nextReceipt, taxFor } from './ledger';
+import { InsufficientFunds, issueCreditNote, loadSettings, moveWallet, nextReceipt, taxFor } from './ledger';
 import { deliverOrder, refundOrder } from './delivery';
 
 type I<T extends z.ZodTypeAny> = z.infer<T>;
@@ -396,6 +399,7 @@ export class CommerceService {
       })),
       invoices: invs.map((i) => ({ id: i.id, number: i.number, issuedAt: i.issuedAt, totalPaise: i.totalPaise, taxablePaise: i.taxablePaise, status: i.status, description: i.lines[0]?.description ?? '' })),
       orders,
+      creditNotes: await this.creditNoteRows(p, cid),
     };
   }
 
@@ -747,6 +751,9 @@ export class CommerceService {
       overdueSince: r.s.overdueSince,
       suspendedAt: r.s.suspendedAt,
       cancelledAt: r.s.cancelledAt,
+      cancelAt: r.s.cancelAt,
+      deleteVps: r.s.deleteVps,
+      pendingAction: r.s.pendingAction,
       suspendsAt: r.s.status === 'overdue' && settings ? new Date((r.s.overdueSince ?? r.s.nextDueAt).getTime() + settings.graceDays * 86_400_000) : null,
       guestId: r.s.guestId,
       guestName: r.guestName,
@@ -792,6 +799,175 @@ export class CommerceService {
       );
       return row;
     });
+  }
+
+  /**
+   * Cancel a VPS subscription.
+   * - At the end of the paid period (staff, or the client for their own): no renewal; on the due date
+   *   the subscription ends and the VPS is suspended, or deleted when that was asked for.
+   * - Now (staff): ends today; optionally a GST credit note for the unused days (or the whole last
+   *   invoice) goes back to the wallet; the VPS is suspended or deleted by the worker within a minute.
+   * Deleting needs the VPS hostname typed.
+   */
+  async cancelSubscription(p: Principal, id: string, input: I<typeof subscriptionCancelSchema>, meta: RequestMeta) {
+    const staff = p.userType === 'staff';
+    if (staff) this.staffWrite(p);
+    else if (!p.permissions.has('orders.place')) throw forbidden();
+    if (!staff && (input.when !== 'end_of_period' || input.refund !== 'none' || input.deleteVps)) throw forbidden();
+    const now = new Date();
+    return this.db.transaction(async (tx) => {
+      const locked = await tx.execute(sql`select id from subscriptions where id = ${id} and org_id = ${p.orgId} for update`);
+      if (!locked.rows.length) throw NF('Subscription');
+      const [s] = await tx.select().from(subscriptions).where(eq(subscriptions.id, id));
+      const sub = s!;
+      if (!staff && sub.customerId !== p.customerId) throw NF('Subscription');
+      if (sub.status === 'cancelled') throw new ConflictException({ error: 'cancelled', message: 'This subscription is already cancelled' });
+      if (input.deleteVps) {
+        const [g] = sub.guestId ? await tx.select().from(virtGuests).where(eq(virtGuests.id, sub.guestId)) : [];
+        const host = (g?.name ?? sub.name.split(' — ').pop() ?? '').toLowerCase();
+        if (!g) throw new BadRequestException({ error: 'no_vps', message: 'No VPS is linked to this subscription, so there is nothing to delete' });
+        if ((input.confirmHostname ?? '').toLowerCase() !== host) throw new BadRequestException({ error: 'confirm_hostname', message: `Type the VPS name (${g.name}) to confirm deleting it` });
+      }
+      const reason = input.reason?.trim() || (staff ? 'Cancelled by staff' : 'Cancelled by the client');
+      let credit: { number: string; totalPaise: number } | null = null;
+      if (input.when === 'end_of_period') {
+        await tx.update(subscriptions).set({ cancelAt: sub.nextDueAt, cancelReason: reason, deleteVps: input.deleteVps }).where(eq(subscriptions.id, id));
+      } else {
+        if (input.refund !== 'none') {
+          const settings = await loadSettings(tx, p.orgId);
+          const [inv] = await tx.select().from(invoices).where(eq(invoices.subscriptionId, id)).orderBy(desc(invoices.issuedAt)).limit(1);
+          if (settings && inv) {
+            const span = sub.nextDueAt.getTime() - sub.periodStart.getTime();
+            const unused = span > 0 ? Math.min(1, Math.max(0, (sub.nextDueAt.getTime() - now.getTime()) / span)) : 0;
+            // Only the invoice of the current period is refunded; overdue/suspended periods were never paid.
+            const paidCurrent = sub.status === 'active' || sub.status === 'overdue' ? inv : null;
+            const share = input.refund === 'full' ? 1 : sub.status === 'active' ? unused : 0;
+            if (paidCurrent && share > 0) {
+              const cn = await issueCreditNote(tx, {
+                orgId: p.orgId,
+                invoice: paidCurrent,
+                taxablePaise: paidCurrent.taxablePaise * share,
+                reason: `${input.refund === 'full' ? 'Full refund' : `Unused ${Math.round(unused * 100)} % of the period`}: ${reason}`,
+                at: now,
+                settings,
+                subscriptionId: id,
+                by: p.email,
+              });
+              if (cn) {
+                await moveWallet(tx, {
+                  orgId: p.orgId,
+                  customerId: sub.customerId,
+                  kind: 'refund',
+                  amountPaise: cn.totalPaise,
+                  description: `Credit note ${cn.number} for ${sub.name} (invoice ${paidCurrent.number})`,
+                  invoiceId: paidCurrent.id,
+                  subscriptionId: id,
+                  actorLabel: p.email,
+                });
+                credit = { number: cn.number, totalPaise: cn.totalPaise };
+              }
+            }
+          }
+        }
+        await tx
+          .update(subscriptions)
+          .set({ status: 'cancelled', cancelledAt: now, cancelAt: now, cancelReason: reason, deleteVps: input.deleteVps, pendingAction: sub.guestId ? (input.deleteVps ? 'delete' : 'suspend') : null, pendingBy: p.email, lastError: null })
+          .where(eq(subscriptions.id, id));
+        if (sub.serviceId)
+          await tx
+            .update(services)
+            .set({ status: 'cancelled', endDate: now.toISOString().slice(0, 10) })
+            .where(eq(services.id, sub.serviceId));
+      }
+      await this.rec(
+        p,
+        meta,
+        'billing.subscription_cancel',
+        { type: 'subscription', id },
+        { name: sub.name, when: input.when, refund: input.refund, deleteVps: input.deleteVps, creditNote: credit?.number ?? null, credited: credit?.totalPaise ?? 0, reason },
+        sub.customerId,
+        tx,
+      );
+      return { ok: true, creditNote: credit };
+    });
+  }
+
+  /** Suspend or unsuspend a subscription's VPS by hand (staff), or withdraw a cancellation set for the end of the period. */
+  async subscriptionAction(p: Principal, id: string, input: I<typeof subscriptionActionSchema>, meta: RequestMeta) {
+    const staff = p.userType === 'staff';
+    if (staff) this.staffWrite(p);
+    else if (!p.permissions.has('orders.place') || input.action !== 'keep') throw forbidden();
+    return this.db.transaction(async (tx) => {
+      const locked = await tx.execute(sql`select id from subscriptions where id = ${id} and org_id = ${p.orgId} for update`);
+      if (!locked.rows.length) throw NF('Subscription');
+      const [s] = await tx.select().from(subscriptions).where(eq(subscriptions.id, id));
+      const sub = s!;
+      if (!staff && sub.customerId !== p.customerId) throw NF('Subscription');
+      if (input.action === 'keep') {
+        if (sub.status === 'cancelled' || !sub.cancelAt) throw new ConflictException({ error: 'not_cancelling', message: 'There is no cancellation to withdraw' });
+        await tx.update(subscriptions).set({ cancelAt: null, cancelReason: null, deleteVps: false }).where(eq(subscriptions.id, id));
+      } else {
+        if (!sub.guestId) throw new BadRequestException({ error: 'no_vps', message: 'No VPS is linked to this subscription' });
+        if (sub.pendingAction === 'delete') throw new ConflictException({ error: 'deleting', message: 'The VPS is being deleted' });
+        await tx.update(subscriptions).set({ pendingAction: input.action, pendingBy: p.email, lastError: null }).where(eq(subscriptions.id, id));
+      }
+      await this.rec(p, meta, `billing.subscription_${input.action}`, { type: 'subscription', id }, { name: sub.name }, sub.customerId, tx);
+      return { ok: true };
+    });
+  }
+
+  async creditNote(p: Principal, id: string) {
+    const [c] = await this.db
+      .select()
+      .from(creditNotes)
+      .where(and(eq(creditNotes.id, id), eq(creditNotes.orgId, p.orgId)));
+    const cid = this.scope(p, c?.customerId);
+    if (!c || (cid && c.customerId !== cid)) throw NF('Credit note');
+    const [inv] = await this.db.select().from(invoices).where(eq(invoices.id, c.invoiceId));
+    return {
+      ...c,
+      invoice: {
+        id: inv!.id,
+        number: inv!.number,
+        issuedAt: inv!.issuedAt,
+        gstRateBp: inv!.gstRateBp,
+        supplier: inv!.supplier,
+        recipient: inv!.recipient,
+        placeOfSupply: inv!.placeOfSupply,
+        placeOfSupplyName: GST_STATES[inv!.placeOfSupply] ?? inv!.placeOfSupply,
+        lines: inv!.lines,
+      },
+    };
+  }
+
+  private async creditNoteRows(p: Principal, customerId: string | null) {
+    const rows = await this.db
+      .select({ c: creditNotes, invoice: invoices.number, customer: customers.name })
+      .from(creditNotes)
+      .innerJoin(invoices, eq(invoices.id, creditNotes.invoiceId))
+      .innerJoin(customers, eq(customers.id, creditNotes.customerId))
+      .where(and(eq(creditNotes.orgId, p.orgId), ...(customerId ? [eq(creditNotes.customerId, customerId)] : [])))
+      .orderBy(desc(creditNotes.issuedAt))
+      .limit(500);
+    return rows.map((r) => ({
+      id: r.c.id,
+      number: r.c.number,
+      issuedAt: r.c.issuedAt,
+      invoiceId: r.c.invoiceId,
+      invoice: r.invoice,
+      customer: r.customer,
+      customerId: r.c.customerId,
+      reason: r.c.reason,
+      taxablePaise: r.c.taxablePaise,
+      cgstPaise: r.c.cgstPaise,
+      sgstPaise: r.c.sgstPaise,
+      igstPaise: r.c.igstPaise,
+      totalPaise: r.c.totalPaise,
+    }));
+  }
+
+  async creditNotes(p: Principal, customerId?: string) {
+    return this.creditNoteRows(p, this.scope(p, customerId));
   }
 
   /** For the Overview/Billing header: money owed and at risk, for staff. */

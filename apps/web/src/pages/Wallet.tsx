@@ -31,6 +31,9 @@ interface SubT {
   suspendedAt: string | null;
   cancelledAt: string | null;
   suspendsAt: string | null;
+  cancelAt: string | null;
+  deleteVps: boolean;
+  pendingAction: 'suspend' | 'unsuspend' | 'delete' | null;
   guestId: string | null;
   guestName: string | null;
   guestStatus: string | null;
@@ -96,6 +99,22 @@ interface AccountT {
   transactions: TxT[];
   invoices: InvoiceRowT[];
   orders: OrderT[];
+  creditNotes: CreditNoteRowT[];
+}
+interface CreditNoteRowT {
+  id: string;
+  number: string;
+  issuedAt: string;
+  invoiceId: string;
+  invoice: string;
+  customer: string;
+  customerId: string;
+  reason: string;
+  taxablePaise: number;
+  cgstPaise: number;
+  sgstPaise: number;
+  igstPaise: number;
+  totalPaise: number;
 }
 interface PlanT {
   id: string;
@@ -148,6 +167,7 @@ interface SettingsT {
   gstRateBp: number;
   invoicePrefix: string;
   receiptPrefix: string;
+  creditNotePrefix: string;
   graceDays: number;
   email: string | null;
   phone: string | null;
@@ -412,6 +432,11 @@ function OrdersTable({ rows, staff, onResolve }: { rows: OrderT[]; staff: boolea
                   Invoice
                 </Link>
               )}
+              {staff && o.status === 'active' && (
+                <Link to={`/wallet?customer=${o.customerId}`} className="ml-3 text-[13px] text-accent hover:underline" title="Price, suspend / unsuspend, cancel">
+                  Manage
+                </Link>
+              )}
               {staff && o.jobId && (
                 <Link to={`/provisioning?job=${o.jobId}`} className="ml-3 text-[13px] text-accent hover:underline">
                   Job
@@ -478,6 +503,52 @@ function ResolveModal({ order, onClose }: { order: OrderT; onClose: () => void }
   );
 }
 
+/** GST credit notes (refunds of invoiced amounts), all clients or the given rows. */
+function CreditNotesPanel({ rows }: { rows?: CreditNoteRowT[] }) {
+  const q = useQuery({ queryKey: ['billing', 'credit-notes'], queryFn: () => api.get<CreditNoteRowT[]>(`${B}/credit-notes`), enabled: !rows });
+  const list = rows ?? q.data ?? [];
+  if (!rows && !list.length) return null;
+  return (
+    <Panel title="Credit notes" className={rows ? undefined : 'mt-5'} flush>
+      <Table label="Credit notes">
+        <thead>
+          <tr>
+            <th>Number</th>
+            <th>Date</th>
+            {!rows && <th>Client</th>}
+            <th>Against invoice</th>
+            <th>Reason</th>
+            <th className="text-right">Credited</th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((c) => (
+            <tr key={c.id}>
+              <td>
+                <Link to={`/wallet/credit-notes/${c.id}`} className="font-mono text-[13px] text-accent hover:underline">
+                  {c.number}
+                </Link>
+              </td>
+              <td className="text-[13px]">{formatDate(c.issuedAt)}</td>
+              {!rows && <td>{c.customer}</td>}
+              <td>
+                <Link to={`/wallet/invoices/${c.invoiceId}`} className="font-mono text-[13px] hover:text-accent hover:underline">
+                  {c.invoice}
+                </Link>
+              </td>
+              <td className="max-w-[40ch] text-[13px] text-ink-2">{c.reason}</td>
+              <td className="text-right">
+                <Money p={c.totalPaise} />
+                <span className="block text-[12px] text-ink-3">incl. {inr(c.totalPaise - c.taxablePaise)} GST</span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    </Panel>
+  );
+}
+
 function SubscriptionsTab() {
   const [status, setStatus] = useState('');
   const q = useQuery({ queryKey: ['billing', 'subscriptions', status], queryFn: () => api.get<SubT[]>(`${B}/subscriptions${qs({ status })}`), refetchInterval: 30_000 });
@@ -512,6 +583,7 @@ function SubscriptionsTab() {
 function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
   const { can } = useAuth();
   const [editing, setEditing] = useState<SubT | null>(null);
+  const [cancelling, setCancelling] = useState<SubT | null>(null);
   return (
     <>
       <Table label="Subscriptions">
@@ -522,7 +594,7 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
             <th className="text-right">Per month</th>
             <th>Status</th>
             <th>Next renewal</th>
-            {staff && can('billing.write') && <th />}
+            {((staff && can('billing.write')) || (!staff && can('orders.place'))) && <th />}
           </tr>
         </thead>
         <tbody>
@@ -553,6 +625,14 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
                 <Chip tone={SUB_TONE[s.status]}>{SUB_LABEL[s.status]}</Chip>
                 {s.status === 'overdue' && s.suspendsAt && <span className="block text-[12px] text-ink-3">suspends {formatDateTime(s.suspendsAt)} unless paid</span>}
                 {s.status === 'suspended' && <span className="block text-[12px] text-ink-3">since {formatDate(s.suspendedAt)}; resumes when the wallet covers a month</span>}
+                {s.cancelAt && s.status !== 'cancelled' && (
+                  <span className="block text-[12px] text-warn">
+                    ends {formatDate(s.cancelAt)}, then the VPS is {s.deleteVps ? 'deleted' : 'suspended'}
+                  </span>
+                )}
+                {s.status === 'cancelled' && s.cancelAt && !s.pendingAction && <span className="block text-[12px] text-ink-3">VPS {s.deleteVps ? 'deleted' : 'suspended'}</span>}
+                {s.pendingAction && <span className="block text-[12px] text-accent">{PENDING[s.pendingAction]} the VPS…</span>}
+                {s.status === 'active' && s.suspendedAt && !s.pendingAction && <span className="block text-[12px] text-warn">VPS suspended by staff</span>}
                 {s.lastError && <span className="block max-w-[40ch] text-[12px] text-crit">{s.lastError}</span>}
               </td>
               <td className="text-[13px] whitespace-nowrap">{s.status === 'cancelled' ? `cancelled ${formatDate(s.cancelledAt)}` : formatDate(s.nextDueAt)}</td>
@@ -560,9 +640,21 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
                 <td className="text-right">
                   {s.status !== 'cancelled' && (
                     <Button size="sm" onClick={() => setEditing(s)}>
-                      Change
+                      Manage
                     </Button>
                   )}
+                </td>
+              )}
+              {!staff && can('orders.place') && (
+                <td className="text-right">
+                  {s.status !== 'cancelled' &&
+                    (s.cancelAt ? (
+                      <ClientKeep sub={s} />
+                    ) : (
+                      <Button size="sm" onClick={() => setCancelling(s)}>
+                        Cancel
+                      </Button>
+                    ))}
                 </td>
               )}
             </tr>
@@ -570,45 +662,199 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
         </tbody>
       </Table>
       {editing && <SubModal sub={editing} onClose={() => setEditing(null)} />}
+      {cancelling && <ClientCancelModal sub={cancelling} onClose={() => setCancelling(null)} />}
     </>
   );
 }
 
+const PENDING = { suspend: 'Suspending', unsuspend: 'Unsuspending', delete: 'Deleting' } as const;
+
+/** Staff: change the price or renewal date, suspend / unsuspend the VPS, or cancel (end of period or now, refund, delete). */
 function SubModal({ sub, onClose }: { sub: SubT; onClose: () => void }) {
   const qc = useQueryClient();
+  const [tab, setTab] = useState<'change' | 'vps' | 'cancel'>('change');
   const [price, setPrice] = useState(paiseToRupees(sub.pricePaise));
   const [due, setDue] = useState(sub.nextDueAt.slice(0, 10));
-  const [cancel, setCancel] = useState(false);
+  const [when, setWhen] = useState<'end_of_period' | 'now'>('end_of_period');
+  const [refund, setRefund] = useState<'none' | 'unused' | 'full'>('unused');
+  const [del, setDel] = useState(false);
+  const [confirm, setConfirm] = useState('');
+  const [reason, setReason] = useState('');
   const p = rupeesToPaise(price);
+  const done = () => {
+    void qc.invalidateQueries({ queryKey: ['billing'] });
+    onClose();
+  };
+  const save = useMutation({ mutationFn: () => api.put(`${B}/subscriptions/${sub.id}`, { pricePaise: p ?? undefined, nextDueAt: new Date(`${due}T${sub.nextDueAt.slice(11)}`).toISOString() }), onSuccess: done });
+  const act = useMutation({ mutationFn: (action: 'suspend' | 'unsuspend' | 'keep') => api.post(`${B}/subscriptions/${sub.id}/actions`, { action }), onSuccess: done });
+  const cancel = useMutation({
+    mutationFn: () =>
+      api.post<{ creditNote: { number: string; totalPaise: number } | null }>(`${B}/subscriptions/${sub.id}/cancel`, {
+        when,
+        refund: when === 'now' ? refund : 'none',
+        deleteVps: del,
+        confirmHostname: del ? confirm : undefined,
+        reason: reason || undefined,
+      }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['billing'] }),
+  });
+  const host = sub.guestName ?? '';
+  const suspendedByStaff = !!sub.suspendedAt && sub.status === 'active';
+  return (
+    <Modal open onOpenChange={(o) => !o && onClose()} title={sub.name} description={`${sub.customer} · ${inr(sub.pricePaise)} a month + GST, renews ${formatDate(sub.nextDueAt)} from the wallet`} wide>
+      <div role="tablist" aria-label="Manage" className="mb-4 flex w-fit gap-1 rounded-xl border border-rule bg-sunken p-1">
+        {(
+          [
+            ['change', 'Price & renewal'],
+            ['vps', 'Suspend / unsuspend'],
+            ['cancel', 'Cancel'],
+          ] as const
+        ).map(([k, l]) => (
+          <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} className={cx('h-8 rounded-lg px-3 text-[13px]', tab === k ? 'bg-panel font-semibold shadow-sm' : 'text-ink-2 hover:text-ink')}>
+            {l}
+          </button>
+        ))}
+      </div>
+      {tab === 'change' && (
+        <div className="grid gap-3">
+          <Field label="Monthly price (₹, before GST)" hint="From the next renewal." error={p === null ? 'Enter an amount' : undefined}>
+            {(id) => <Input id={id} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />}
+          </Field>
+          <Field label="Next renewal">{(id) => <Input id={id} type="date" value={due} onChange={(e) => setDue(e.target.value)} />}</Field>
+          {sub.cancelAt && (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-[13px]">
+              <span>Set to end on {formatDate(sub.cancelAt)}.</span>
+              <Button size="sm" busy={act.isPending} onClick={() => act.mutate('keep')}>
+                Keep it (withdraw the cancellation)
+              </Button>
+            </div>
+          )}
+          <ErrorNote error={save.error ?? act.error} />
+          <div className="flex justify-end gap-2">
+            <Button onClick={onClose}>Close</Button>
+            <Button variant="primary" busy={save.isPending} disabled={p === null} onClick={() => save.mutate()}>
+              Save
+            </Button>
+          </div>
+        </div>
+      )}
+      {tab === 'vps' && (
+        <div className="grid gap-3 text-[13.5px]">
+          <p>
+            VPS <b>{host || 'not linked'}</b>
+            {sub.guestStatus ? ` is ${sub.guestStatus}` : ''}. Suspending stops it in Virtualizor without deleting anything; billing carries on as usual (a VPS suspended for non-payment resumes on its own once the wallet covers a month).
+          </p>
+          {sub.pendingAction && <p className="text-accent">{PENDING[sub.pendingAction]} the VPS (within a minute)…</p>}
+          <ErrorNote error={act.error} />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button onClick={onClose}>Close</Button>
+            <Button busy={act.isPending} disabled={!sub.guestId || !!sub.pendingAction} onClick={() => act.mutate('unsuspend')}>
+              Unsuspend now
+            </Button>
+            <Button variant="danger" busy={act.isPending} disabled={!sub.guestId || !!sub.pendingAction || suspendedByStaff} onClick={() => act.mutate('suspend')}>
+              Suspend now
+            </Button>
+          </div>
+        </div>
+      )}
+      {tab === 'cancel' &&
+        (cancel.data ? (
+          <div className="grid gap-3 text-[13.5px]">
+            <p>
+              Cancelled{when === 'end_of_period' ? `: it ends on ${formatDate(sub.nextDueAt)} and is not renewed` : ''}.
+              {cancel.data.creditNote ? ` Credit note ${cancel.data.creditNote.number} for ${inr(cancel.data.creditNote.totalPaise)} went back to the wallet.` : ''}
+              {when === 'now' ? ` The VPS is being ${del ? 'deleted' : 'suspended'} (within a minute).` : ''}
+            </p>
+            <div className="flex justify-end">
+              <Button variant="primary" onClick={done}>
+                Done
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-3 text-[13.5px]">
+            <fieldset className="grid gap-2">
+              <legend className="mb-1 font-medium">When</legend>
+              <label className="flex items-start gap-2">
+                <input type="radio" className="mt-1" checked={when === 'end_of_period'} onChange={() => setWhen('end_of_period')} />
+                <span>
+                  At the end of the paid period, on {formatDate(sub.nextDueAt)}: not renewed, then the VPS is {del ? 'deleted' : 'suspended'}. No refund.
+                </span>
+              </label>
+              <label className="flex items-start gap-2">
+                <input type="radio" className="mt-1" checked={when === 'now'} onChange={() => setWhen('now')} />
+                <span>Now: ends today and the VPS is {del ? 'deleted' : 'suspended'} within a minute.</span>
+              </label>
+            </fieldset>
+            {when === 'now' && (
+              <Field label="Refund to the wallet (as a GST credit note against the last invoice)">
+                {(id) => (
+                  <Select id={id} value={refund} onChange={(e) => setRefund(e.target.value as typeof refund)}>
+                    <option value="unused">Unused days of the current period</option>
+                    <option value="full">The whole last invoice</option>
+                    <option value="none">No refund</option>
+                  </Select>
+                )}
+              </Field>
+            )}
+            <label className="flex items-start gap-2">
+              <input type="checkbox" className="mt-1" checked={del} disabled={!sub.guestId} onChange={(e) => setDel(e.target.checked)} />
+              <span>Delete the VPS in Virtualizor (its disk and data are gone for good). Unticked, it is only suspended and can be deleted later in Virtualizor.</span>
+            </label>
+            {del && <Field label={`Type ${host} to confirm deleting it`}>{(id) => <Input id={id} value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" />}</Field>}
+            <Field label="Reason (optional, kept in the audit log)">{(id) => <Input id={id} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+            <ErrorNote error={cancel.error} />
+            <div className="flex justify-end gap-2">
+              <Button onClick={onClose}>Close</Button>
+              <Button variant="danger" busy={cancel.isPending} disabled={del && confirm.trim().toLowerCase() !== host.toLowerCase()} onClick={() => cancel.mutate()}>
+                {when === 'now' ? 'Cancel now' : 'Cancel at period end'}
+              </Button>
+            </div>
+          </div>
+        ))}
+    </Modal>
+  );
+}
+
+/** Client: stop renewing their VPS at the end of the paid period. */
+function ClientCancelModal({ sub, onClose }: { sub: SubT; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState('');
   const m = useMutation({
-    mutationFn: () => api.put(`${B}/subscriptions/${sub.id}`, cancel ? { cancel: true } : { pricePaise: p ?? undefined, nextDueAt: new Date(`${due}T${sub.nextDueAt.slice(11)}`).toISOString() }),
+    mutationFn: () => api.post(`${B}/subscriptions/${sub.id}/cancel`, { when: 'end_of_period', reason: reason || undefined }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['billing'] });
       onClose();
     },
   });
   return (
-    <Modal open onOpenChange={(o) => !o && onClose()} title={sub.name} description={`${sub.customer} · renews monthly from the wallet`}>
+    <Modal
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={`Cancel ${sub.guestName ?? sub.name}`}
+      description={`It keeps running until ${formatDate(sub.nextDueAt)}, the end of the period you paid for, and is not renewed. It is then suspended; ask us if you need the data first.`}
+    >
       <div className="grid gap-3">
-        <Field label="Monthly price (₹, before GST)" error={p === null ? 'Enter an amount' : undefined}>
-          {(id) => <Input id={id} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} disabled={cancel} />}
-        </Field>
-        <Field label="Next renewal">{(id) => <Input id={id} type="date" value={due} onChange={(e) => setDue(e.target.value)} disabled={cancel} />}</Field>
-        <label className="flex items-start gap-2 text-[13.5px]">
-          <input type="checkbox" className="mt-1" checked={cancel} onChange={(e) => setCancel(e.target.checked)} />
-          <span>
-            Stop renewing (cancel). The VPS is <b>not</b> deleted or suspended; remove it in Virtualizor if it should go.
-          </span>
-        </label>
+        <Field label="Reason (optional)">{(id) => <Input id={id} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
         <ErrorNote error={m.error} />
         <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Close</Button>
-          <Button variant={cancel ? 'danger' : 'primary'} busy={m.isPending} disabled={!cancel && p === null} onClick={() => m.mutate()}>
-            {cancel ? 'Cancel renewals' : 'Save'}
+          <Button onClick={onClose}>Keep it</Button>
+          <Button variant="danger" busy={m.isPending} onClick={() => m.mutate()}>
+            Cancel at period end
           </Button>
         </div>
       </div>
     </Modal>
+  );
+}
+
+function ClientKeep({ sub }: { sub: SubT }) {
+  const qc = useQueryClient();
+  const m = useMutation({ mutationFn: () => api.post(`${B}/subscriptions/${sub.id}/actions`, { action: 'keep' }), onSuccess: () => void qc.invalidateQueries({ queryKey: ['billing'] }) });
+  return (
+    <Button size="sm" busy={m.isPending} onClick={() => m.mutate()} title={m.error ? String((m.error as Error).message) : undefined}>
+      Keep it
+    </Button>
   );
 }
 
@@ -627,75 +873,78 @@ function InvoicesTab() {
     a.click();
   };
   return (
-    <Panel
-      title="Tax invoices"
-      actions={
-        <Button size="sm" onClick={csv} disabled={!q.data?.length}>
-          Export CSV (for GSTR-1)
-        </Button>
-      }
-      flush
-    >
-      {q.isLoading ? (
-        <Loading />
-      ) : q.error ? (
-        <ErrorNote error={q.error} className="m-4" />
-      ) : !q.data!.length ? (
-        <EmptyState title="No invoices yet">An invoice is issued for every VPS charge: the first month when the VPS is delivered, then each renewal.</EmptyState>
-      ) : (
-        <Table label="Invoices">
-          <thead>
-            <tr>
-              <th>Number</th>
-              <th>Date</th>
-              <th>Client</th>
-              <th>For</th>
-              <th className="text-right">Taxable</th>
-              <th className="text-right">GST</th>
-              <th className="text-right">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {q.data!.map((i) => (
-              <tr key={i.id}>
-                <td>
-                  <Link to={`/wallet/invoices/${i.id}`} className="font-mono text-[13px] text-accent hover:underline">
-                    {i.number}
-                  </Link>
-                </td>
-                <td className="text-[13px]">{formatDate(i.issuedAt)}</td>
-                <td>{i.customer}</td>
-                <td className="max-w-[40ch] truncate text-[13px] text-ink-2">{i.description}</td>
-                <td className="text-right">
-                  <Money p={i.taxablePaise} />
-                </td>
-                <td className="text-right">
-                  <Money p={i.totalPaise - i.taxablePaise} />
-                  <span className="block text-[11.5px] text-ink-3">{i.igstPaise ? 'IGST' : 'CGST + SGST'}</span>
+    <>
+      <Panel
+        title="Tax invoices"
+        actions={
+          <Button size="sm" onClick={csv} disabled={!q.data?.length}>
+            Export CSV (for GSTR-1)
+          </Button>
+        }
+        flush
+      >
+        {q.isLoading ? (
+          <Loading />
+        ) : q.error ? (
+          <ErrorNote error={q.error} className="m-4" />
+        ) : !q.data!.length ? (
+          <EmptyState title="No invoices yet">An invoice is issued for every VPS charge: the first month when the VPS is delivered, then each renewal.</EmptyState>
+        ) : (
+          <Table label="Invoices">
+            <thead>
+              <tr>
+                <th>Number</th>
+                <th>Date</th>
+                <th>Client</th>
+                <th>For</th>
+                <th className="text-right">Taxable</th>
+                <th className="text-right">GST</th>
+                <th className="text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {q.data!.map((i) => (
+                <tr key={i.id}>
+                  <td>
+                    <Link to={`/wallet/invoices/${i.id}`} className="font-mono text-[13px] text-accent hover:underline">
+                      {i.number}
+                    </Link>
+                  </td>
+                  <td className="text-[13px]">{formatDate(i.issuedAt)}</td>
+                  <td>{i.customer}</td>
+                  <td className="max-w-[40ch] truncate text-[13px] text-ink-2">{i.description}</td>
+                  <td className="text-right">
+                    <Money p={i.taxablePaise} />
+                  </td>
+                  <td className="text-right">
+                    <Money p={i.totalPaise - i.taxablePaise} />
+                    <span className="block text-[11.5px] text-ink-3">{i.igstPaise ? 'IGST' : 'CGST + SGST'}</span>
+                  </td>
+                  <td className="text-right font-semibold">
+                    <Money p={i.totalPaise} />
+                  </td>
+                </tr>
+              ))}
+              <tr>
+                <td colSpan={4} className="text-right text-[13px] font-semibold">
+                  All listed
                 </td>
                 <td className="text-right font-semibold">
-                  <Money p={i.totalPaise} />
+                  <Money p={totals.taxable} />
+                </td>
+                <td className="text-right font-semibold">
+                  <Money p={totals.gst} />
+                </td>
+                <td className="text-right font-semibold">
+                  <Money p={totals.total} />
                 </td>
               </tr>
-            ))}
-            <tr>
-              <td colSpan={4} className="text-right text-[13px] font-semibold">
-                All listed
-              </td>
-              <td className="text-right font-semibold">
-                <Money p={totals.taxable} />
-              </td>
-              <td className="text-right font-semibold">
-                <Money p={totals.gst} />
-              </td>
-              <td className="text-right font-semibold">
-                <Money p={totals.total} />
-              </td>
-            </tr>
-          </tbody>
-        </Table>
-      )}
-    </Panel>
+            </tbody>
+          </Table>
+        )}
+      </Panel>
+      <CreditNotesPanel />
+    </>
   );
 }
 
@@ -925,7 +1174,23 @@ function SettingsTab() {
 function SettingsForm({ initial, readOnly }: { initial: SettingsT | null; readOnly: boolean }) {
   const qc = useQueryClient();
   const [f, setF] = useState<SettingsT>(
-    initial ?? { legalName: '', address: '', stateCode: '', gstin: '', pan: '', sacCode: '998315', gstRateBp: 1800, invoicePrefix: 'INV', receiptPrefix: 'RCPT', graceDays: 3, email: '', phone: '', bankDetails: '', invoiceNotes: '' },
+    initial ?? {
+      legalName: '',
+      address: '',
+      stateCode: '',
+      gstin: '',
+      pan: '',
+      sacCode: '998315',
+      gstRateBp: 1800,
+      invoicePrefix: 'INV',
+      receiptPrefix: 'RCPT',
+      creditNotePrefix: 'CN',
+      graceDays: 3,
+      email: '',
+      phone: '',
+      bankDetails: '',
+      invoiceNotes: '',
+    },
   );
   const set = (k: keyof SettingsT) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
   const gstinBad = !!f.gstin && !validGstin(f.gstin);
@@ -985,6 +1250,7 @@ function SettingsForm({ initial, readOnly }: { initial: SettingsT | null; readOn
           {(id) => <Input id={id} value={f.invoicePrefix} onChange={(e) => setF({ ...f, invoicePrefix: e.target.value.toUpperCase() })} />}
         </Field>
         <Field label="Receipt number prefix">{(id) => <Input id={id} value={f.receiptPrefix} onChange={(e) => setF({ ...f, receiptPrefix: e.target.value.toUpperCase() })} />}</Field>
+        <Field label="Credit note number prefix">{(id) => <Input id={id} value={f.creditNotePrefix ?? 'CN'} onChange={(e) => setF({ ...f, creditNotePrefix: e.target.value.toUpperCase() })} />}</Field>
         <Field label="Grace days before suspension" hint="After a renewal falls due and the wallet is short, the VPS is suspended in Virtualizor after this many days.">
           {(id) => <Input id={id} type="number" min={0} max={60} value={f.graceDays} onChange={(e) => setF({ ...f, graceDays: Number(e.target.value) })} />}
         </Field>
@@ -1071,6 +1337,8 @@ export function ClientAccount({ customerId, staff }: { customerId?: string; staf
           <EmptyState title="No VPSs yet">{canOrder ? 'Order one from a plan; it is paid from the wallet and renews monthly.' : 'VPSs ordered through billing appear here.'}</EmptyState>
         )}
       </Panel>
+
+      {a.creditNotes.length > 0 && <CreditNotesPanel rows={a.creditNotes} />}
 
       {a.orders.length > 0 && (
         <Panel title="Orders" flush>
@@ -1916,5 +2184,136 @@ export function WalletSummaryPanel({ customerId }: { customerId: string }) {
         <Stat label="Invoices" value={a.invoices.length} note={a.invoices[0] ? `last ${formatDate(a.invoices[0].issuedAt)}` : undefined} />
       </dl>
     </Panel>
+  );
+}
+
+interface CreditNoteT {
+  id: string;
+  number: string;
+  issuedAt: string;
+  reason: string;
+  taxablePaise: number;
+  cgstPaise: number;
+  sgstPaise: number;
+  igstPaise: number;
+  totalPaise: number;
+  invoice: { id: string; number: string; issuedAt: string; gstRateBp: number; supplier: InvoiceT['supplier']; recipient: InvoiceT['recipient']; placeOfSupply: string; placeOfSupplyName: string; lines: InvoiceT['lines'] };
+}
+
+export function CreditNotePage() {
+  const { id } = useParams();
+  const q = useQuery({ queryKey: ['billing', 'credit-note', id], queryFn: () => api.get<CreditNoteT>(`${B}/credit-notes/${id}`) });
+  if (q.isLoading) return <Loading />;
+  if (q.error) return <ErrorNote error={q.error} />;
+  const c = q.data!;
+  const s = c.invoice.supplier;
+  const r = c.invoice.recipient;
+  const rate = c.invoice.gstRateBp / 100;
+  const intra = c.igstPaise === 0;
+  return (
+    <Doc title={`Credit note ${c.number}`} back="/wallet?tab=invoices">
+      <header className="flex items-start justify-between gap-6 border-b-2 border-[#111] pb-3">
+        <div>
+          <p className="text-[15pt] font-bold">{s.legalName}</p>
+          <p className="whitespace-pre-line">{s.address}</p>
+          <p>
+            State: {GST_STATES[s.stateCode] ?? s.stateCode} ({s.stateCode})
+          </p>
+          {s.gstin && (
+            <p>
+              GSTIN: <b className="font-mono">{s.gstin}</b>
+            </p>
+          )}
+        </div>
+        <div className="text-right">
+          <p className="text-[14pt] font-bold tracking-wide">CREDIT NOTE</p>
+          <p>
+            No. <b className="font-mono">{c.number}</b>
+          </p>
+          <p>Date: {formatDate(c.issuedAt)}</p>
+          <p className="mt-1 text-[8.5pt]">
+            Against invoice <b className="font-mono">{c.invoice.number}</b> of {formatDate(c.invoice.issuedAt)}
+          </p>
+        </div>
+      </header>
+      <section className="grid grid-cols-2 gap-6 py-3">
+        <div>
+          <p className="text-[8.5pt] font-semibold tracking-wide text-[#555] uppercase">Issued to</p>
+          <p className="font-semibold">{r.name}</p>
+          {r.address && <p className="whitespace-pre-line">{r.address}</p>}
+          {r.gstin ? (
+            <p>
+              GSTIN: <b className="font-mono">{r.gstin}</b>
+            </p>
+          ) : (
+            <p className="text-[#555]">Unregistered recipient</p>
+          )}
+        </div>
+        <div className="text-right">
+          <p className="text-[8.5pt] font-semibold tracking-wide text-[#555] uppercase">Place of supply</p>
+          <p>
+            {c.invoice.placeOfSupplyName} ({c.invoice.placeOfSupply})
+          </p>
+        </div>
+      </section>
+      <table>
+        <thead>
+          <tr>
+            <th>Description</th>
+            <th style={{ width: '12%' }}>SAC</th>
+            <th className="r" style={{ width: '18%' }}>
+              Amount (₹)
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              {c.invoice.lines[0]?.description ?? 'Services'}
+              <span className="block text-[8.5pt] text-[#555]">{c.reason}</span>
+            </td>
+            <td className="font-mono">{c.invoice.lines[0]?.sac ?? ''}</td>
+            <td className="r">{rupees(c.taxablePaise)}</td>
+          </tr>
+          {intra ? (
+            <>
+              <tr>
+                <td colSpan={2} className="r">
+                  CGST @ {rate / 2}%
+                </td>
+                <td className="r">{rupees(c.cgstPaise)}</td>
+              </tr>
+              <tr>
+                <td colSpan={2} className="r">
+                  SGST @ {rate / 2}%
+                </td>
+                <td className="r">{rupees(c.sgstPaise)}</td>
+              </tr>
+            </>
+          ) : (
+            <tr>
+              <td colSpan={2} className="r">
+                IGST @ {rate}%
+              </td>
+              <td className="r">{rupees(c.igstPaise)}</td>
+            </tr>
+          )}
+          <tr>
+            <td colSpan={2} className="r font-bold">
+              Total credited
+            </td>
+            <td className="r font-bold">₹{rupees(c.totalPaise)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="mt-2">
+        <span className="text-[#555]">Amount in words:</span> <b>{amountInWords(c.totalPaise)}</b>
+      </p>
+      <p className="mt-3 text-[8.5pt]">The amount has been credited to the client's prepaid wallet.</p>
+      <footer className="mt-10 flex justify-between text-[8.5pt] text-[#555]">
+        <span>This is a computer-generated credit note.</span>
+        <span>For {s.legalName}</span>
+      </footer>
+    </Doc>
   );
 }
