@@ -537,12 +537,23 @@ export class CommerceService {
 
   private async orderRows(p: Principal, customerId: string | null, limit = 200) {
     const rows = await this.db
-      .select({ o: vpsOrders, plan: vpsPlans.name, customer: customers.name, jobStatus: provisioningJobs.status, jobError: provisioningJobs.error, guestName: virtGuests.name })
+      .select({
+        o: vpsOrders,
+        plan: vpsPlans.name,
+        customer: customers.name,
+        jobStatus: provisioningJobs.status,
+        jobError: provisioningJobs.error,
+        guestName: virtGuests.name,
+        nextDueAt: subscriptions.nextDueAt,
+        subStatus: subscriptions.status,
+        cancelAt: subscriptions.cancelAt,
+      })
       .from(vpsOrders)
       .innerJoin(customers, eq(customers.id, vpsOrders.customerId))
       .leftJoin(vpsPlans, eq(vpsPlans.id, vpsOrders.planId))
       .leftJoin(provisioningJobs, eq(provisioningJobs.id, vpsOrders.jobId))
       .leftJoin(virtGuests, eq(virtGuests.id, vpsOrders.guestId))
+      .leftJoin(subscriptions, eq(subscriptions.id, vpsOrders.subscriptionId))
       .where(and(eq(vpsOrders.orgId, p.orgId), ...(customerId ? [eq(vpsOrders.customerId, customerId)] : [])))
       .orderBy(desc(vpsOrders.createdAt))
       .limit(limit);
@@ -564,6 +575,10 @@ export class CommerceService {
       guestId: r.o.guestId,
       guestName: r.guestName,
       invoiceId: r.o.invoiceId,
+      subscriptionId: r.o.subscriptionId,
+      nextDueAt: r.nextDueAt,
+      subscriptionStatus: r.subStatus,
+      cancelAt: r.cancelAt,
       byCustomer: r.o.byCustomer,
       ...(staff ? { jobId: r.o.jobId, placedBy: r.o.placedBy, jobError: r.jobError } : {}),
     }));
@@ -719,7 +734,7 @@ export class CommerceService {
         if (!g) throw NF('VPS');
         if (g.customerId && g.customerId !== o!.customerId) throw new ConflictException({ error: 'other_customer', message: 'That VPS belongs to another client' });
         await tx.update(virtGuests).set({ customerId: o!.customerId }).where(eq(virtGuests.id, g.id));
-        await tx.execute(sql`update ip_addresses set customer_id = ${o!.customerId}, updated_at = now() where guest_id = ${g.id} and source = 'hypervisor' and customer_id is null and status <> 'released'`);
+        await tx.execute(sql`update ip_addresses set customer_id = ${o!.customerId}, updated_at = now() where guest_id = ${g.id} and customer_id is null and status <> 'released'`);
         const inv = await deliverOrder(tx, this.audit, o!, { ...w, guestId: g.id, vpsid: g.externalId });
         if (!inv) throw new ConflictException({ error: 'billing_not_set_up', message: 'Set up billing first' });
       }
@@ -731,7 +746,7 @@ export class CommerceService {
 
   private async subscriptionRows(p: Principal, customerId: string | null) {
     const rows = await this.db
-      .select({ s: subscriptions, customer: customers.name, guestName: virtGuests.name, guestStatus: virtGuests.status, guestMissing: virtGuests.missingSince })
+      .select({ s: subscriptions, customer: customers.name, guestName: virtGuests.name, guestStatus: virtGuests.status, guestMissing: virtGuests.missingSince, guestIps: virtGuests.ipAddresses })
       .from(subscriptions)
       .innerJoin(customers, eq(customers.id, subscriptions.customerId))
       .leftJoin(virtGuests, eq(virtGuests.id, subscriptions.guestId))
@@ -759,6 +774,7 @@ export class CommerceService {
       guestName: r.guestName,
       guestStatus: r.guestStatus,
       guestMissing: !!r.guestMissing,
+      ipAddresses: (r.guestIps as string[] | null) ?? [],
       ...(staff ? { lastError: r.s.lastError, serviceId: r.s.serviceId, planId: r.s.planId } : {}),
     }));
   }

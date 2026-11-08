@@ -1,3 +1,4 @@
+import { ClientRenewalsPanel } from './Wallet';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -608,6 +609,7 @@ function CustomerOverview() {
       {q.isLoading && <Loading />}
       <ErrorNote error={q.error} />
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+        {can('services.read') && <ClientRenewalsPanel />}
         {c && (
           <Panel title={c.name} className="h-full xl:col-span-4" actions={<Chip tone={c.status === 'active' ? 'ok' : 'warn'}>{c.status === 'active' ? 'Active' : c.status === 'suspended' ? 'Suspended' : 'Closed'}</Chip>}>
             <dl className="grid grid-cols-2 gap-4">

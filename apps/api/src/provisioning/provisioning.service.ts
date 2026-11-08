@@ -1165,8 +1165,15 @@ export class ProvisioningService {
       .from(virtIntegrations)
       .where(eq(virtIntegrations.id, (await this.db.select({ i: virtGuests.integrationId }).from(virtGuests).where(eq(virtGuests.id, id)))[0]!.i));
     const actions = !!i?.enabled && !!i.actionsEnabled && !g.missingSince;
+    // Its monthly billing, when it was ordered through Billing & Wallet (the client's own, or any for staff).
+    const bill = await this.db.execute<{ id: string; name: string; status: string; next_due_at: string; price_paise: number; cancel_at: string | null }>(sql`
+      select id, name, status, next_due_at, price_paise, cancel_at from subscriptions
+       where guest_id = ${id} and org_id = ${p.orgId} ${p.userType === 'staff' ? sql`` : sql`and customer_id = ${p.customerId ?? null}`}
+       order by (status = 'cancelled'), created_at desc limit 1`);
+    const b = bill.rows[0];
     return {
       ...g,
+      billing: b ? { subscriptionId: b.id, name: b.name, status: b.status, nextDueAt: b.next_due_at, pricePaise: Number(b.price_paise), cancelAt: b.cancel_at } : null,
       live,
       can: {
         power: actions && p.permissions.has('hardware.control'),

@@ -29,3 +29,21 @@ export function describeAgent(ua: string | null): string {
   const os = /Mac OS X/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Linux/.test(ua) ? 'Linux' : '';
   return os ? `${browser} on ${os}` : browser;
 }
+
+/** "in 30 days", "today", "tomorrow", "2 days ago" — whole calendar days from today (local time). */
+export function dueIn(iso: string | null | undefined, now = new Date()): string {
+  if (!iso) return '';
+  const day = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  const n = Math.round((day(new Date(iso)) - day(now)) / 86_400_000);
+  if (n === 0) return 'today';
+  if (n === 1) return 'tomorrow';
+  if (n === -1) return 'yesterday';
+  return n > 0 ? `in ${n} days` : `${-n} days ago`;
+}
+
+/** Days until a date (negative when past), for colouring. */
+export function daysUntil(iso: string | null | undefined, now = new Date()): number | null {
+  if (!iso) return null;
+  const day = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  return Math.round((day(new Date(iso)) - day(now)) / 86_400_000);
+}

@@ -4,7 +4,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { amountInWords, formatInr, GST_STATES, rupeesToPaise, validGstin, WALLET_METHOD_LABELS, WALLET_METHODS } from '@crapplet/shared';
 import { api, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { formatDate, formatDateTime } from '../lib/format';
+import { daysUntil, dueIn, formatDate, formatDateTime } from '../lib/format';
 import { useCustomerOptions } from '../lib/colocation';
 import { Button, Chip, cx, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Stat, Table, Textarea } from '../components/ui';
 
@@ -38,6 +38,7 @@ interface SubT {
   guestName: string | null;
   guestStatus: string | null;
   guestMissing: boolean;
+  ipAddresses: string[];
   lastError?: string | null;
 }
 interface TxT {
@@ -70,6 +71,10 @@ interface OrderT {
   guestId: string | null;
   guestName: string | null;
   invoiceId: string | null;
+  subscriptionId: string | null;
+  nextDueAt: string | null;
+  subscriptionStatus: SubStatus | null;
+  cancelAt: string | null;
   byCustomer: boolean;
   jobId?: string | null;
   placedBy?: string | null;
@@ -223,6 +228,24 @@ const specLine = (s: PlanT['specs']) =>
 const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
 const gib = (b: number) => `${(b / 1024 ** 3).toFixed(b >= 100 * 1024 ** 3 ? 0 : 1)} GB`;
 const paiseToRupees = (p: number) => (p / 100).toFixed(2).replace(/\.00$/, '');
+
+/** "in 12 days" in a colour by urgency: 3 days or less amber, past due red. */
+function DueDays({ iso }: { iso: string }) {
+  const n = daysUntil(iso) ?? 99;
+  return <span className={cx(n < 0 ? 'text-crit' : n <= 3 ? 'text-warn font-medium' : 'text-ink-2')}>{dueIn(iso)}</span>;
+}
+
+function DueDate({ iso, label }: { iso: string; label?: string }) {
+  return (
+    <>
+      {label ? `${label} ` : ''}
+      {formatDate(iso)}
+      <span className="block text-[12px]">
+        <DueDays iso={iso} />
+      </span>
+    </>
+  );
+}
 
 function Money({ p, className }: { p: number; className?: string }) {
   return <span className={cx('tabular-nums', p < 0 && 'text-crit', className)}>{inr(p)}</span>;
@@ -425,6 +448,12 @@ function OrdersTable({ rows, staff, onResolve }: { rows: OrderT[]; staff: boolea
             <td>
               <Chip tone={ORDER_TONE[o.status]}>{o.status === 'provisioning' && o.jobStatus === 'recovery' ? 'Interrupted' : ORDER_LABEL[o.status]}</Chip>
               {o.error && <span className="mt-0.5 block max-w-[36ch] text-[12px] text-ink-3">{o.error}</span>}
+              {o.status === 'active' && o.nextDueAt && o.subscriptionStatus !== 'cancelled' && (
+                <span className="mt-0.5 block text-[12px] text-ink-2">
+                  {o.cancelAt ? 'ends' : 'renews'} {formatDate(o.cancelAt ?? o.nextDueAt)} · <DueDays iso={o.cancelAt ?? o.nextDueAt} />
+                </span>
+              )}
+              {o.subscriptionStatus === 'cancelled' && <span className="mt-0.5 block text-[12px] text-ink-3">cancelled</span>}
             </td>
             <td className="text-right whitespace-nowrap">
               {o.invoiceId && (
@@ -616,6 +645,7 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
                     {s.guestMissing ? ' · no longer in Virtualizor' : ''}
                   </span>
                 )}
+                {s.ipAddresses.length > 0 && <span className="block font-mono text-[12px] text-ink-2">{s.ipAddresses.join(', ')}</span>}
               </td>
               <td className="text-right">
                 <Money p={s.pricePaise} />
@@ -635,7 +665,7 @@ function SubsTable({ rows, staff }: { rows: SubT[]; staff: boolean }) {
                 {s.status === 'active' && s.suspendedAt && !s.pendingAction && <span className="block text-[12px] text-warn">VPS suspended by staff</span>}
                 {s.lastError && <span className="block max-w-[40ch] text-[12px] text-crit">{s.lastError}</span>}
               </td>
-              <td className="text-[13px] whitespace-nowrap">{s.status === 'cancelled' ? `cancelled ${formatDate(s.cancelledAt)}` : formatDate(s.nextDueAt)}</td>
+              <td className="text-[13px] whitespace-nowrap">{s.status === 'cancelled' ? `cancelled ${formatDate(s.cancelledAt)}` : <DueDate iso={s.cancelAt ?? s.nextDueAt} label={s.cancelAt ? 'ends' : undefined} />}</td>
               {staff && can('billing.write') && (
                 <td className="text-right">
                   {s.status !== 'cancelled' && (
@@ -1320,7 +1350,12 @@ export function ClientAccount({ customerId, staff }: { customerId?: string; staf
         <dl className="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-4">
           <Stat label="Balance" value={inr(a.balancePaise)} tone={a.balancePaise < 0 ? 'crit' : undefined} note={staff ? 'prepaid' : 'available for orders and renewals'} />
           <Stat label="VPS renewals per month" value={inr(a.monthlyPaise)} note={`${due.length} VPS${due.length === 1 ? '' : 's'}, before GST`} />
-          <Stat label="Next renewal" value={next ? formatDate(next.nextDueAt) : '—'} note={next ? next.name : 'nothing due'} />
+          <Stat
+            label="Next renewal"
+            value={next ? formatDate(next.nextDueAt) : '—'}
+            note={next ? `${dueIn(next.nextDueAt)} · ${next.guestName ?? next.name}` : 'nothing due'}
+            tone={next && (daysUntil(next.nextDueAt) ?? 99) <= 3 ? 'warn' : undefined}
+          />
         </dl>
         {!staff && (
           <p className="mt-4 text-[13px] text-ink-2">
@@ -2315,5 +2350,71 @@ export function CreditNotePage() {
         <span>For {s.legalName}</span>
       </footer>
     </Doc>
+  );
+}
+
+/** Client dashboard: wallet balance and each VPS with its renewal date and days left. */
+export function ClientRenewalsPanel() {
+  const q = useQuery({ queryKey: ['billing', 'account', 'me'], queryFn: () => api.get<AccountT>(`${B}/account`), refetchInterval: 60_000 });
+  if (!q.data) return q.error ? <ErrorNote error={q.error} /> : null;
+  const a = q.data;
+  const open = a.subscriptions.filter((s) => s.status !== 'cancelled');
+  if (!open.length && a.balancePaise === 0) return null;
+  return (
+    <Panel
+      title="Your VPSs and wallet"
+      className="xl:col-span-12"
+      actions={
+        <Link to="/wallet" className="text-[13px] text-accent hover:underline">
+          Billing & Wallet
+        </Link>
+      }
+      flush
+    >
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 border-b border-rule px-4 py-3 text-[13.5px]">
+        <span>
+          Wallet balance <b className="tabular-nums">{inr(a.balancePaise)}</b>
+        </span>
+        <span className="text-ink-2">Renewals {inr(a.monthlyPaise)} a month + GST</span>
+      </div>
+      {open.length ? (
+        <Table label="Your VPSs">
+          <thead>
+            <tr>
+              <th>VPS</th>
+              <th>IP address</th>
+              <th>Status</th>
+              <th>Expires / renews</th>
+            </tr>
+          </thead>
+          <tbody>
+            {open.map((s) => (
+              <tr key={s.id}>
+                <td>
+                  {s.guestId ? (
+                    <Link to={`/integrations/virtualizor/vms/${s.guestId}`} className="text-accent hover:underline">
+                      {s.guestName ?? s.name}
+                    </Link>
+                  ) : (
+                    s.name
+                  )}
+                  <span className="block text-[12px] text-ink-3">{s.name}</span>
+                </td>
+                <td className="font-mono text-[13px]">{s.ipAddresses.join(', ') || '—'}</td>
+                <td>
+                  <Chip tone={SUB_TONE[s.status]}>{SUB_LABEL[s.status]}</Chip>
+                  {s.status === 'overdue' && s.suspendsAt && <span className="block text-[12px] text-warn">suspends {formatDate(s.suspendsAt)} unless the wallet is topped up</span>}
+                </td>
+                <td className="text-[13px] whitespace-nowrap">
+                  <DueDate iso={s.cancelAt ?? s.nextDueAt} label={s.cancelAt ? 'ends' : undefined} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      ) : (
+        <p className="px-4 py-3 text-[13px] text-ink-2">No VPSs yet.</p>
+      )}
+    </Panel>
   );
 }

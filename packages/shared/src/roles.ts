@@ -60,7 +60,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDef[] = [
     name: 'Customer Administrator',
     description: "Customer portal user who can control their own organization's services.",
     scope: 'customer',
-    permissions: ['dcim.read', 'network.read', 'monitoring.read', 'ipam.read', 'power.read', 'hardware.control', 'services.read', 'tickets.read', 'tickets.write', 'reports.read', 'orders.place'],
+    permissions: ['dcim.read', 'network.read', 'monitoring.read', 'ipam.read', 'power.read', 'hardware.control', 'services.read', 'tickets.read', 'tickets.write', 'reports.read', 'orders.place', 'hardware.console'],
   },
   {
     key: 'customer_viewer',

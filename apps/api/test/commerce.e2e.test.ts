@@ -193,6 +193,15 @@ describe('orders', () => {
     expect((await globex.get(`${B}/invoices/${inv.id}`)).status).toBe(404);
     expect((await ok(globex.get(`${B}/invoices`))).length).toBe(0);
     await expect(ctx.db.execute(sql`update invoices set total_paise = 1 where id = ${inv.id}`)).rejects.toThrow();
+    // The client's VM page shows its renewal date and offers the console; staff-only fields stay hidden.
+    const vm = await ok(acme.get(`/api/v1/virtualization/guests/${g!.id}`));
+    expect(vm.billing).toMatchObject({ status: 'active', pricePaise: 50_000 });
+    expect(vm.can.console).toBe(true);
+    expect(vm.hostName).toBeNull();
+    expect(vm.customerName).toBeNull();
+    // Delivered orders show when they renew.
+    expect(acc.orders[0].nextDueAt).toBeTruthy();
+    expect(acc.subscriptions[0].ipAddresses).toEqual(['203.0.113.13']);
     // Running the cycle again settles nothing twice.
     expect((await runBillingCycle(deps(), new Date())).settled).toBe(0);
     expect(await balance(ctx.customers.acme)).toBe(41_000);

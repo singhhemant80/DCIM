@@ -817,7 +817,7 @@ export const guestCreateKind: KindDef = {
           await deps.db.transaction(async (tx) => {
             await tx.update(virtGuests).set({ customerId }).where(eq(virtGuests.id, g.id));
             // The addresses the sync recorded for it (without a customer) go to the client too.
-            if (customerId) await tx.execute(sql`update ip_addresses set customer_id = ${customerId}, updated_at = now() where guest_id = ${g.id} and source = 'hypervisor' and customer_id is null and status <> 'released'`);
+            if (customerId) await tx.execute(sql`update ip_addresses set customer_id = ${customerId}, updated_at = now() where guest_id = ${g.id} and customer_id is null and status <> 'released'`);
             await tx.update(provisioningJobs).set({ guestId: g.id }).where(eq(provisioningJobs.id, ctx.job.id));
           });
           ctx.job.guestId = g.id;

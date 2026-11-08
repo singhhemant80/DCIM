@@ -3,7 +3,8 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { Link, useParams } from 'react-router-dom';
 import { FLOW_RANGE_LABELS, GUEST_ACTION_LABELS, type FlowRange, type GuestAction } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
-import { relativeTime } from '../lib/format';
+import { daysUntil, dueIn, formatDate, relativeTime } from '../lib/format';
+import { useAuth } from '../lib/auth';
 import { bps } from '../lib/monitoring';
 import { bytes, jobKindLabel, type JobT, type VirtGuestT } from '../lib/provisioning';
 import { JobModal, JobStatusChip } from '../components/Jobs';
@@ -32,6 +33,7 @@ interface GuestDetailT extends VirtGuestT {
     bwLimitGb?: number | null;
   } | null;
   can: { power: boolean; reinstall: boolean; console: boolean };
+  billing: { subscriptionId: string; name: string; status: string; nextDueAt: string; pricePaise: number; cancelAt: string | null } | null;
 }
 interface HistoryT {
   stepSeconds: number;
@@ -117,6 +119,8 @@ function TrafficChart({ ip }: { ip: string }) {
 
 export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }) {
   const { id = '' } = useParams();
+  const { me } = useAuth();
+  const staff = me?.user.userType === 'staff';
   const qc = useQueryClient();
   const [action, setAction] = useState<GuestAction | null>(null);
   const [reinstall, setReinstall] = useState(false);
@@ -224,8 +228,12 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2 text-[13px]">
               <dt className="text-ink-3">{kind === 'virtualizor' ? 'VPS ID' : 'VM ID'}</dt>
               <dd className="font-mono">{g.externalId}</dd>
-              <dt className="text-ink-3">{kind === 'proxmox' ? 'Node' : 'Server'}</dt>
-              <dd>{g.hostName ?? '—'}</dd>
+              {g.hostName !== null && (
+                <>
+                  <dt className="text-ink-3">{kind === 'proxmox' ? 'Node' : 'Server'}</dt>
+                  <dd>{g.hostName}</dd>
+                </>
+              )}
               <dt className="text-ink-3">Type</dt>
               <dd>{g.virtType ?? '—'}</dd>
               <dt className="text-ink-3">Operating system</dt>
@@ -248,7 +256,27 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
                   <dd>{g.integrationName}</dd>
                 </>
               )}
-              {g.customerName !== undefined && (
+              {g.billing && (
+                <>
+                  <dt className="text-ink-3">{g.billing.status === 'cancelled' ? 'Billing' : g.billing.cancelAt ? 'Ends' : 'Renews (expiry)'}</dt>
+                  <dd>
+                    {g.billing.status === 'cancelled' ? (
+                      'Cancelled'
+                    ) : (
+                      <>
+                        {formatDate(g.billing.cancelAt ?? g.billing.nextDueAt)}{' '}
+                        <span className={(daysUntil(g.billing.cancelAt ?? g.billing.nextDueAt) ?? 99) <= 3 ? 'font-medium text-warn' : 'text-ink-2'}>({dueIn(g.billing.cancelAt ?? g.billing.nextDueAt)})</span>
+                        {g.billing.status === 'overdue' && <span className="text-crit"> · overdue</span>}
+                        {g.billing.status === 'suspended' && <span className="text-crit"> · suspended for non-payment</span>}{' '}
+                        <Link to="/wallet" className="text-accent hover:underline">
+                          Billing
+                        </Link>
+                      </>
+                    )}
+                  </dd>
+                </>
+              )}
+              {staff && g.customerName !== undefined && (
                 <>
                   <dt className="text-ink-3">Customer</dt>
                   <dd>{g.customerName ?? 'Own'}</dd>

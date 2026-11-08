@@ -21,6 +21,7 @@ let ctx: TestContext;
 let admin: Client;
 let noc: Client;
 let acme: Client;
+let globex: Client;
 let vnc: Awaited<ReturnType<typeof startVncServer>>;
 let relay: Awaited<ReturnType<typeof startConsoleRelay>>;
 const ipmi = fakeSolIpmitool('sol-pass-123');
@@ -80,6 +81,7 @@ beforeAll(async () => {
   admin = await Client.login(ctx.server, ctx.emails.superAdmin);
   noc = await Client.login(ctx.server, ctx.emails.noc);
   acme = await Client.login(ctx.server, ctx.emails.acmeAdmin);
+  globex = await Client.login(ctx.server, ctx.emails.globexAdmin);
   vnc = await startVncServer('vnc-pw-1');
   // VM consoles: a stand-in Virtualizor whose VNC Info points at the simulator.
   const fakeVirt = () => ({ vncInfo: async () => ({ host: '127.0.0.1', port: vnc.port, password: 'vnc-pw-1' }) }) as unknown as VirtClient;
@@ -98,7 +100,9 @@ afterAll(async () => {
 describe('access', () => {
   it('needs the console permission; setting passwords is staff-only and write-only', async () => {
     expect((await noc.get(`${C}/devices/${ids.srv}`)).status).toBe(403);
-    expect((await acme.get(`${C}/devices/${ids.srv}`)).status).toBe(403);
+    // Customer administrators have the console for their own equipment only (since the VPS billing work).
+    expect((await acme.get(`${C}/devices/${ids.srv}`)).status).toBe(200);
+    expect((await globex.get(`${C}/devices/${ids.srv}`)).status).toBe(404);
     await ok(admin.put(`${C}/devices/${ids.srv}/credentials`, { kind: 'vnc', host: '127.0.0.1', port: vnc.port, password: 'vnc-pw-1' }));
     await ok(admin.put(`${C}/devices/${ids.srv}/credentials`, { kind: 'sol', host: '127.0.0.1', username: 'root', password: 'sol-pass-123' }));
     const st = await ok(admin.get(`${C}/devices/${ids.srv}`));
@@ -195,7 +199,7 @@ describe('VM console (Virtualizor VNC)', () => {
     const [g] = await ctx.db.insert(virtGuests).values({ orgId: ctx.org.id, integrationId, externalId: '77', name: 'vm-con.example.net', status: 'running', customerId: ctx.customers.acme }).returning();
     expect((await admin.post(`${C}/guests/${g!.id}/sessions`)).body.error).toBe('actions_disabled');
     await ctx.db.update(virtIntegrations).set({ actionsEnabled: true }).where(eq(virtIntegrations.id, integrationId));
-    expect((await acme.post(`${C}/guests/${g!.id}/sessions`)).status).toBe(403);
+    expect((await globex.post(`${C}/guests/${g!.id}/sessions`)).status).toBe(404);
     const s = await ok(admin.post(`${C}/guests/${g!.id}/sessions`));
     const c = open(wsPath(s));
     expect((await c.read(12)).toString()).toBe('RFB 003.008\n');
