@@ -123,7 +123,7 @@ const fail = (e: unknown): never => {
 
 /* ------------------------------------------------------------------ Proxmox VE */
 
-const PVE_ACTIONS: Record<GuestAction, string> = { start: 'start', stop: 'stop', shutdown: 'shutdown', reboot: 'reboot', suspend: 'suspend', resume: 'resume' };
+const PVE_ACTIONS: Record<GuestAction, string> = { start: 'start', stop: 'stop', shutdown: 'shutdown', reboot: 'reboot', reset: 'reset', suspend: 'suspend', resume: 'resume' };
 
 export function proxmoxClient(cfg: { url: string; verifyTls: boolean; tokenId: string; tokenSecret: string; actionTokenId?: string | null; actionTokenSecret?: string | null }): VirtClient {
   const t = target(cfg.url, cfg.verifyTls);

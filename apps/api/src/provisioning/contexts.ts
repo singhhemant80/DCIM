@@ -9,4 +9,4 @@ export const virtContext = (orgId: string, id: string, kind: string, url: string
 export const newBootToken = () => randomBytes(24).toString('base64url');
 export const hashToken = (t: string) => createHash('sha256').update(t).digest('hex');
 
-export const GUEST_TARGET_STATUS = { start: 'running', resume: 'running', reboot: 'running', stop: 'stopped', shutdown: 'stopped', suspend: 'suspended' } as const;
+export const GUEST_TARGET_STATUS = { start: 'running', resume: 'running', reboot: 'running', reset: 'running', stop: 'stopped', shutdown: 'stopped', suspend: 'suspended' } as const;

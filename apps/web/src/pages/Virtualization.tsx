@@ -421,7 +421,7 @@ export function GuestActionDialog({ guest, initial, onClose, onQueued }: { guest
           m.mutate();
         }}
       >
-        <Field label="Action" hint={action === 'stop' ? 'Cuts the VM off like pulling the power cord.' : action === 'shutdown' ? 'Asks the guest OS to shut down; fails if it does not within 5 minutes.' : undefined}>
+        <Field label="Action" hint={action === 'stop' ? 'Cuts the VM off like pulling the power cord.' : action === 'reset' ? 'Power cycle: cuts the power (like pulling the cord), waits until it is off, then starts it again. Unsaved data in the VM is lost. Use it when the VM hangs and a reboot does not work.' : action === 'shutdown' ? 'Asks the guest OS to shut down; fails if it does not within 5 minutes.' : undefined}>
           {(id) => (
             <Select id={id} value={action} onChange={(e) => setAction(e.target.value as GuestAction)}>
               {GUEST_ACTIONS.filter((a) => guest.integrationKind !== 'virtualizor' || (a !== 'suspend' && a !== 'resume')).map((a) => (

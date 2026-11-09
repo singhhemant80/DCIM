@@ -403,9 +403,9 @@ export const virtIntegrationSchema = z.discriminatedUnion('kind', [
 ]);
 export type VirtIntegrationInput = z.infer<typeof virtIntegrationSchema>;
 
-export const GUEST_ACTIONS = ['start', 'stop', 'shutdown', 'reboot', 'suspend', 'resume'] as const;
+export const GUEST_ACTIONS = ['start', 'stop', 'shutdown', 'reboot', 'reset', 'suspend', 'resume'] as const;
 export type GuestAction = (typeof GUEST_ACTIONS)[number];
-export const GUEST_ACTION_LABELS: Record<GuestAction, string> = { start: 'Start', stop: 'Stop (hard)', shutdown: 'Shut down', reboot: 'Reboot', suspend: 'Suspend', resume: 'Resume' };
+export const GUEST_ACTION_LABELS: Record<GuestAction, string> = { start: 'Start', stop: 'Stop (hard)', shutdown: 'Shut down', reboot: 'Reboot', reset: 'Hard reset', suspend: 'Suspend', resume: 'Resume' };
 
 export const guestActionSchema = z.object({ action: z.enum(GUEST_ACTIONS), confirm: z.string().trim().min(1).max(200) });
 /** An OS template the hypervisor can install (from the read-only sync). */

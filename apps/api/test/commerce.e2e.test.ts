@@ -37,7 +37,8 @@ async function drive(id: string) {
     if (['completed', 'failed', 'cancelled', 'recovery'].includes(j.status)) return j;
     clock.t += 2000;
   }
-  throw new Error('job did not settle');
+  const j = await job(id);
+  throw new Error(`job did not settle: ${j.status} step ${j.currentStep} ${JSON.stringify(j.state)} ${j.error ?? ''}`);
 }
 const balance = async (id: string) => (await ctx.db.select().from(customers).where(eq(customers.id, id)))[0]!.walletBalancePaise;
 const DAY = 86_400_000;
@@ -518,5 +519,26 @@ describe('VPS password', () => {
     const j2 = await ok(admin.post(`/api/v1/virtualization/guests/${g!.id}/password`, { password: 'Staff-Set-Pass-88' }));
     expect((await drive(j2.id)).status).toBe('completed');
     expect(vz.vps.get(g!.externalId)!.rootpass).toBe('Staff-Set-Pass-88');
+  });
+});
+
+describe('VPS hard reset', () => {
+  it('power-cycles a running VPS (power off, wait, start) for the client', async () => {
+    const [g] = await ctx.db.select().from(virtGuests).where(sql`${virtGuests.integrationId} = ${ids.integration} and ${virtGuests.customerId} = ${ctx.customers.acme} and ${virtGuests.missingSince} is null`).limit(1);
+    // Suspended: refused before anything is sent.
+    vz.vps.get(g!.externalId)!.suspended = 1;
+    const refused = await drive((await ok(acme.post(`/api/v1/virtualization/guests/${g!.id}/actions`, { action: 'reset', confirm: g!.name }))).id);
+    expect(refused).toMatchObject({ status: 'failed' });
+    expect(refused.error).toContain('suspended');
+    vz.vps.get(g!.externalId)!.suspended = 0;
+    vz.vps.get(g!.externalId)!.status = 1;
+    const before = vz.requests.length;
+    const job = await ok(acme.post(`/api/v1/virtualization/guests/${g!.id}/actions`, { action: 'reset', confirm: g!.name }));
+    const done = await drive(job.id);
+    expect(done.status).toBe('completed');
+    const sent = vz.requests.slice(before).filter((r) => r.act === 'vs' && r.params.action);
+    expect(sent.map((r) => r.params.action)).toEqual(['poweroff', 'start']);
+    expect(vz.vps.get(g!.externalId)!.status).toBe(1);
+    expect((await globex.post(`/api/v1/virtualization/guests/${g!.id}/actions`, { action: 'reset', confirm: g!.name })).status).toBe(404);
   });
 });

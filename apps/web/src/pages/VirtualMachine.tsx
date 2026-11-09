@@ -52,6 +52,7 @@ const POWER: { action: GuestAction; when: (status: string | null) => boolean; da
   { action: 'start', when: (s) => s !== 'running' },
   { action: 'shutdown', when: (s) => s === 'running' },
   { action: 'reboot', when: (s) => s === 'running' },
+  { action: 'reset', when: (s) => s === 'running', danger: true },
   { action: 'stop', when: (s) => s === 'running', danger: true },
 ];
 

@@ -602,9 +602,81 @@ async function guestOf(ctx: StepContext) {
   return { client: virtClientFor(D(ctx), i), ref: { externalId: g.externalId, hostExternalId: h?.externalId ?? null, virtType: g.virtType } };
 }
 
+/**
+ * Hard reset (power cycle): cut the power, wait until the hypervisor reports the VM off, power it on,
+ * verify it runs. Done as separate steps so it works the same on Virtualizor (which has no reset call)
+ * and Proxmox, and each step is safe to repeat (power off when off, start when running are no-ops).
+ */
+function resetSteps(): ReturnType<KindDef['steps']> {
+  return [
+    {
+      name: 'Check the VM',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        const st = await client.guestStatus(ref);
+        ctx.state.initial = st;
+        if (st === 'missing') throw new PermanentError('The hypervisor no longer reports this VM');
+        if (st === 'suspended') throw new PermanentError('The VM is suspended; unsuspend it first (nothing was sent)');
+        return { done: true, detail: `The VM is ${st}` };
+      },
+    },
+    {
+      name: 'Cut the power',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        const st = await client.guestStatus(ref);
+        if (st === 'stopped') return { done: true, detail: 'Already off; nothing sent' };
+        await client.guestAction(ref, 'stop');
+        return { done: true, detail: 'Power off sent to the hypervisor' };
+      },
+    },
+    {
+      name: 'Wait until it is off',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        ctx.state.offFrom ??= ctx.now().toISOString();
+        const st = await client.guestStatus(ref);
+        if (st === 'stopped') return { done: true, detail: 'The hypervisor reports the VM off' };
+        if (ctx.now().getTime() - new Date(String(ctx.state.offFrom)).getTime() > 120_000) throw new PermanentError(`The VM did not power off within 120 s (it is ${st}); it was not started again`);
+        return { wait: poll(ctx, 3000), status: 'verifying', detail: `Waiting for the VM to be off (now ${st})` };
+      },
+    },
+    {
+      name: 'Power on',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        const st = await client.guestStatus(ref);
+        if (st === 'running') return { done: true, detail: 'Already running; nothing sent' };
+        await client.guestAction(ref, 'start');
+        return { done: true, detail: 'Start sent to the hypervisor' };
+      },
+    },
+    {
+      name: 'Verify the VM runs',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        ctx.state.verifyFrom ??= ctx.now().toISOString();
+        const st = await client.guestStatus(ref);
+        if (st === 'running') {
+          await D(ctx).db.update(virtGuests).set({ status: st }).where(eq(virtGuests.id, ctx.job.guestId!));
+          return { done: true, detail: 'Power-cycled: the hypervisor reports the VM running again' };
+        }
+        if (ctx.now().getTime() - new Date(String(ctx.state.verifyFrom)).getTime() > 180_000) throw new PermanentError(`The VM did not start within 180 s after the reset (it is ${st})`);
+        return { wait: poll(ctx, 5000), status: 'verifying', detail: `Waiting for the VM to run (now ${st})` };
+      },
+    },
+  ];
+}
+
 export const guestActionKind: KindDef = {
   steps: (job) => {
     const action = String(job.params.action) as GuestAction;
+    if (action === 'reset') return resetSteps();
     const want = GUEST_TARGET_STATUS[action];
     return [
       {
