@@ -1997,7 +1997,7 @@ export type PowerTariff = typeof powerTariffs.$inferSelect;
 
 /* ============================================================== Phase 6: provisioning and virtualization */
 
-export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process', 'guest_reinstall', 'guest_create']);
+export const jobKindEnum = pgEnum('job_kind', ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process', 'guest_reinstall', 'guest_create', 'guest_password']);
 export const jobStatusEnum = pgEnum('job_status', ['queued', 'running', 'waiting', 'verifying', 'completed', 'failed', 'cancelled', 'recovery']);
 export const stepStatusEnum = pgEnum('job_step_status', ['pending', 'running', 'done', 'failed', 'skipped']);
 export const bmcKindEnum = pgEnum('bmc_kind', ['redfish', 'ipmi']);

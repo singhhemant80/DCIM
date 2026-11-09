@@ -271,6 +271,11 @@ The worker-to-BMC VNC hop is plain RFB (VNC SSL encryption on the BMC must be of
 * These observations, BMC addresses and hypervisor node names are staff-only. Customers see their own server's hostname, brand and model, their VM's OS and size, and public reverse-DNS names.
 * MAC vendors come from the IEEE OUI registry bundled in the `oui-data` npm package (data only, no install scripts, pinned version).
 
+## VPS password changes
+
+- Staff with `hardware.control`, or a client with it for a VPS assigned to them (Customer Administrator has it). Throttled to 10 a minute per user.
+- The new password is stored only in the job's encrypted secret (AAD bound to the job), sent once in the POST body to Virtualizor (Edit VPS), scrubbed from any error text and deleted as soon as it is sent. It never appears in job parameters, logs, the audit log or responses; idempotency compares a SHA-256 of it.
+
 ## Native billing (wallets, VPS orders, GST invoices)
 
 - Money is integers in paise. A wallet balance changes only in `commerce/ledger.ts`, under a row lock on the customer, together with a `wallet_transactions` row in the same transaction; charges never take a wallet below zero (staff corrections may, with a reason). The ledger is append-only and issued invoices cannot be changed or deleted (database triggers).

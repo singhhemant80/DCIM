@@ -9,6 +9,7 @@ import {
   controlCredentialSchema,
   guestActionSchema,
   guestReinstallSchema,
+  guestPasswordSchema,
   guestAssignSchema,
   guestListQuerySchema,
   hostMapSchema,
@@ -390,6 +391,15 @@ export class VirtualizationController {
   @ApiOperation({ summary: 'OS templates this VM can be reinstalled with (from the last sync).' })
   guestTemplates(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string) {
     return this.svc.guestTemplates(p, id);
+  }
+
+  @Post('guests/:id/password')
+  @RequirePermissions('hardware.control')
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @ApiZodBody(guestPasswordSchema)
+  @ApiOperation({ summary: "Change a Virtualizor VM's root / Administrator password (staff, or the client the VM belongs to). The password is used once and not kept." })
+  changePassword(@CurrentPrincipal() p: Principal, @Param('id', UUID) id: string, @Body(new ZodPipe(guestPasswordSchema)) b: Infer<typeof guestPasswordSchema>, @Headers(IDEM) idem: string | undefined, @ReqMeta() meta: RequestMeta) {
+    return this.svc.changeGuestPassword(p, id, b, idem, meta);
   }
 
   @Post('guests/:id/reinstall')

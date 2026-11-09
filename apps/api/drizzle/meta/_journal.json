@@ -302,6 +302,13 @@
       "when": 1794153966673,
       "tag": "0042_guest_owner",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794196260180,
+      "tag": "0043_guest_password",
+      "breakpoints": true
     }
   ]
 }

@@ -286,7 +286,7 @@ export interface MockVirtualizor {
   port: number;
   vps: Map<
     string,
-    { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; uid?: string; virt: string; ips: string[]; osid?: string; bwUsed?: number; bwLimit?: number; rebuild?: { osid: string; password: string; at: number } }
+    { serid: string; hostname: string; status: 0 | 1; suspended: 0 | 1; locked?: string; uid?: string; rootpass?: string; virt: string; ips: string[]; osid?: string; bwUsed?: number; bwLimit?: number; rebuild?: { osid: string; password: string; at: number } }
   >;
   /** Rebuild requests as received (POST bodies), to check the password went in the body and not the URL. */
   rebuilds: { query: Record<string, string>; body: Record<string, string> }[];
@@ -301,6 +301,8 @@ export interface MockVirtualizor {
   creates: { query: Record<string, string>; body: Record<string, string> }[];
   /** Make Create VPS fail with this error (e.g. no free IPs). */
   failCreate: string | null;
+  /** Edit VPS posts received (password changes). */
+  edits: { vpsid: string; body: Record<string, string> }[];
   /** Accept Create VPS without a storage uuid (older panels). */
   storageOptional: boolean;
   close: () => Promise<void>;
@@ -314,7 +316,7 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
   const requests: MockVirtualizor['requests'] = [];
   // eslint-disable-next-line prefer-const
   let server: http.Server;
-  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, loadReads: 0, creates: [], failCreate: null, storageOptional: false, close: () => closer(server)() };
+  const mock: MockVirtualizor = { port: 0, vps, requests, failStatus: false, rebuilds: [], rebuildMs: 0, loadReads: 0, creates: [], failCreate: null, storageOptional: false, edits: [], close: () => closer(server)() };
   // Installed templates ("ostemplates"), as Virtualizor lists them; one for another virtualization type.
   const templates: Record<string, Record<string, string>> = {
     '270': { osid: '270', type: 'kvm', name: 'ubuntu-22.04-x86_64', filename: 'ubuntu-22.04-x86_64.img', distro: 'ubuntu' },
@@ -407,6 +409,19 @@ export async function startVirtualizor(apiKey: string, apiPass: string, listenPo
       const ip = `203.0.113.${id}`;
       vps.set(id, { serid: body.slave_server === 'auto' ? '0' : (body.slave_server ?? '0'), hostname: body.hostname, status: 1, suspended: 0, virt: body.virt ?? 'kvm', ips: [ip], osid: body.osid });
       return send({ title: 'Create VPS', done: 1, newvs: { vpsid: id, ips: [ip] } });
+    }
+    // Edit VPS: GET returns the settings; POST must send them all back (missing ones would be reset).
+    if (q.act === 'editvs') {
+      const v = vps.get(rest.vpsid ?? '');
+      if (!v) return send({ error: { vpsid: 'VPS not found' } });
+      const settings = { vpsid: rest.vpsid, hostname: v.hostname, serid: v.serid, osid: v.osid ?? '0', ram: '2048', space: '40', cores: '2', bandwidth: '2000', vnc: '1', ips: Object.fromEntries(v.ips.map((ip, i) => [String(i), ip])) };
+      if (req.method !== 'POST') return send({ title: 'Edit VPS', vps: settings });
+      mock.edits.push({ vpsid: rest.vpsid!, body });
+      if (body.editvps !== '1') return send({ error: { editvps: 'Invalid request' } });
+      if (body.ram !== '2048' || body.space !== '40' || body['ips[0]'] !== v.ips[0]) return send({ error: { settings: 'Settings were not sent back' } });
+      if (!body.rootpass || body.rootpass.length < 6) return send({ error: { rootpass: 'The password is too short' } });
+      v.rootpass = body.rootpass;
+      return send({ title: 'Edit VPS', done: 1, vps: settings });
     }
     if (q.act === 'rebuild') {
       mock.rebuilds.push({ query: rest, body });

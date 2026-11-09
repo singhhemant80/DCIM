@@ -677,6 +677,41 @@ export const guestActionKind: KindDef = {
  * as soon as it has been sent. Verified when the hypervisor reports the new
  * OS template and the VM running again.
  */
+/**
+ * Change a VM's root / Administrator password. Setting the same password again is harmless, so the
+ * step may be repeated. The password lives only in the job's encrypted secret and is deleted once sent.
+ */
+export const guestPasswordKind: KindDef = {
+  steps: () => [
+    {
+      name: 'Check the VM',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client } = await guestOf(ctx);
+        if (!client.changePassword) throw new PermanentError('This hypervisor does not offer password changes from NexoraDC');
+        return { done: true, detail: `VM ${String(ctx.job.params.vm ?? '')}` };
+      },
+    },
+    {
+      name: 'Set the new password',
+      safeToRepeat: true,
+      run: async (ctx) => {
+        const { client, ref } = await guestOf(ctx);
+        if (!ctx.job.secretEnc) throw new PermanentError('The password is no longer stored for this job; change it again');
+        const { password } = JSON.parse(D(ctx).secrets.decrypt(ctx.job.secretEnc, jobContext(ctx.job.orgId, ctx.job.id))) as { password: string };
+        await client.changePassword!(ref, password);
+        await D(ctx).db.update(provisioningJobs).set({ secretEnc: null }).where(eq(provisioningJobs.id, ctx.job.id));
+        ctx.job.secretEnc = null;
+        return { done: true, detail: 'Virtualizor accepted the new password' };
+      },
+    },
+  ],
+  async onCompleted() {
+    // The hypervisor cannot read a password back: accepted, not verified.
+    return { verified: false, note: 'Accepted by Virtualizor; it cannot be read back to check. KVM / Windows VPSs may need a restart (or the guest agent) before it applies.' };
+  },
+};
+
 export const guestReinstallKind: KindDef = {
   steps: (job) => [
     {
@@ -852,6 +887,7 @@ export const PROVISIONING_KINDS: Record<string, KindDef> = {
   guest_action: guestActionKind,
   image_process: imageProcessKind,
   guest_reinstall: guestReinstallKind,
+  guest_password: guestPasswordKind,
 };
 
 /* ------------------------------------------------------------------ inventory sync (periodic, read-only) */

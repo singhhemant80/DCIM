@@ -496,3 +496,27 @@ describe('clients from Virtualizor owners', () => {
     expect((await admin.post('/api/v1/virtualization/owners/apply', { items: [{ email: 'x@example.com', create: { name: 'Dup', code: 'OWNER1' } }] })).status).toBe(409);
   });
 });
+
+describe('VPS password', () => {
+  it('lets the client and staff change a VPS password through Edit VPS, keeping its settings', async () => {
+    const [g] = await ctx.db.select().from(virtGuests).where(sql`${virtGuests.integrationId} = ${ids.integration} and ${virtGuests.customerId} = ${ctx.customers.acme} and ${virtGuests.missingSince} is null`).limit(1);
+    const NEW = 'Brand-New-Pass-77';
+    expect((await acme.post(`/api/v1/virtualization/guests/${g!.id}/password`, { password: 'weak' })).status).toBe(400);
+    expect((await globex.post(`/api/v1/virtualization/guests/${g!.id}/password`, { password: NEW })).status).toBe(404);
+    const vm = await ok(acme.get(`/api/v1/virtualization/guests/${g!.id}`));
+    expect(vm.can.password).toBe(true);
+    const job = await ok(acme.post(`/api/v1/virtualization/guests/${g!.id}/password`, { password: NEW }));
+    expect(JSON.stringify(job)).not.toContain(NEW);
+    const done = await drive(job.id);
+    expect(done.status).toBe('completed');
+    expect(done.secretEnc).toBeNull();
+    expect(JSON.stringify(done.params)).not.toContain(NEW);
+    expect(vz.vps.get(g!.externalId)!.rootpass).toBe(NEW);
+    // The other settings were sent back unchanged.
+    expect(vz.edits.at(-1)!.body).toMatchObject({ editvps: '1', ram: '2048', space: '40', cores: '2' });
+    // Staff too.
+    const j2 = await ok(admin.post(`/api/v1/virtualization/guests/${g!.id}/password`, { password: 'Staff-Set-Pass-88' }));
+    expect((await drive(j2.id)).status).toBe('completed');
+    expect(vz.vps.get(g!.externalId)!.rootpass).toBe('Staff-Set-Pass-88');
+  });
+});

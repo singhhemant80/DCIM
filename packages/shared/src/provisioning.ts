@@ -3,7 +3,7 @@ import { dateRangeFields, paginationSchema } from './schemas';
 
 /* ------------------------------------------------------------------ jobs */
 
-export const JOB_KINDS = ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process', 'guest_reinstall'] as const;
+export const JOB_KINDS = ['power_action', 'os_install', 'image_verify', 'guest_action', 'image_process', 'guest_reinstall', 'guest_create', 'guest_password'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 export const JOB_KIND_LABELS: Record<JobKind, string> = {
   power_action: 'Power action',
@@ -12,6 +12,8 @@ export const JOB_KIND_LABELS: Record<JobKind, string> = {
   guest_action: 'VM action',
   image_process: 'ISO preparation',
   guest_reinstall: 'VM reinstall',
+  guest_create: 'VPS order',
+  guest_password: 'VM password change',
 };
 
 /**
@@ -439,6 +441,20 @@ export const guestReinstallSchema = z
     confirm: z.string().trim().min(1).max(200),
     /** Only the primary disk is formatted (KVM / Proxmox KVM / Xen HVM); other disks are kept. */
     formatPrimaryOnly: z.boolean().default(false),
+  })
+  .refine((v) => !/[\u0000-\u001f]/.test(v.password), { message: 'The password cannot contain control characters', path: ['password'] });
+
+/**
+ * Change a VM's root / Administrator password (Virtualizor "Edit VPS"). The password goes to the
+ * hypervisor once and is not kept. Staff, or the client the VM belongs to.
+ */
+export const guestPasswordSchema = z
+  .object({
+    password: z
+      .string()
+      .min(10, 'At least 10 characters')
+      .max(128)
+      .refine((v) => /[a-z]/.test(v) && /[A-Z]/.test(v) && /\d/.test(v), 'Use a capital letter, a small letter and a digit'),
   })
   .refine((v) => !/[\u0000-\u001f]/.test(v.password), { message: 'The password cannot contain control characters', path: ['password'] });
 

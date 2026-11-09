@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AdoptVpsModal } from './Wallet';
 import { IpList } from '../components/IpList';
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { FLOW_RANGE_LABELS, GUEST_ACTION_LABELS, type FlowRange, type GuestAction } from '@crapplet/shared';
 import { api, qs, type Paginated } from '../lib/api';
@@ -14,7 +14,7 @@ import { VncViewer } from '../components/Console';
 import { RateChart } from '../components/RateChart';
 import { volume } from '../components/TopIps';
 import { OsIcon, osInfo } from '../components/OsIcon';
-import { Button, Chip, EmptyState, ErrorNote, Loading, PageHeader, Panel, Select, Stat, Table, cx } from '../components/ui';
+import { Button, Chip, EmptyState, ErrorNote, Field, Input, Loading, Modal, PageHeader, Panel, Select, Stat, Table, cx } from '../components/ui';
 import { AccessBadge, GuestActionDialog, ReinstallDialog, UsageBar, guestStatusLabel, statusTone, type AccessT } from './Virtualization';
 
 /** A VM as its manage page gets it: the list row, plus live use and what can be done from here. */
@@ -34,7 +34,7 @@ interface GuestDetailT extends VirtGuestT {
     bwUsedGb?: number | null;
     bwLimitGb?: number | null;
   } | null;
-  can: { power: boolean; reinstall: boolean; console: boolean };
+  can: { power: boolean; reinstall: boolean; console: boolean; password?: boolean };
   billing: { subscriptionId: string; name: string; status: string; nextDueAt: string; pricePaise: number; cancelAt: string | null } | null;
 }
 interface HistoryT {
@@ -127,6 +127,7 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
   const qc = useQueryClient();
   const [action, setAction] = useState<GuestAction | null>(null);
   const [reinstall, setReinstall] = useState(false);
+  const [pw, setPw] = useState(false);
   const [console, setConsole] = useState(false);
   const [job, setJob] = useState<string | null>(null);
   // While this page is open the worker reads the VM's use every 5 s (and, for staff, the RDP / SSH check).
@@ -148,6 +149,7 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
   const queued = (jid: string) => {
     setAction(null);
     setReinstall(false);
+    setPw(false);
     setJob(jid);
     void qc.invalidateQueries({ queryKey: ['virt'] });
     void qc.invalidateQueries({ queryKey: ['provisioning', 'jobs', 'guest', id] });
@@ -175,6 +177,11 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
             {g.can.console && (
               <Button size="sm" disabled={status !== 'running'} title={status !== 'running' ? 'The VM is not running' : undefined} onClick={() => setConsole(true)}>
                 Console
+              </Button>
+            )}
+            {g.can.password && (
+              <Button size="sm" disabled={busy} onClick={() => setPw(true)}>
+                Change password
               </Button>
             )}
             {g.can.reinstall && (
@@ -350,7 +357,53 @@ export function VirtualMachinePage({ kind }: { kind: 'proxmox' | 'virtualizor' }
       </div>
       {action && <GuestActionDialog guest={g} initial={action} onClose={() => setAction(null)} onQueued={queued} />}
       {reinstall && <ReinstallDialog guest={g} onClose={() => setReinstall(false)} onQueued={queued} />}
+      {pw && <PasswordDialog guestId={g.id} name={g.name} windows={/win/i.test(g.osName ?? '')} onClose={() => setPw(false)} onQueued={queued} />}
       <JobModal id={job} onClose={() => setJob(null)} />
     </>
+  );
+}
+
+/** New root (Linux) or Administrator (Windows) password, sent once to Virtualizor and not kept. */
+function PasswordDialog({ guestId, name, windows, onClose, onQueued }: { guestId: string; name: string; windows: boolean; onClose: () => void; onQueued: (id: string) => void }) {
+  const [password, setPassword] = useState('');
+  const [again, setAgain] = useState('');
+  const [show, setShow] = useState(false);
+  const [key] = useState(() => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`));
+  const strong = password.length >= 10 && /[a-z]/.test(password) && /[A-Z]/.test(password) && /\d/.test(password);
+  const m = useMutation({ mutationFn: () => api.post<{ id: string }>(`/virtualization/guests/${guestId}/password`, { password }, { 'Idempotency-Key': key }), onSuccess: (j) => onQueued(j.id) });
+  const gen = () => {
+    const a = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const r = crypto.getRandomValues(new Uint32Array(14));
+    const p = `${Array.from(r, (x) => a[x % a.length]).join('')}a7K`;
+    setPassword(p);
+    setAgain(p);
+    setShow(true);
+  };
+  return (
+    <Modal open onOpenChange={(o) => !o && onClose()} title={`Change password of ${name}`} description={`Sets a new ${windows ? 'Administrator' : 'root'} password through Virtualizor. It is sent once and not stored. ${windows ? 'Windows' : 'KVM'} VPSs may need a restart before it applies.`}>
+      <div className="grid gap-3">
+        <Field label="New password" hint="At least 10 characters with a capital letter, a small letter and a digit." error={password && !strong ? 'Too weak' : undefined}>
+          {(id) => (
+            <div className="flex gap-2">
+              <Input id={id} type={show ? 'text' : 'password'} className="font-mono" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+              <Button onClick={gen}>Generate</Button>
+            </div>
+          )}
+        </Field>
+        <Field label="Repeat it" error={again && again !== password ? 'The two passwords differ' : undefined}>
+          {(id) => <Input id={id} type={show ? 'text' : 'password'} className="font-mono" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" />}
+        </Field>
+        <label className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} /> Show password
+        </label>
+        <ErrorNote error={m.error} />
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" busy={m.isPending} disabled={!strong || again !== password} onClick={() => m.mutate()}>
+            Change password
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

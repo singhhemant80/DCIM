@@ -25,6 +25,7 @@ import {
   type VirtIntegrationInput,
   guestListQuerySchema,
   guestReinstallSchema,
+  guestPasswordSchema,
   type VirtTemplate,
   jobListQuerySchema,
   recoveryDecisionSchema,
@@ -1344,6 +1345,7 @@ export class ProvisioningService {
       can: {
         power: actions && p.permissions.has('hardware.control'),
         reinstall: actions && p.userType === 'staff' && i?.kind === 'virtualizor' && p.permissions.has('hardware.control'),
+        password: actions && i?.kind === 'virtualizor' && p.permissions.has('hardware.control'),
         console: actions && i?.kind === 'virtualizor' && p.permissions.has('hardware.console'),
       },
     };
@@ -1419,6 +1421,30 @@ export class ProvisioningService {
       meta,
       'virt.guest_reinstall',
       { vm: g.name, os: tpl.name, osBefore: g.osName },
+    );
+    return { ...ProvisioningService.publicJob(r.job), replayed: r.replayed };
+  }
+
+  /** Change a Virtualizor VM's root / Administrator password: staff, or the client the VM belongs to. */
+  async changeGuestPassword(p: Principal, id: string, input: z.infer<typeof guestPasswordSchema>, idem: string | undefined, meta: RequestMeta) {
+    const [g] = await this.db
+      .select()
+      .from(virtGuests)
+      .where(and(eq(virtGuests.id, id), eq(virtGuests.orgId, p.orgId)));
+    if (!g || (p.userType !== 'staff' && g.customerId !== p.customerId)) throw new NotFoundException({ error: 'not_found', message: 'VM not found' });
+    if (g.missingSince) throw new ConflictException({ error: 'vm_missing', message: 'The hypervisor no longer reports this VM' });
+    const [i] = await this.db.select().from(virtIntegrations).where(eq(virtIntegrations.id, g.integrationId));
+    if (i?.kind !== 'virtualizor') throw new BadRequestException({ error: 'action_unsupported', message: 'Password changes are offered for Virtualizor VMs' });
+    if (!i.enabled || !i.actionsEnabled) throw new ForbiddenException({ error: 'actions_disabled', message: 'VM actions are not enabled for this hypervisor' });
+    const jobId = randomUUID();
+    const r = await this.createJob(
+      p,
+      { id: jobId, kind: 'guest_password', guestId: g.id, params: { vm: g.name }, secretEnc: this.secrets.encrypt(JSON.stringify({ password: input.password }), jobContext(p.orgId, jobId)) },
+      idem,
+      { op: 'password', id, password: createHash('sha256').update(input.password).digest('hex') },
+      meta,
+      'virt.guest_password',
+      { vm: g.name },
     );
     return { ...ProvisioningService.publicJob(r.job), replayed: r.replayed };
   }

@@ -78,6 +78,8 @@ export interface VirtClient {
   guestAction(g: { externalId: string; hostExternalId: string | null; virtType: string | null }, action: GuestAction): Promise<void>;
   /** Reinstall from an OS template, erasing the disk (Virtualizor "Rebuild VPS"). */
   reinstall?(g: GuestRef, input: { osid: number; password: string; formatPrimaryOnly: boolean }): Promise<void>;
+  /** Set a new root / Administrator password (Virtualizor Edit VPS with rootpass). */
+  changePassword?(g: GuestRef, password: string): Promise<void>;
   /** The VM's current CPU, memory, disk (and bandwidth) use, read live. */
   guestUsage?(g: GuestRef): Promise<GuestUsage>;
   /** Where the VM's VNC console listens and its password (Virtualizor VNC Info). Used only by the console relay. */
@@ -592,6 +594,37 @@ export function virtualizorClient(cfg: { url: string; verifyTls: boolean; apiKey
         { vpsid: g.externalId, reos: '1', osid: String(input.osid), newpass: input.password, conf: input.password, ...(input.formatPrimaryOnly ? { format_primary: '1' } : {}), eu_send_rebuild_email: '0' },
       );
       if (!(n(r.done) === 1 || r.done === true)) throw new PermanentError('Virtualizor did not confirm the reinstall (no "done" in its answer); check the VPS in the panel');
+    },
+    /**
+     * As Virtualizor's own WHMCS module changes a VPS password (virtualizor_ChangePassword): read the
+     * VPS's current settings (GET act=editvs&vpsid=N, answer "vps"), post them back unchanged with
+     * editvps=1 and rootpass. All settings are sent back because Edit VPS resets anything left out.
+     */
+    async changePassword(g, password) {
+      if (!cfg.actionsEnabled) throw new PermanentError('VM actions are off for this Virtualizor integration');
+      if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
+      const cur = await call({ act: 'editvs', vpsid: g.externalId });
+      const vps = cur.vps && typeof cur.vps === 'object' ? (cur.vps as Row) : null;
+      if (!vps || !Object.keys(vps).length) throw new PermanentError('Virtualizor did not return the VPS settings (act=editvs); nothing was changed');
+      const post: Record<string, string> = {};
+      // PHP-style form fields, as http_build_query sends nested arrays: key[sub]=value.
+      const put = (key: string, v: unknown) => {
+        if (v === null || v === undefined) post[key] = '';
+        else if (Array.isArray(v)) v.forEach((x, i) => put(`${key}[${i}]`, x));
+        else if (typeof v === 'object') for (const [k, x] of Object.entries(v as Row)) put(`${key}[${k}]`, x);
+        else if (typeof v === 'boolean') post[key] = v ? '1' : '0';
+        else post[key] = String(v);
+      };
+      for (const [k, v] of Object.entries(vps)) put(k, v);
+      post.editvps = '1';
+      post.rootpass = password;
+      let r: Row;
+      try {
+        r = await call({ act: 'editvs', vpsid: g.externalId }, post);
+      } catch (e) {
+        throw new PermanentError(((e as Error)?.message ?? 'Edit VPS failed').split(password).join('***'));
+      }
+      if (!(n(r.done) === 1 || r.done === true || (r.done && typeof r.done === 'object'))) throw new PermanentError('Virtualizor did not confirm the change (no "done" in its answer); check the VPS in the panel');
     },
     async guestOs(g) {
       if (!/^\d+$/.test(g.externalId)) throw new PermanentError('Unknown VPS id');
